@@ -1,0 +1,13 @@
+{
+  "blocked_command_count": 0,
+  "distance_reduction_ratio": 1.0,
+  "final_distance": 0.0,
+  "initial_distance": 394.9746827329569,
+  "jitter_score": 0.2183503912011644,
+  "mean_step_latency_ms": 0.009309090893855848,
+  "num_steps": 22,
+  "p95_step_latency_ms": 0.014799999917158857,
+  "success": true,
+  "teacher_request_count": 0,
+  "unsafe_action_count": 0
+}

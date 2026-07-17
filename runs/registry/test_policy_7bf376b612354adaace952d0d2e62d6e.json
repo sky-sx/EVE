@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "source": "test"
+  },
+  "name": "test_policy",
+  "version": "7bf376b612354adaace952d0d2e62d6e",
+  "weights": {
+    "w": [
+      1.0,
+      2.0
+    ]
+  }
+}
