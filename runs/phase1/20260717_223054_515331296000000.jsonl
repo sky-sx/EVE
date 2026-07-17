@@ -1,9 +1,0 @@
-{"event": "runtime_start", "timestamp_ns": 515331296000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "cold_start", "timestamp_ns": 515331296000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "run_once", "action_id": "action_69f13695", "kind": "mouse", "safegate_allowed": false, "safegate_reason": "output_disabled", "output_executed": false, "output_blocked": true, "output_reason": "safegate_output_disabled", "timestamp_ns": 515331296000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "run_once", "action_id": "action_513cf094", "kind": "mouse", "safegate_allowed": true, "safegate_reason": "ok", "output_executed": true, "output_blocked": false, "output_reason": "mock_ok", "timestamp_ns": 515331312000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "human_takeover", "timestamp_ns": 515331312000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "run_once", "action_id": "action_313c092c", "kind": "mouse", "safegate_allowed": false, "safegate_reason": "human_takeover_freeze_remaining_5.0s", "output_executed": false, "output_blocked": true, "output_reason": "safegate_human_takeover_freeze_remaining_5.0s", "timestamp_ns": 515331312000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "emergency_stop", "timestamp_ns": 515331312000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "run_once", "action_id": "action_f0e7d7bc", "kind": "speak", "safegate_allowed": false, "safegate_reason": "emergency_stopped", "output_executed": false, "output_blocked": true, "output_reason": "safegate_emergency_stopped", "timestamp_ns": 515331312000000, "run_id": "20260717_223054_515331296000000"}
-{"event": "runtime_stop", "timestamp_ns": 515331312000000, "run_id": "20260717_223054_515331296000000"}
