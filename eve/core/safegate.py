@@ -121,16 +121,6 @@ def detect_human_cursor_activity(
     return (dx * dx + dy * dy) > (threshold * threshold)
 
 
-def detect_human_keyboard_activity() -> bool:
-    """
-    占位：检测人类键盘活动。
-
-    当前实现总是返回 False。未来可通过轮询 win32 key state
-    或 hook 来实现真实键盘活动检测。
-    """
-    return False
-
-
 # ── 内部 ──────────────────────────────────────────────────
 
 

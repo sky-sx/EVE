@@ -1,205 +1,150 @@
-"""EVE 主入口 — 启动、控制与监视。"""
+"""Safe executable entry point for the minimal EVE runtime."""
 from __future__ import annotations
+
+import argparse
+import json
 import time
-import threading
 from pathlib import Path
 
-from eve.config import EVEConfig
-from eve.state import RuntimeState, OutputMode
-from eve.core.safegate import check, report_human_activity, emergency_stop, detect_human_cursor_activity
-from eve.core.loop import run_once, log_event
-from eve.core.runtime_state import RuntimeStateManager
-from eve.core.hormones import HormoneManager
-from eve.core.graph import TNNGraph, TNNOutputCache
-from eve.core.tnn_store import TNNStore
-from eve.core.model_adapter import LLMAdapter, VLMAdapter, YOLOAdapter
-from eve.core.prompts import (world_update_prompt, myself_update_prompt,
-                               active_tnn_selection_prompt, training_order_prompt,
-                               sleep_consolidation_prompt)
-from eve.core.sleep import SleepManager
-from eve.input.capture import CaptureManager
+from eve.core.loop import CoreLoop, log_event
+from eve.core.safegate import emergency_stop
+from eve.core.tnn import SmokeActionNode, load_tnn
 from eve.input.buffer import InputBuffer
-from eve.output import mouse, keyboard, speak
+from eve.input.capture import Capture, CaptureError
 from eve.memory.memorizer import Memorizer
-from eve.memory.indexes import IndexManager
-from eve.memory.event import EventManager
-from eve.memory.retrieval import Retriever
-from eve.dock.trainer import Trainer
-from eve.dock.order import TrainingOrder
+from eve.state import OutputMode, RuntimeErrorRecord, RuntimeState
 
 
-def main():
-    """EVE 主函数。
+class EVEApplication:
+    """Owns the process-level resources and their shutdown order."""
 
-    启动流程：
-    1. 加载配置
-    2. 初始化所有模块
-    3. 绑定 GUI
-    4. 冷启动等待
-    5. 启动多循环
-    6. 运行直到退出
-    """
-    print("=" * 60)
-    print("EVE — Digital Life Research System")
-    print("=" * 60)
+    def __init__(
+        self,
+        *,
+        mode: OutputMode = OutputMode.MOCK,
+        run_dir: str | Path = "runs",
+        capture: Capture | None = None,
+    ) -> None:
+        if mode == OutputMode.REAL:
+            raise ValueError("the formal CLI does not enable real output")
+        self.run_dir = Path(run_dir)
+        self.state = RuntimeState(
+            output_mode=mode,
+            mouse_allowed=True,
+            keyboard_allowed=True,
+            speak_allowed=True,
+        )
+        self.buffer = InputBuffer()
+        self.capture = capture or Capture(
+            self.buffer,
+            screen_reader=lambda: {"source": "synthetic_smoke"},
+            cursor_reader=lambda: (10, 10),
+            error_callback=self._capture_error,
+        )
+        self.memory = Memorizer(self.run_dir / "memory")
+        self.core = CoreLoop(
+            self.state,
+            self.buffer,
+            self.memory,
+            log_dir=self.run_dir,
+        )
 
-    # 1. Load config
-    config = EVEConfig.default()
-    print(f"[INIT] Config loaded: {config.runs_dir}")
+    def start(self, *, load_smoke_node: bool = True) -> None:
+        if self.state.cold_started:
+            return
+        self.state.cold_started = True
+        if load_smoke_node:
+            load_tnn(self.state, SmokeActionNode())
+        self.capture.start()
+        self.core.start()
+        log_event(
+            self.run_dir,
+            "cold_start",
+            output_mode=self.state.output_mode.value,
+            smoke_rule=load_smoke_node,
+        )
 
-    # 2. Create runtime state
-    state = RuntimeState()
-    print("[INIT] RuntimeState created (default disabled)")
-
-    # 3. Initialize input
-    buffer = InputBuffer(retention_ns=2_000_000_000)
-    capture = CaptureManager(buffer, monitor_index=1, screen_fps=config.screen_fps)
-    print("[INIT] InputBuffer + CaptureManager ready")
-
-    # 4. Initialize runtime state manager
-    runtime_mgr = RuntimeStateManager(config)
-    print("[INIT] RuntimeStateManager ready")
-
-    # 5. Initialize Memory
-    memorizer = Memorizer(config.memory_dir)
-    memorizer.load_catalog()
-    index_mgr = IndexManager()
-    event_mgr = EventManager()
-    retriever = Retriever(memorizer, index_mgr)
-    print(f"[INIT] Memory ready (STM {len(memorizer.get_stm_ids())}, "
-          f"MTM {len(memorizer.get_mtm_ids())})")
-
-    # 6. Initialize TNN Store
-    tnn_store = TNNStore(config.tnn_weights_dir)
-    print(f"[INIT] TNN Store ready ({len(tnn_store.list_available())} TNNs)")
-
-    # 7. Initialize TNNGraph
-    output_cache = TNNOutputCache()
-    graph = TNNGraph(tnn_store, output_cache)
-    print("[INIT] TNNGraph ready")
-
-    # 8. Initialize Hormones
-    hormones = HormoneManager()
-    print("[INIT] HormoneManager ready")
-
-    # 9. Initialize model adapters (optional, may fail gracefully)
-    llm = LLMAdapter()
-    vlm = VLMAdapter()
-    yolo = YOLOAdapter()
-    model_adapters = {"llm": llm, "vlm": vlm, "yolo": yolo}
-
-    if llm.detect():
-        print(f"[INIT] LLM detected at: {llm.model_path}")
-    else:
-        print("[INIT] LLM: not available")
-    if yolo.detect():
-        print("[INIT] YOLO detected")
-
-    # 10. Initialize Dock
-    trainer = Trainer(tnn_store, memorizer)
-    print("[INIT] Dock Trainer ready")
-
-    # 11. Initialize Sleep Manager
-    sleep_mgr = SleepManager(memorizer, index_mgr, event_mgr, retriever,
-                              runtime_mgr, hormones, trainer, model_adapters)
-    print("[INIT] SleepManager ready")
-
-    # 12. Try to load previous snapshot
-    snapshot_path = config.snapshot_dir
-    snap_dir = Path(snapshot_path) / "latest"
-    if snap_dir.exists():
+    def stop(self) -> None:
+        failures: list[Exception] = []
         try:
-            runtime_mgr.load_snapshot(snap_dir)
-            print("[INIT] Previous snapshot loaded")
-        except Exception as e:
-            print(f"[INIT] Failed to load snapshot: {e}")
-    else:
-        print("[INIT] No previous snapshot found")
+            self.core.stop()
+        except Exception as exc:
+            failures.append(exc)
+        try:
+            self.capture.stop()
+        except Exception as exc:
+            failures.append(exc)
+        try:
+            self.state.save_snapshot(self.run_dir / "state_snapshot.json")
+        except Exception as exc:
+            failures.append(exc)
+        self.state.cold_started = False
+        if not failures:
+            log_event(self.run_dir, "shutdown_complete")
+            return
+        raise RuntimeError(
+            "shutdown failure(s): " + "; ".join(str(item) for item in failures)
+        )
 
-    # 13. Initialize GUI
-    from eve.gui.control_panel import ControlPanel
-    gui = ControlPanel(
-        on_cold_start=lambda: _cold_start(state, capture, graph, gui),
-        on_emergency_stop=lambda: _do_emergency_stop(state, gui),
-        on_praise=lambda: _do_praise(state, hormones, gui),
-        on_criticize=lambda: _do_criticize(state, hormones, gui),
-        on_force_sleep=lambda: _do_force_sleep(state, sleep_mgr, gui),
-        on_manual_save=lambda: _do_save_snapshot(runtime_mgr, config, gui),
-    )
-    gui.bind_state(state, runtime_mgr.world, runtime_mgr.myself,
-                    runtime_mgr.blackboard, hormones, graph, tnn_store,
-                    memorizer, buffer, trainer, config)
-
-    # 14. Start GUI in main thread (it will block)
-    print("[READY] GUI starting. Press 'Cold Start' to begin.")
-    print("        Press Esc for emergency stop.")
-    gui.start()
-
-    # 15. Cleanup on exit
-    print("[SHUTDOWN] Saving state...")
-    _do_save_snapshot(runtime_mgr, config, gui)
-    if capture.running:
-        capture.stop()
-    print("[SHUTDOWN] EVE stopped.")
+    def _capture_error(self, error: CaptureError) -> None:
+        self.state.latest_error = RuntimeErrorRecord(
+            timestamp_ns=error.timestamp_ns,
+            loop_node="capture",
+            exception_type=error.exception_type,
+            message=error.message,
+            traceback=error.traceback,
+            relevant_source=error.source,
+            recovery_action=error.recovery_action,
+        )
+        log_event(self.run_dir, "runtime_error", **error.__dict__)
 
 
-def _cold_start(state, capture, graph, gui):
-    """冷启动：开始捕获、启用图。"""
-    state.cold_started = True
-    capture.start()
-    graph.start()
-    log_event(state, "cold_start")
-    print("[EVE] Cold start complete. Capture running.")
-    gui.add_log("Cold start complete")
-
-
-def _do_emergency_stop(state, gui):
-    """触发紧急停止。"""
-    emergency_stop(state)
-    log_event(state, "emergency_stop")
-    print("[EVE] EMERGENCY STOP triggered!")
-    gui.add_log("EMERGENCY STOP triggered!")
-
-
-def _do_praise(state, hormones, gui):
-    """用户表扬 EVE。"""
-    hormones.apply_event("user_praise", intensity=1.0, description="User praised EVE")
-    log_event(state, "user_praise")
-    print("[EVE] User praised EVE")
-    gui.add_log("User praise applied")
-
-
-def _do_criticize(state, hormones, gui):
-    """用户批评 EVE。"""
-    hormones.apply_event("user_critique", intensity=1.0, description="User criticized EVE")
-    log_event(state, "user_critique")
-    print("[EVE] User criticized EVE")
-    gui.add_log("User critique applied")
-
-
-def _do_force_sleep(state, sleep_mgr, gui):
-    """强制触发睡眠周期。"""
-    if not sleep_mgr.is_sleeping:
-        gui.add_log("Entering forced sleep...")
-        sleep_mgr.enter_sleep(state)
-        result = sleep_mgr.run_sleep_cycle()
-        sleep_mgr.wake_up(state)
-        gui.add_log(f"Forced sleep cycle completed: {result}")
-    else:
-        gui.add_log("Already sleeping, skipping force sleep")
-
-
-def _do_save_snapshot(runtime_mgr, config, gui):
-    """保存当前状态快照。"""
-    snapshot_path = Path(config.snapshot_dir) / "latest"
+def _esc_pressed() -> bool:
     try:
-        runtime_mgr.save_snapshot(snapshot_path)
-        print(f"[EVE] Snapshot saved to {snapshot_path}")
-        gui.add_log(f"Snapshot saved to {snapshot_path}")
-    except Exception as e:
-        print(f"[EVE] Snapshot save failed: {e}")
-        gui.add_log(f"Snapshot save failed: {e}")
+        import msvcrt
+
+        return bool(msvcrt.kbhit() and msvcrt.getwch() == "\x1b")
+    except ImportError:
+        return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the safe EVE minimal loop")
+    parser.add_argument("--mode", choices=("disabled", "mock"), default="mock")
+    parser.add_argument("--smoke-seconds", type=float, default=1.0)
+    parser.add_argument("--run-dir", default="runs")
+    args = parser.parse_args(argv)
+    if args.smoke_seconds <= 0:
+        parser.error("--smoke-seconds must be positive")
+
+    app = EVEApplication(mode=OutputMode(args.mode), run_dir=args.run_dir)
+    try:
+        app.start()
+        deadline = time.monotonic() + args.smoke_seconds
+        while time.monotonic() < deadline:
+            if _esc_pressed():
+                emergency_stop(app.state)
+                log_event(app.run_dir, "emergency_stop", source="escape_key")
+                break
+            time.sleep(0.02)
+    except KeyboardInterrupt:
+        emergency_stop(app.state)
+        log_event(app.run_dir, "emergency_stop", source="keyboard_interrupt")
+    finally:
+        app.stop()
+
+    summary = {
+        "output_mode": app.state.output_mode.value,
+        "executed": bool(app.state.latest_output and app.state.latest_output.executed),
+        "simulated": bool(app.state.latest_output and app.state.latest_output.simulated),
+        "memory_units": len(app.state.memory_ids),
+        "error": app.state.latest_error.message if app.state.latest_error else None,
+        "threads_stopped": not app.core.running and not app.capture.running,
+        "log": str(app.run_dir / "eve.jsonl"),
+    }
+    print(json.dumps(summary, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
