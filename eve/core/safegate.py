@@ -99,6 +99,38 @@ def reset_emergency(state: RuntimeState) -> None:
     state.emergency_stopped = False
 
 
+# ── 人类活动检测 ──────────────────────────────────────────
+
+
+def detect_human_cursor_activity(
+    last_x: int | None,
+    last_y: int | None,
+    current_x: int,
+    current_y: int,
+    threshold: int = 50,
+) -> bool:
+    """
+    检测两次光标采样之间是否有显著的人类移动。
+
+    若 last_x/last_y 为 None 则返回 False（首帧不判定）。
+    """
+    if last_x is None or last_y is None:
+        return False
+    dx = current_x - last_x
+    dy = current_y - last_y
+    return (dx * dx + dy * dy) > (threshold * threshold)
+
+
+def detect_human_keyboard_activity() -> bool:
+    """
+    占位：检测人类键盘活动。
+
+    当前实现总是返回 False。未来可通过轮询 win32 key state
+    或 hook 来实现真实键盘活动检测。
+    """
+    return False
+
+
 # ── 内部 ──────────────────────────────────────────────────
 
 

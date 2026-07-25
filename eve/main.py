@@ -1,123 +1,204 @@
-"""
-EVE Phase 1 安全实验入口。
-
-默认：
-- 不启动屏幕捕获
-- 不加载 YOLO
-- 不加载 DeepSeek/Qwen
-- 不开启真实输出
-- 不读取 Memory
-- 不启动 Dock
-
-功能：
-1. 创建 RuntimeState
-2. cold start
-3. 生成一条假 ActionCandidate
-4. 运行一次 mock 闭环
-5. 打印 OutputResult
-6. 触发或模拟 Esc 急停
-7. 安全退出
-"""
+"""EVE 主入口 — 启动、控制与监视。"""
 from __future__ import annotations
-
 import time
-import uuid
+import threading
+from pathlib import Path
 
-from eve.core import loop, safegate
-from eve.state import ActionCandidate, ActionKind, OutputMode, RuntimeState
+from eve.config import EVEConfig
+from eve.state import RuntimeState, OutputMode
+from eve.core.safegate import check, report_human_activity, emergency_stop, detect_human_cursor_activity
+from eve.core.loop import run_once, log_event
+from eve.core.runtime_state import RuntimeStateManager
+from eve.core.hormones import HormoneManager
+from eve.core.graph import TNNGraph, TNNOutputCache
+from eve.core.tnn_store import TNNStore
+from eve.core.model_adapter import LLMAdapter, VLMAdapter, YOLOAdapter
+from eve.core.prompts import (world_update_prompt, myself_update_prompt,
+                               active_tnn_selection_prompt, training_order_prompt,
+                               sleep_consolidation_prompt)
+from eve.core.sleep import SleepManager
+from eve.input.capture import CaptureManager
+from eve.input.buffer import InputBuffer
+from eve.output import mouse, keyboard, speak
+from eve.memory.memorizer import Memorizer
+from eve.memory.indexes import IndexManager
+from eve.memory.event import EventManager
+from eve.memory.retrieval import Retriever
+from eve.dock.trainer import Trainer
+from eve.dock.order import TrainingOrder
 
 
-def main() -> None:
-    print("=" * 50)
-    print("EVE Phase 1 — 最小 Mock 运行闭环")
-    print("=" * 50)
-    print()
+def main():
+    """EVE 主函数。
 
-    # 1. 创建 RuntimeState（默认 disabled）
+    启动流程：
+    1. 加载配置
+    2. 初始化所有模块
+    3. 绑定 GUI
+    4. 冷启动等待
+    5. 启动多循环
+    6. 运行直到退出
+    """
+    print("=" * 60)
+    print("EVE — Digital Life Research System")
+    print("=" * 60)
+
+    # 1. Load config
+    config = EVEConfig.default()
+    print(f"[INIT] Config loaded: {config.runs_dir}")
+
+    # 2. Create runtime state
     state = RuntimeState()
-    loop.log_event(state, "runtime_start")
-    print("[EVE] RuntimeState 已创建（默认 disabled）")
-    print()
+    print("[INIT] RuntimeState created (default disabled)")
 
-    # 2. cold start
+    # 3. Initialize input
+    buffer = InputBuffer(retention_ns=2_000_000_000)
+    capture = CaptureManager(buffer, monitor_index=1, screen_fps=config.screen_fps)
+    print("[INIT] InputBuffer + CaptureManager ready")
+
+    # 4. Initialize runtime state manager
+    runtime_mgr = RuntimeStateManager(config)
+    print("[INIT] RuntimeStateManager ready")
+
+    # 5. Initialize Memory
+    memorizer = Memorizer(config.memory_dir)
+    memorizer.load_catalog()
+    index_mgr = IndexManager()
+    event_mgr = EventManager()
+    retriever = Retriever(memorizer, index_mgr)
+    print(f"[INIT] Memory ready (STM {len(memorizer.get_stm_ids())}, "
+          f"MTM {len(memorizer.get_mtm_ids())})")
+
+    # 6. Initialize TNN Store
+    tnn_store = TNNStore(config.tnn_weights_dir)
+    print(f"[INIT] TNN Store ready ({len(tnn_store.list_available())} TNNs)")
+
+    # 7. Initialize TNNGraph
+    output_cache = TNNOutputCache()
+    graph = TNNGraph(tnn_store, output_cache)
+    print("[INIT] TNNGraph ready")
+
+    # 8. Initialize Hormones
+    hormones = HormoneManager()
+    print("[INIT] HormoneManager ready")
+
+    # 9. Initialize model adapters (optional, may fail gracefully)
+    llm = LLMAdapter()
+    vlm = VLMAdapter()
+    yolo = YOLOAdapter()
+    model_adapters = {"llm": llm, "vlm": vlm, "yolo": yolo}
+
+    if llm.detect():
+        print(f"[INIT] LLM detected at: {llm.model_path}")
+    else:
+        print("[INIT] LLM: not available")
+    if yolo.detect():
+        print("[INIT] YOLO detected")
+
+    # 10. Initialize Dock
+    trainer = Trainer(tnn_store, memorizer)
+    print("[INIT] Dock Trainer ready")
+
+    # 11. Initialize Sleep Manager
+    sleep_mgr = SleepManager(memorizer, index_mgr, event_mgr, retriever,
+                              runtime_mgr, hormones, trainer, model_adapters)
+    print("[INIT] SleepManager ready")
+
+    # 12. Try to load previous snapshot
+    snapshot_path = config.snapshot_dir
+    snap_dir = Path(snapshot_path) / "latest"
+    if snap_dir.exists():
+        try:
+            runtime_mgr.load_snapshot(snap_dir)
+            print("[INIT] Previous snapshot loaded")
+        except Exception as e:
+            print(f"[INIT] Failed to load snapshot: {e}")
+    else:
+        print("[INIT] No previous snapshot found")
+
+    # 13. Initialize GUI
+    from eve.gui.control_panel import ControlPanel
+    gui = ControlPanel(
+        on_cold_start=lambda: _cold_start(state, capture, graph, gui),
+        on_emergency_stop=lambda: _do_emergency_stop(state, gui),
+        on_praise=lambda: _do_praise(state, hormones, gui),
+        on_criticize=lambda: _do_criticize(state, hormones, gui),
+        on_force_sleep=lambda: _do_force_sleep(state, sleep_mgr, gui),
+        on_manual_save=lambda: _do_save_snapshot(runtime_mgr, config, gui),
+    )
+    gui.bind_state(state, runtime_mgr.world, runtime_mgr.myself,
+                    runtime_mgr.blackboard, hormones, graph, tnn_store,
+                    memorizer, buffer, trainer, config)
+
+    # 14. Start GUI in main thread (it will block)
+    print("[READY] GUI starting. Press 'Cold Start' to begin.")
+    print("        Press Esc for emergency stop.")
+    gui.start()
+
+    # 15. Cleanup on exit
+    print("[SHUTDOWN] Saving state...")
+    _do_save_snapshot(runtime_mgr, config, gui)
+    if capture.running:
+        capture.stop()
+    print("[SHUTDOWN] EVE stopped.")
+
+
+def _cold_start(state, capture, graph, gui):
+    """冷启动：开始捕获、启用图。"""
     state.cold_started = True
-    loop.log_event(state, "cold_start")
-    print("[EVE] Cold start 完成")
-    print()
+    capture.start()
+    graph.start()
+    log_event(state, "cold_start")
+    print("[EVE] Cold start complete. Capture running.")
+    gui.add_log("Cold start complete")
 
-    # 3. 场景 A: disabled 模式 — 动作应被阻断
-    print("── 场景 A: 默认 disabled — 动作应被阻断 ──")
-    action_a = ActionCandidate(
-        action_id=f"action_{uuid.uuid4().hex[:8]}",
-        kind=ActionKind.MOUSE,
-        payload={"x": 100, "y": 200, "button": "left"},
-        origin="test_main",
-    )
-    result_a = loop.run_once(state, action_a)
-    print(f"  Safegate 结果: allowed={result_a.executed}, blocked={result_a.blocked}, reason={result_a.reason}")
-    print()
 
-    # 4. 场景 B: 切换到 mock + 授权鼠标
-    print("── 场景 B: mock 模式 + mouse 授权 — 动作应执行 ──")
-    state.output_mode = OutputMode.MOCK
-    state.mouse_allowed = True
-    action_b = ActionCandidate(
-        action_id=f"action_{uuid.uuid4().hex[:8]}",
-        kind=ActionKind.MOUSE,
-        payload={"x": 300, "y": 400, "button": "right"},
-        origin="test_main",
-    )
-    result_b = loop.run_once(state, action_b)
-    print(f"  Safegate 结果: allowed={result_b.executed}, blocked={result_b.blocked}, reason={result_b.reason}")
-    print(f"  payload={result_b.payload}")
-    print()
+def _do_emergency_stop(state, gui):
+    """触发紧急停止。"""
+    emergency_stop(state)
+    log_event(state, "emergency_stop")
+    print("[EVE] EMERGENCY STOP triggered!")
+    gui.add_log("EMERGENCY STOP triggered!")
 
-    # 5. 场景 C: 模拟人类接管 → 冻结键鼠
-    print("── 场景 C: 人类接管冻结 5 秒 ──")
-    safegate.report_human_activity(state)
-    loop.log_event(state, "human_takeover")
-    print(f"  blocked_until_ns 已设置")
-    action_c = ActionCandidate(
-        action_id=f"action_{uuid.uuid4().hex[:8]}",
-        kind=ActionKind.MOUSE,
-        payload={"x": 500, "y": 600},
-        origin="test_main",
-    )
-    result_c = loop.run_once(state, action_c)
-    print(f"  Safegate 结果: allowed={result_c.executed}, blocked={result_c.blocked}, reason={result_c.reason}")
-    print()
 
-    # 6. 场景 D: emergency stop
-    print("── 场景 D: emergency stop ──")
-    safegate.emergency_stop(state)
-    loop.log_event(state, "emergency_stop")
-    action_d = ActionCandidate(
-        action_id=f"action_{uuid.uuid4().hex[:8]}",
-        kind=ActionKind.SPEAK,
-        payload={"text": "hello"},
-        origin="test_main",
-    )
-    result_d = loop.run_once(state, action_d)
-    print(f"  Safegate 结果: allowed={result_d.executed}, blocked={result_d.blocked}, reason={result_d.reason}")
-    print()
+def _do_praise(state, hormones, gui):
+    """用户表扬 EVE。"""
+    hormones.apply_event("user_praise", intensity=1.0, description="User praised EVE")
+    log_event(state, "user_praise")
+    print("[EVE] User praised EVE")
+    gui.add_log("User praise applied")
 
-    # 7. 输出完整 state 摘要
-    print("── 运行时状态摘要 ──")
-    print(f"  cold_started:     {state.cold_started}")
-    print(f"  emergency_stopped:  {state.emergency_stopped}")
-    print(f"  output_mode:        {state.output_mode.value}")
-    print(f"  mouse_allowed:      {state.mouse_allowed}")
-    print(f"  keyboard_allowed:   {state.keyboard_allowed}")
-    print(f"  speak_allowed:      {state.speak_allowed}")
-    print(f"  blocked_until_ns:   {state.blocked_until_ns}")
-    print()
 
-    # 8. 安全退出
-    loop.log_event(state, "runtime_stop")
-    print("=" * 50)
-    print("EVE Phase 1 实验完成，安全退出。")
-    print(f"日志写入: runs/phase1/")
-    print("=" * 50)
+def _do_criticize(state, hormones, gui):
+    """用户批评 EVE。"""
+    hormones.apply_event("user_critique", intensity=1.0, description="User criticized EVE")
+    log_event(state, "user_critique")
+    print("[EVE] User criticized EVE")
+    gui.add_log("User critique applied")
+
+
+def _do_force_sleep(state, sleep_mgr, gui):
+    """强制触发睡眠周期。"""
+    if not sleep_mgr.is_sleeping:
+        gui.add_log("Entering forced sleep...")
+        sleep_mgr.enter_sleep(state)
+        result = sleep_mgr.run_sleep_cycle()
+        sleep_mgr.wake_up(state)
+        gui.add_log(f"Forced sleep cycle completed: {result}")
+    else:
+        gui.add_log("Already sleeping, skipping force sleep")
+
+
+def _do_save_snapshot(runtime_mgr, config, gui):
+    """保存当前状态快照。"""
+    snapshot_path = Path(config.snapshot_dir) / "latest"
+    try:
+        runtime_mgr.save_snapshot(snapshot_path)
+        print(f"[EVE] Snapshot saved to {snapshot_path}")
+        gui.add_log(f"Snapshot saved to {snapshot_path}")
+    except Exception as e:
+        print(f"[EVE] Snapshot save failed: {e}")
+        gui.add_log(f"Snapshot save failed: {e}")
 
 
 if __name__ == "__main__":

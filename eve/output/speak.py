@@ -1,7 +1,7 @@
 """
-EVE 语音输出 — 仅支持 disabled / mock 模式。
+EVE 语音输出 — 支持 disabled / mock / real 模式。
 
-不调用 TTS 播放、sounddevice 或任何真实音频 API。
+REAL 模式接口已就绪但尚未实现 TTS 后端。
 """
 from __future__ import annotations
 
@@ -32,15 +32,38 @@ def execute(
             reason="output_disabled",
         )
 
+    if mode == OutputMode.MOCK:
+        return OutputResult(
+            action_id=action_id,
+            kind="speak",
+            mode=mode.value,
+            started_at_ns=started_ns,
+            finished_at_ns=time.monotonic_ns(),
+            executed=False,
+            simulated=True,
+            blocked=False,
+            reason="mock_ok",
+            payload=dict(payload),
+        )
+
+    # REAL 模式：接口就绪，TTS 后端尚未实现
+    return _execute_real(action_id, payload, started_ns)
+
+
+def _execute_real(
+    action_id: str,
+    payload: dict[str, Any],
+    started_ns: int,
+) -> OutputResult:
     return OutputResult(
         action_id=action_id,
         kind="speak",
-        mode=mode.value,
+        mode="real",
         started_at_ns=started_ns,
         finished_at_ns=time.monotonic_ns(),
         executed=False,
-        simulated=True,
-        blocked=False,
-        reason="mock_ok",
-        payload=dict(payload),
+        simulated=False,
+        blocked=True,
+        reason="real_unimplemented_no_tts_backend",
+        payload={"text": payload.get("text", ""), "error": "TTS backend not implemented"},
     )

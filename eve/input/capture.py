@@ -3,14 +3,14 @@ EVE Phase 2 统一捕获管理器。
 
 管理屏幕捕获（mss）和光标捕获（pyautogui）线程，
 将数据统一写入 InputBuffer 并提供 timing 统计。
-
-不加入 YOLO、键盘、音频或 Memory。
+同时检测人类鼠标/键盘活动。
 """
 from __future__ import annotations
 
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -34,6 +34,7 @@ class CaptureTiming:
     shutdown_success: bool = False
     screen_interval_samples: list[float] = field(default_factory=list)
     cursor_interval_samples: list[float] = field(default_factory=list)
+    human_activity_events: int = 0
 
     def compute(self, run_duration_s: float) -> CaptureTiming:
         """基于采集的数据计算汇总统计。"""
@@ -52,7 +53,9 @@ class CaptureTiming:
 
 
 class CaptureManager:
-    """统一屏幕+光标捕获，输出到 InputBuffer。"""
+    """统一屏幕+光标捕获，输出到 InputBuffer，并检测人类活动。"""
+
+    _HUMAN_CURSOR_THRESHOLD_PX = 50  # 光标位移阈值（像素）
 
     def __init__(
         self,
@@ -60,15 +63,23 @@ class CaptureManager:
         monitor_index: int = 1,
         screen_fps: int = 30,
         cursor_hz: int = 60,
+        human_activity_callback: Callable[[], None] | None = None,
     ):
         self._buffer = buffer
         self._monitor_index = monitor_index
         self._screen_interval = 1.0 / screen_fps
         self._cursor_interval = 1.0 / cursor_hz
+        self._human_activity_callback = human_activity_callback
 
         self._running = False
         self._screen_thread: Optional[threading.Thread] = None
         self._cursor_thread: Optional[threading.Thread] = None
+
+        # 人类活动检测状态
+        self._last_cursor_x: float | None = None
+        self._last_cursor_y: float | None = None
+        self._human_activity_count: int = 0
+        self._human_activity_lock = threading.Lock()
 
         # timing 原始数据
         self._timing = CaptureTiming()
@@ -84,6 +95,9 @@ class CaptureManager:
             return
         self._running = True
         self._start_memory_mb = self._current_memory_mb()
+        self._last_cursor_x = None
+        self._last_cursor_y = None
+        self._human_activity_count = 0
         self._screen_thread = threading.Thread(
             target=self._screen_loop, daemon=True, name="eve-screen"
         )
@@ -114,11 +128,37 @@ class CaptureManager:
         timing.shutdown_success = (
             self._screen_thread is None and self._cursor_thread is None
         )
+        timing.human_activity_events = self._human_activity_count
         return timing
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def human_activity_count(self) -> int:
+        with self._human_activity_lock:
+            return self._human_activity_count
+
+    def was_human_cursor_recent(self, window_ns: int = 1_000_000_000) -> bool:
+        """检查最近 window_ns 内是否有显著光标位移。"""
+        if self._last_cursor_x is None or self._last_cursor_y is None:
+            return False
+        latest = self._buffer.latest("cursor")
+        if latest is None:
+            return False
+        now_ns = time.monotonic_ns()
+        if now_ns - latest.timestamp_ns > window_ns:
+            return False
+        # 查找 window_ns 内的旧样本
+        old_samples = self._buffer.range("cursor", now_ns - window_ns, now_ns)
+        if not old_samples:
+            return False
+        x0, y0 = old_samples[0].value
+        x1, y1 = latest.value
+        dx = x1 - x0
+        dy = y1 - y0
+        return (dx * dx + dy * dy) > (self._HUMAN_CURSOR_THRESHOLD_PX ** 2)
 
     # ── 内部 ──────────────────────────────────────────────
 
@@ -155,11 +195,29 @@ class CaptureManager:
                 interval = (now_ns - self._last_cursor_ns) / 1e9
                 self._cursor_intervals.append(interval)
             self._last_cursor_ns = now_ns
+
+            # 人类光标活动检测
+            if self._last_cursor_x is not None and self._last_cursor_y is not None:
+                dx = x - self._last_cursor_x
+                dy = y - self._last_cursor_y
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist > self._HUMAN_CURSOR_THRESHOLD_PX:
+                    self._report_human_activity()
+            self._last_cursor_x = x
+            self._last_cursor_y = y
+
             # 频率控制
             elapsed = (time.monotonic_ns() - t0) / 1e9
             remaining = self._cursor_interval - elapsed
             if remaining > 0:
                 time.sleep(remaining)
+
+    def _report_human_activity(self) -> None:
+        """报告人类活动事件。"""
+        with self._human_activity_lock:
+            self._human_activity_count += 1
+        if self._human_activity_callback is not None:
+            self._human_activity_callback()
 
     @staticmethod
     def _current_memory_mb() -> float:

@@ -42,20 +42,12 @@ phase0_audit/
 # ============================================================
 # Root-level project summary / planning markdown files
 # ============================================================
-/DECISIONS.md
-/EXPERIMENT_RECORD_TEMPLATE.md
-/OPEN_QUESTIONS.md
 /PACKAGE_MANIFEST.md
 /PHASE_1_CODEX_PROMPT.md
-/PLAN.md
-/RESEARCH_POSITIONING.md
-/STATUS.md
-/TESTS_AND_LOGGING.md
 /whatdonext.md
 /READM_FIRST.md
 /README_FIRST.md
 /EVE Repository Audit Document.md
-/EVE完整架构描述.txt
 
 # ============================================================
 # Eve-level project summary files
@@ -68,3 +60,14 @@ eve/nextwork.md
 # Log files
 # ============================================================
 *.log
+
+# ============================================================
+# Runtime output (episode logs, benchmarks)
+# ============================================================
+runs/
+
+# ============================================================
+# Non-essential root markdown
+# ============================================================
+/AGENT_GUIDE.md
+/EVE_Pro_Mode_本地完整代码实现Prompt.md

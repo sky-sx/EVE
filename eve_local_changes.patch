@@ -1,0 +1,1609 @@
+﻿diff --git a/.gitignore b/.gitignore
+index a31a064..3d8716e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -42,20 +42,12 @@ phase0_audit/
+ # ============================================================
+ # Root-level project summary / planning markdown files
+ # ============================================================
+-/DECISIONS.md
+-/EXPERIMENT_RECORD_TEMPLATE.md
+-/OPEN_QUESTIONS.md
+ /PACKAGE_MANIFEST.md
+ /PHASE_1_CODEX_PROMPT.md
+-/PLAN.md
+-/RESEARCH_POSITIONING.md
+-/STATUS.md
+-/TESTS_AND_LOGGING.md
+ /whatdonext.md
+ /READM_FIRST.md
+ /README_FIRST.md
+ /EVE Repository Audit Document.md
+-/EVE瀹屾暣鏋舵瀯鎻忚堪.txt
+ 
+ # ============================================================
+ # Eve-level project summary files
+@@ -68,3 +60,14 @@ eve/nextwork.md
+ # Log files
+ # ============================================================
+ *.log
++
++# ============================================================
++# Runtime output (episode logs, benchmarks)
++# ============================================================
++runs/
++
++# ============================================================
++# Non-essential root markdown
++# ============================================================
++/AGENT_GUIDE.md
++/EVE_Pro_Mode_鏈湴瀹屾暣浠ｇ爜瀹炵幇Prompt.md
+diff --git a/_smoke_test_new_modules.py b/_smoke_test_new_modules.py
+deleted file mode 100644
+index eefc254..0000000
+--- a/_smoke_test_new_modules.py
++++ /dev/null
+@@ -1,130 +0,0 @@
+-"""Smoke-test the inhibition and teacher packages."""
+-import sys
+-sys.path.insert(0, "src")
+-
+-# ---- inhibition ----
+-from eve.inhibition import PermissionManager, InhibitionGate, UserInterrupt, ActionAudit
+-
+-pm = PermissionManager()
+-assert pm.check({"action": "move"}) == (True, "allowed")
+-assert pm.check({"action": "delete"}) == (False, "high-risk action 'delete' requires explicit grant")
+-pm.grant("delete")
+-assert pm.check({"action": "delete"}) == (True, "allowed")
+-assert pm.is_high_risk({"action": "execute"})
+-assert not pm.is_high_risk({"action": "move"})
+-assert pm.get_permissions() == {"move", "click", "type", "speak", "animate", "delete"}
+-pm.revoke("delete")
+-assert "delete" not in pm.get_permissions()
+-print("PermissionManager: OK")
+-
+-gate = InhibitionGate()
+-allowed = gate.allow([{"action": "move"}, {"action": "delete"}, {"action": "click"}], pm)
+-assert len(allowed) == 2
+-assert gate.get_blocked_count() == 1
+-gate.block_all()
+-assert gate.is_blocked()
+-assert gate.allow([{"action": "move"}], pm) == []
+-gate.release()
+-assert not gate.is_blocked()
+-print("InhibitionGate: OK")
+-
+-ui = UserInterrupt()
+-ui.signal("pause")
+-assert ui.is_paused()
+-ui.signal("resume")
+-assert not ui.is_paused()
+-assert ui.get_last_interrupt()["type"] == "resume"
+-ui.signal("stop")
+-assert ui.is_stopped()
+-assert ui.is_paused()
+-ui.clear()
+-assert ui.get_last_interrupt() is None
+-assert not ui.is_stopped()
+-assert not ui.is_paused()
+-print("UserInterrupt: OK")
+-
+-aa = ActionAudit(capacity=10)
+-aa.log({"action": "move"}, True, "allowed")
+-aa.log({"action": "delete"}, False, "blocked")
+-s = aa.summary()
+-assert s["total"] == 2
+-assert s["allowed"] == 1
+-assert s["blocked"] == 1
+-assert s["by_type"]["move"] == 1
+-assert s["by_type"]["delete"] == 1
+-history = aa.get_history(10)
+-assert len(history) == 2
+-blocked = aa.get_blocked_actions()
+-assert len(blocked) == 1
+-# export test
+-import tempfile, os
+-with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tf:
+-    aa.export(tf.name)
+-    jsonl_path = tf.name
+-assert os.path.exists(jsonl_path)
+-os.unlink(jsonl_path)
+-print("ActionAudit: OK")
+-
+-# ---- teacher ----
+-from eve.teacher import FastTeacher, SlowTeacher, RewardOracle, TeacherOrchestra
+-
+-ft = FastTeacher()
+-state = {"slots": {"target": (0.5, 0.5), "cursor": (0.3, 0.3)}}
+-r = ft.label(state, {"action": "move", "dx": 0.1, "dy": 0.1})
+-assert r is not None and r["label"] == "approaching_target", r
+-r = ft.label(state, {"action": "noop"})
+-assert r is not None and r["label"] == "idle", r
+-# click off target
+-r = ft.label(state, {"action": "click"})
+-assert r is not None and r["label"] == "click_off_target", r
+-# at target
+-state_at = {"slots": {"target": (0.5, 0.5), "cursor": (0.51, 0.51)}}
+-r = ft.label(state_at, {"action": "click"})
+-assert r is not None and r["label"] == "click_on_target", r
+-print("FastTeacher: OK")
+-
+-st = SlowTeacher(processing_delay_s=0.0)
+-state2 = {"slots": {"target": (0.5, 0.5), "cursor": (0.5, 0.5)}}
+-r = st.label(state2, {"action": "click"})
+-assert r["label"] == "click_on_target", r
+-assert "reasoning" in r
+-r = st.label(state2, {"action": "noop"})
+-assert r["label"] == "idle_at_target", r
+-r = st.label(state2, {"action": "unknown"})
+-assert r["label"] == "unrecognized", r
+-print("SlowTeacher: OK")
+-
+-ro = RewardOracle()
+-s_before = {"slots": {"target": (0.5, 0.5), "cursor": (0.3, 0.3)}}
+-s_after = {"slots": {"target": (0.5, 0.5), "cursor": (0.4, 0.4)}}
+-reward = ro.compute(s_before, {"action": "move", "dx": 0.1, "dy": 0.1}, s_after)
+-assert reward > 0, reward  # moving closer = positive
+-components = ro.reward_components(s_before, {"action": "move", "dx": 0.1, "dy": 0.1}, s_after)
+-assert "proximity" in components
+-assert "energy_efficiency" in components
+-assert "collision" in components
+-assert "idle" in components
+-# collision test
+-s_boundary = {"slots": {"target": (0.5, 0.5), "cursor": (0.0, 0.5)}}
+-comp_coll = ro.reward_components(s_before, {"action": "move", "dx": -0.3, "dy": 0.0}, s_boundary)
+-assert comp_coll["collision"] < 0, comp_coll
+-# idle test
+-comp_idle = ro.reward_components(s_before, {"action": "noop"}, s_before)
+-assert comp_idle["idle"] < 0, comp_idle
+-print("RewardOracle: OK")
+-
+-to = TeacherOrchestra(fast_teacher=ft, slow_teacher=st, reward_oracle=ro)
+-assert to.request_label(state, {"action": "move", "dx": 0.1, "dy": 0.1})
+-assert to.get_pending_count() == 1
+-results = to.process_queue()
+-assert len(results) == 1
+-assert "reward" in results[0]
+-assert results[0]["action"]["action"] == "move"
+-# fast teacher can handle this, so fast_teacher result should appear
+-assert results[0]["label"] in ("approaching_target", "moving_away")
+-to.shutdown()
+-assert to.get_pending_count() == 0
+-print("TeacherOrchestra: OK")
+-
+-print()
+-print("ALL SMOKE TESTS PASSED")
+diff --git a/eve/core/__init__.py b/eve/core/__init__.py
+index fdeae72..68e0ca8 100644
+--- a/eve/core/__init__.py
++++ b/eve/core/__init__.py
+@@ -1 +1 @@
+-"""EVE core 鈥?杩愯鏃跺惊鐜笌瀹夊叏闂ㄣ€?""
++"""EVE core 鈥?杩愯鏃跺惊鐜€佸畨鍏ㄩ棬銆佹ā鍨嬮€傞厤鍣ㄤ笌 LLM 鎻愮ず璇嶃€?""
+diff --git a/eve/core/loop.py b/eve/core/loop.py
+index b92be37..f9d18e3 100644
+--- a/eve/core/loop.py
++++ b/eve/core/loop.py
+@@ -1,28 +1,38 @@
+ """
+-EVE Phase 1 鏈€灏忚繍琛屽惊鐜€?+EVE 澶氬惊鐜繍琛屾椂 鈥?澶氶鐜囥€佸鑱岃矗鐨勫紓姝ュ惊鐜灦鏋勩€? 
+-娴佺▼锛?-1. 妫€鏌ヨ繍琛岀姸鎬?-2. 鎶?ActionCandidate 浜ょ粰 Safegate
+-3. 鑻ュ厑璁?鈫?浜ょ粰瀵瑰簲 mock output
+-4. 鑻ラ樆鏂?鈫?褰㈡垚 OutputResult
+-5. 鍐欎竴琛?JSONL 鏃ュ織
+-6. 杩斿洖缁撴灉
++寰幆锛?+- 瀹炴椂鎹曡幏寰幆锛氭寔缁噰闆嗗睆骞曞拰鍏夋爣
++- 缂撳啿鏇存柊寰幆锛氭洿鏂?InputBuffer 涓殑 state
++- TNNGraph tick锛氳皟搴﹀湪鏈?TNN 鑺傜偣锛屾竻鐞嗚繃鏈熺紦瀛?+- 鏈湴 LLM 澶у惊鐜細鎱㈤€熻鐭ユ洿鏂帮紙world/myself/active_tnn锛?+- 鍔ㄤ綔鎵ц寰幆锛氫粠 blackboard 鎷夊彇鍔ㄤ綔锛岀粡 Safegate 杈撳嚭
++- 璁板繂鍐欏叆寰幆锛氬皢妯″潡浜у嚭鍐欏叆 Memory
++- 婵€绱犵姸鎬佸惊鐜細閫愯疆鏇存柊婵€绱犲拰鑺傚緥
++- Dock 璁粌娑堣垂锛氬鐞嗚缁冮槦鍒?+- 璧勬簮鐩戞帶寰幆锛氱洃鎺х‖浠惰祫婧?+- 鐘舵€佹寔涔呭寲锛氬畾鏈熷揩鐓? 
+-涓嶄娇鐢ㄥ鏉備簨浠舵€荤嚎銆佹彃浠剁郴缁熴€丮anager 鎴栧 Agent銆?+鍚屾椂淇濈暀鍘熸湁鐨?run_once() 鍜?log_event()銆? """
+ from __future__ import annotations
+ 
+ import json
+ import time
++import threading
+ import traceback
+ from pathlib import Path
++from typing import Any
+ 
+ from eve.core import safegate
+ from eve.output import keyboard, mouse, speak
+-from eve.state import ActionCandidate, ActionKind, OutputMode, OutputResult, RuntimeState
++from eve.state import (
++    ActionCandidate, ActionKind, OutputMode, OutputResult, RuntimeState,
++)
+ 
+ 
++# 鈹€鈹€ 鍘熸湁鐨?run_once / log_event锛堜繚鎸佷笉鍙橈級鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
++
+ def run_once(
+     state: RuntimeState,
+     action: ActionCandidate,
+@@ -31,10 +41,7 @@ def run_once(
+     """鍗曟杩愯闂幆銆?""
+     state.pending_action = action
+     try:
+-        # 1. Safegate 鍒ゅ畾
+         result = safegate.check(state, action)
+-
+-        # 2. 璺敱鍒板搴旇緭鍑?         output: OutputResult
+         if result.allowed:
+             output = _dispatch_output(action, state.output_mode)
+@@ -50,10 +57,7 @@ def run_once(
+                 blocked=True,
+                 reason=f"safegate_{result.reason}",
+             )
+-
+         state.latest_output = output
+-
+-        # 3. 鍐?JSONL 鏃ュ織锛堝祵濂楃粨鏋勶級
+         _log_event(log_dir, {
+             "event": "run_once",
+             "action": {
+@@ -79,11 +83,8 @@ def run_once(
+                 "payload": output.payload,
+             },
+         })
+-
+         return output
+-
+     except Exception:
+-        # 寮傚父鏃跺舰鎴?runtime_error 鏃ュ織
+         _log_event(log_dir, {
+             "event": "runtime_error",
+             "action_id": action.action_id,
+@@ -95,7 +96,7 @@ def run_once(
+ 
+ 
+ def log_event(
+-    state: RuntimeState,
++    state: RuntimeState | None,
+     event_type: str,
+     log_dir: str | Path = "runs/phase1",
+     **extra,
+@@ -105,6 +106,376 @@ def log_event(
+     _log_event(log_dir, entry)
+ 
+ 
++# 鈹€鈹€ 澶氬惊鐜繍琛屽櫒 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
++
++
++class EVELoops:
++    """EVE 澶氬惊鐜繍琛岀鐞嗗櫒銆?+
++    绠＄悊澶氫釜涓嶅悓棰戠巼鐨勮繍琛屽惊鐜?浠诲姟锛屾彁渚涘惎鍋滃拰鐩戞帶銆?+    """
++
++    def __init__(
++        self,
++        state: RuntimeState,
++        runtime_mgr,
++        config,
++        capture,
++        buffer,
++        graph,
++        hormones,
++        memorizer,
++        tnn_store,
++        trainer,
++        sleep_mgr,
++        model_adapters: dict | None = None,
++        llm_adapter=None,
++    ):
++        self.state = state
++        self.runtime = runtime_mgr
++        self.config = config
++        self.capture = capture
++        self.buffer = buffer
++        self.graph = graph
++        self.hormones = hormones
++        self.memorizer = memorizer
++        self.tnn_store = tnn_store
++        self.trainer = trainer
++        self.sleep_mgr = sleep_mgr
++        self.models = model_adapters or {}
++        self.llm = llm_adapter
++
++        self._threads: list[threading.Thread] = []
++        self._running = False
++        self._last_llm_ns: int = 0
++        self._last_hormone_ns: int = 0
++        self._last_snapshot_ns: int = 0
++        self._loop_stats: dict[str, dict] = {}
++
++    @property
++    def running(self) -> bool:
++        return self._running
++
++    def start_all(self) -> None:
++        """鍚姩鎵€鏈夊悗鍙板惊鐜€?""
++        if self._running:
++            return
++        self._running = True
++
++        # 寰幆鍒楄〃锛堝悕绉? 鐩爣鍑芥暟, 闂撮殧绉? 鏄惁daemon锛?+        loops = [
++            ("capture", self._loop_capture, 0, True),
++            ("graph_tick", self._loop_graph_tick, 0.05, True),
++            ("action", self._loop_action, 0.01, True),
++            ("memory_write", self._loop_memory_write, 0.5, True),
++            ("llm_slow", self._loop_llm_slow, 0, True),
++            ("hormone", self._loop_hormone, 1.0, True),
++            ("dock", self._loop_dock, 1.0, True),
++            ("snapshot", self._loop_snapshot, 60.0, True),
++        ]
++
++        for name, target, interval, daemon in loops:
++            t = threading.Thread(
++                target=self._wrap_loop(name, target, interval),
++                daemon=daemon,
++                name=f"eve-{name}",
++            )
++            t.start()
++            self._threads.append(t)
++
++        log_event(self.state, "loops_started", loop_count=len(loops))
++
++    def stop_all(self) -> None:
++        """鍋滄鎵€鏈夊惊鐜€?""
++        self._running = False
++        for t in self._threads:
++            t.join(timeout=3.0)
++        self._threads.clear()
++        log_event(self.state, "loops_stopped")
++
++    def stats(self) -> dict:
++        """鍚勫惊鐜粺璁°€?""
++        return dict(self._loop_stats)
++
++    # 鈹€鈹€ 寰幆瀹炵幇 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
++
++    def _wrap_loop(self, name: str, target, interval_s: float):
++        """鍖呰寰幆浠ュ鐞嗗紓甯稿拰缁熻銆?""
++        def wrapper():
++            count = 0
++            total_time_ns = 0
++            while self._running:
++                t0 = time.monotonic_ns()
++                try:
++                    target()
++                except Exception:
++                    log_event(self.state, "loop_error", loop=name,
++                               error=traceback.format_exc())
++                elapsed_ns = time.monotonic_ns() - t0
++                count += 1
++                total_time_ns += elapsed_ns
++                self._loop_stats[name] = {
++                    "count": count,
++                    "avg_time_ms": (total_time_ns / max(count, 1)) / 1e6,
++                    "total_time_s": total_time_ns / 1e9,
++                }
++                if interval_s > 0:
++                    sleep_s = interval_s - (elapsed_ns / 1e9)
++                    if sleep_s > 0:
++                        time.sleep(sleep_s)
++        return wrapper
++
++    def _loop_capture(self) -> None:
++        """鎹曡幏寰幆锛氫繚鎸?capture 杩愯锛圕aptureManager 鑷韩鏈夌嚎绋嬶級銆?""
++        # CaptureManager manages its own threads; this loop monitors
++        if not self.capture.running and self.state.cold_started:
++            pass  # Already started in cold_start
++
++    def _loop_graph_tick(self) -> None:
++        """TNNGraph tick锛氳皟搴﹀湪鏈熻妭鐐癸紝娓呯悊杩囨湡缂撳瓨銆?""
++        if not self.graph.running or not self.state.cold_started:
++            return
++        try:
++            self.graph.tick()
++            now_ns = time.monotonic_ns()
++            scheduled = self.graph.schedule(now_ns)
++            for tnn_id in scheduled:
++                try:
++                    # Build inputs from SourceRef
++                    inputs = self._resolve_tnn_inputs(tnn_id)
++                    if inputs is not None:
++                        outputs = self.graph.run_node(tnn_id, inputs)
++                        if outputs:
++                            # Write to blackboard
++                            for name, value in outputs.items():
++                                from eve.state import TimedEntry
++                                import uuid
++                                entry = TimedEntry(
++                                    entry_id=f"tnn_{tnn_id}_{uuid.uuid4().hex[:8]}",
++                                    kind=f"tnn_output.{tnn_id}.{name}",
++                                    producer=tnn_id,
++                                    produced_at_ns=now_ns,
++                                    valid_until_ns=now_ns + 500_000_000,  # 500ms TTL
++                                    payload=value,
++                                )
++                                self.runtime.blackboard.write(entry)
++                except Exception as e:
++                    self.graph.pause_node(tnn_id)
++                    log_event(self.state, "tnn_run_error", tnn_id=tnn_id, error=str(e))
++        except Exception:
++            pass
++
++    def _loop_action(self) -> None:
++        """鍔ㄤ綔鎵ц寰幆锛氫粠 blackboard 鎷夊彇鍔ㄤ綔鍊欓€夛紝缁?Safegate 杈撳嚭銆?""
++        if not self.state.cold_started:
++            return
++        # Check blackboard for action candidates
++        from eve.state import TimedEntry
++        try:
++            entries = self.runtime.blackboard.read("action_candidate")
++            for entry in entries:
++                payload = entry.payload
++                if isinstance(payload, dict):
++                    action = ActionCandidate(
++                        action_id=entry.entry_id,
++                        kind=ActionKind(payload.get("kind", "mouse")),
++                        payload=payload.get("payload", {}),
++                        origin=entry.producer,
++                        created_at_ns=entry.produced_at_ns,
++                        valid_until_ns=entry.valid_until_ns,
++                    )
++                    result = run_once(self.state, action)
++                    # Write result back
++                    result_entry = TimedEntry(
++                        entry_id=f"result_{entry.entry_id}",
++                        kind="action_result",
++                        producer="action_loop",
++                        produced_at_ns=time.monotonic_ns(),
++                        valid_until_ns=0,
++                        payload={
++                            "action_id": result.action_id,
++                            "executed": result.executed,
++                            "simulated": result.simulated,
++                            "blocked": result.blocked,
++                            "reason": result.reason,
++                        },
++                    )
++                    self.runtime.blackboard.write(result_entry)
++        except Exception:
++            pass
++
++    def _loop_memory_write(self) -> None:
++        """璁板繂鍐欏叆寰幆锛氬皢 blackboard 涓殑鍊欓€夌粨鏋滃啓鍏?Memory銆?""
++        if not self.state.cold_started:
++            return
++        try:
++            candidates = self.runtime.blackboard.read("memory_candidate")
++            for entry in candidates:
++                payload = entry.payload
++                payload_type = "json" if isinstance(payload, dict) else "text"
++                memory_id = self.memorizer.create(str(payload), payload_type)
++                self.memorizer.add_to_stm(memory_id)
++        except Exception:
++            pass
++
++    def _loop_llm_slow(self) -> None:
++        """鏈湴 LLM 澶у惊鐜細鎱㈤€熻鐭ユ洿鏂般€?+
++        鏍规嵁婵€绱犺绠楅棿闅旓紝鍒版湡鏃讹細
++        1. 璋冪敤 LLM 鏇存柊 world/myself
++        2. 鑾峰彇 active_tnn 闆嗗悎
++        3. 鍚屾鍒?TNNGraph
++        """
++        if not self.state.cold_started or self.llm is None:
++            return
++
++        now_ns = time.monotonic_ns()
++        interval_ns = int(self.hormones.compute_llm_interval() * 1e9)
++
++        if now_ns - self._last_llm_ns < interval_ns:
++            return
++
++        self._last_llm_ns = now_ns
++
++        if not self.llm.status.loaded:
++            return
++
++        try:
++            # 1. Build world update prompt
++            w_prompt = _build_world_update_context(self.runtime, self.hormones, self.buffer)
++            result = self.llm.infer(w_prompt)
++            if result.success and result.structured:
++                self.runtime.update_from_llm_world(result.structured)
++                log_event(self.state, "llm_world_updated")
++
++            # 2. Build myself update prompt
++            m_prompt = _build_myself_update_context(self.runtime, self.hormones, self.graph)
++            result = self.llm.infer(m_prompt)
++            if result.success and result.structured:
++                self.runtime.update_from_llm_myself(result.structured)
++                log_event(self.state, "llm_myself_updated")
++
++            # 3. Get active_tnn
++            available = self.tnn_store.list_available()
++            loaded = self.graph.list_nodes()
++            a_prompt = _build_active_tnn_context(
++                self.runtime, available, loaded, self.hormones
++            )
++            result = self.llm.infer(a_prompt)
++            if result.success and result.structured:
++                active = result.structured.get("active_tnn", [])
++                diff = self.graph.sync_active_set(active)
++                log_event(self.state, "llm_active_tnn", diff=diff)
++
++        except Exception as e:
++            log_event(self.state, "llm_slow_error", error=str(e))
++
++    def _loop_hormone(self) -> None:
++        """婵€绱犲拰鑺傚緥鏇存柊寰幆銆?""
++        if not self.state.cold_started:
++            return
++        self.hormones.update_cycle()
++        # Record hormone state in myself
++        self.runtime.myself.hormone_levels = self.hormones.levels.to_dict()
++        self.runtime.myself.tendencies = self.hormones.get_tendencies()
++
++    def _loop_dock(self) -> None:
++        """Dock 璁粌闃熷垪娑堣垂寰幆銆?""
++        if not self.state.cold_started:
++            return
++        if self.trainer.has_pending():
++            try:
++                result = self.trainer.process_one(self.models)
++                log_event(self.state, "dock_training_complete",
++                           order_id=result.order_id, success=result.success)
++            except Exception as e:
++                log_event(self.state, "dock_training_error", error=str(e))
++
++    def _loop_snapshot(self) -> None:
++        """瀹氭湡鐘舵€佹寔涔呭寲銆?""
++        if not self.state.cold_started:
++            return
++        now_ns = time.monotonic_ns()
++        if now_ns - self._last_snapshot_ns > 300_000_000_000:  # 5 minutes
++            self._last_snapshot_ns = now_ns
++            try:
++                snapshot_path = self.config.snapshot_dir / "latest"
++                self.runtime.save_snapshot(snapshot_path)
++                log_event(self.state, "periodic_snapshot")
++            except Exception as e:
++                log_event(self.state, "snapshot_error", error=str(e))
++
++    def _resolve_tnn_inputs(self, tnn_id: str) -> dict[str, Any] | None:
++        """鏍规嵁 TNN 鐨?SourceRef 瑙ｆ瀽杈撳叆銆?""
++        desc = self.tnn_store.get_descriptor(tnn_id)
++        if desc is None:
++            return None
++
++        inputs = {}
++        for ref in desc.inputs:
++            try:
++                if ref.source_type == "state" and ref.source_id == "screen":
++                    sample = self.buffer.latest("screen")
++                    if sample:
++                        inputs[ref.source_id] = sample.value
++                elif ref.source_type == "state" and ref.source_id == "cursor":
++                    sample = self.buffer.latest("cursor")
++                    if sample:
++                        inputs[ref.source_id] = sample.value
++                elif ref.source_type == "world":
++                    val = getattr(self.runtime.world, ref.source_id, None)
++                    if val:
++                        inputs[ref.source_id] = val
++                elif ref.source_type == "myself":
++                    val = getattr(self.runtime.myself, ref.source_id, None)
++                    if val:
++                        inputs[ref.source_id] = val
++                elif ref.source_type == "blackboard":
++                    entries = self.runtime.blackboard.read(ref.source_id)
++                    if entries:
++                        inputs[ref.source_id] = entries[-1].payload
++                elif ref.source_type == "tnn_output":
++                    # ref.source_id format: "tnn:other_tnn.output_field"
++                    parts = ref.source_id.split(":")
++                    if len(parts) == 2:
++                        other_tnn, field = parts[0], parts[1]
++                        cached = self.graph.get_output(other_tnn, field)
++                        if cached is not None:
++                            inputs[ref.source_id] = cached
++            except Exception:
++                continue
++
++        return inputs if inputs else None
++
++
++# 鈹€鈹€ Prompt 鏋勫缓杈呭姪鍑芥暟 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
++
++
++def _build_world_update_context(runtime, hormones, buffer) -> str:
++    """鏋勫缓 LLM world 鏇存柊涓婁笅鏂囥€?""
++    return f"""銆愬綋鍓嶄笘鐣岃鐭ャ€憇cene={runtime.world.scene}, sub={runtime.world.sub_scene}
++銆愯嚜韬姸鎬併€憈ask={runtime.myself.current_task}, thinking={runtime.myself.what_im_thinking}
++銆愭縺绱犮€憑hormones.levels.summary()}
++銆愮紦鍐层€憇creens={buffer.count('screen')}, cursors={buffer.count('cursor')}"""
++
++
++def _build_myself_update_context(runtime, hormones, graph) -> str:
++    """鏋勫缓 LLM myself 鏇存柊涓婁笅鏂囥€?""
++    return f"""銆愪笘鐣屻€憇cene={runtime.world.scene}
++銆愯嚜韬€憈ask={runtime.myself.current_task}, progress={runtime.myself.task_progress}
++銆愭縺绱犮€憑hormones.levels.summary()}
++銆愬凡鍔犺浇TNN銆憑graph.list_nodes()}"""
++
++
++def _build_active_tnn_context(runtime, available, loaded, hormones) -> str:
++    """鏋勫缓 LLM active_tnn 閫夋嫨涓婁笅鏂囥€?""
++    return f"""銆愪笘鐣屻€憑runtime.world.scene}, {runtime.world.sub_scene}
++銆愯嚜韬€憑runtime.myself.current_task}
++銆愬彲鐢═NN銆憑available}
++銆愬凡鍔犺浇TNN銆憑loaded}
++銆愭縺绱犮€憑hormones.levels.summary()}"""
++
++
+ # 鈹€鈹€ 鍐呴儴 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ 
+ _RUN_ID: str = ""
+diff --git a/eve/core/safegate.py b/eve/core/safegate.py
+index 3dce487..b39794b 100644
+--- a/eve/core/safegate.py
++++ b/eve/core/safegate.py
+@@ -99,6 +99,38 @@ def reset_emergency(state: RuntimeState) -> None:
+     state.emergency_stopped = False
+ 
+ 
++# 鈹€鈹€ 浜虹被娲诲姩妫€娴?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
++
++
++def detect_human_cursor_activity(
++    last_x: int | None,
++    last_y: int | None,
++    current_x: int,
++    current_y: int,
++    threshold: int = 50,
++) -> bool:
++    """
++    妫€娴嬩袱娆″厜鏍囬噰鏍蜂箣闂存槸鍚︽湁鏄捐憲鐨勪汉绫荤Щ鍔ㄣ€?+
++    鑻?last_x/last_y 涓?None 鍒欒繑鍥?False锛堥甯т笉鍒ゅ畾锛夈€?+    """
++    if last_x is None or last_y is None:
++        return False
++    dx = current_x - last_x
++    dy = current_y - last_y
++    return (dx * dx + dy * dy) > (threshold * threshold)
++
++
++def detect_human_keyboard_activity() -> bool:
++    """
++    鍗犱綅锛氭娴嬩汉绫婚敭鐩樻椿鍔ㄣ€?+
++    褰撳墠瀹炵幇鎬绘槸杩斿洖 False銆傛湭鏉ュ彲閫氳繃杞 win32 key state
++    鎴?hook 鏉ュ疄鐜扮湡瀹為敭鐩樻椿鍔ㄦ娴嬨€?+    """
++    return False
++
++
+ # 鈹€鈹€ 鍐呴儴 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ 
+ 
+diff --git a/eve/input/capture.py b/eve/input/capture.py
+index 05d3758..eb07ad9 100644
+--- a/eve/input/capture.py
++++ b/eve/input/capture.py
+@@ -3,14 +3,14 @@ EVE Phase 2 缁熶竴鎹曡幏绠＄悊鍣ㄣ€? 
+ 绠＄悊灞忓箷鎹曡幏锛坢ss锛夊拰鍏夋爣鎹曡幏锛坧yautogui锛夌嚎绋嬶紝
+ 灏嗘暟鎹粺涓€鍐欏叆 InputBuffer 骞舵彁渚?timing 缁熻銆?-
+-涓嶅姞鍏?YOLO銆侀敭鐩樸€侀煶棰戞垨 Memory銆?+鍚屾椂妫€娴嬩汉绫婚紶鏍?閿洏娲诲姩銆? """
+ from __future__ import annotations
+ 
+ import threading
+ import time
+ from collections import deque
++from collections.abc import Callable
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
+@@ -34,6 +34,7 @@ class CaptureTiming:
+     shutdown_success: bool = False
+     screen_interval_samples: list[float] = field(default_factory=list)
+     cursor_interval_samples: list[float] = field(default_factory=list)
++    human_activity_events: int = 0
+ 
+     def compute(self, run_duration_s: float) -> CaptureTiming:
+         """鍩轰簬閲囬泦鐨勬暟鎹绠楁眹鎬荤粺璁°€?""
+@@ -52,7 +53,9 @@ class CaptureTiming:
+ 
+ 
+ class CaptureManager:
+-    """缁熶竴灞忓箷+鍏夋爣鎹曡幏锛岃緭鍑哄埌 InputBuffer銆?""
++    """缁熶竴灞忓箷+鍏夋爣鎹曡幏锛岃緭鍑哄埌 InputBuffer锛屽苟妫€娴嬩汉绫绘椿鍔ㄣ€?""
++
++    _HUMAN_CURSOR_THRESHOLD_PX = 50  # 鍏夋爣浣嶇Щ闃堝€硷紙鍍忕礌锛? 
+     def __init__(
+         self,
+@@ -60,16 +63,24 @@ class CaptureManager:
+         monitor_index: int = 1,
+         screen_fps: int = 30,
+         cursor_hz: int = 60,
++        human_activity_callback: Callable[[], None] | None = None,
+     ):
+         self._buffer = buffer
+         self._monitor_index = monitor_index
+         self._screen_interval = 1.0 / screen_fps
+         self._cursor_interval = 1.0 / cursor_hz
++        self._human_activity_callback = human_activity_callback
+ 
+         self._running = False
+         self._screen_thread: Optional[threading.Thread] = None
+         self._cursor_thread: Optional[threading.Thread] = None
+ 
++        # 浜虹被娲诲姩妫€娴嬬姸鎬?+        self._last_cursor_x: float | None = None
++        self._last_cursor_y: float | None = None
++        self._human_activity_count: int = 0
++        self._human_activity_lock = threading.Lock()
++
+         # timing 鍘熷鏁版嵁
+         self._timing = CaptureTiming()
+         self._screen_intervals: deque[float] = deque(maxlen=10000)
+@@ -84,6 +95,9 @@ class CaptureManager:
+             return
+         self._running = True
+         self._start_memory_mb = self._current_memory_mb()
++        self._last_cursor_x = None
++        self._last_cursor_y = None
++        self._human_activity_count = 0
+         self._screen_thread = threading.Thread(
+             target=self._screen_loop, daemon=True, name="eve-screen"
+         )
+@@ -114,12 +128,38 @@ class CaptureManager:
+         timing.shutdown_success = (
+             self._screen_thread is None and self._cursor_thread is None
+         )
++        timing.human_activity_events = self._human_activity_count
+         return timing
+ 
+     @property
+     def running(self) -> bool:
+         return self._running
+ 
++    @property
++    def human_activity_count(self) -> int:
++        with self._human_activity_lock:
++            return self._human_activity_count
++
++    def was_human_cursor_recent(self, window_ns: int = 1_000_000_000) -> bool:
++        """妫€鏌ユ渶杩?window_ns 鍐呮槸鍚︽湁鏄捐憲鍏夋爣浣嶇Щ銆?""
++        if self._last_cursor_x is None or self._last_cursor_y is None:
++            return False
++        latest = self._buffer.latest("cursor")
++        if latest is None:
++            return False
++        now_ns = time.monotonic_ns()
++        if now_ns - latest.timestamp_ns > window_ns:
++            return False
++        # 鏌ユ壘 window_ns 鍐呯殑鏃ф牱鏈?+        old_samples = self._buffer.range("cursor", now_ns - window_ns, now_ns)
++        if not old_samples:
++            return False
++        x0, y0 = old_samples[0].value
++        x1, y1 = latest.value
++        dx = x1 - x0
++        dy = y1 - y0
++        return (dx * dx + dy * dy) > (self._HUMAN_CURSOR_THRESHOLD_PX ** 2)
++
+     # 鈹€鈹€ 鍐呴儴 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ 
+     def _screen_loop(self) -> None:
+@@ -155,12 +195,30 @@ class CaptureManager:
+                 interval = (now_ns - self._last_cursor_ns) / 1e9
+                 self._cursor_intervals.append(interval)
+             self._last_cursor_ns = now_ns
++
++            # 浜虹被鍏夋爣娲诲姩妫€娴?+            if self._last_cursor_x is not None and self._last_cursor_y is not None:
++                dx = x - self._last_cursor_x
++                dy = y - self._last_cursor_y
++                dist = (dx * dx + dy * dy) ** 0.5
++                if dist > self._HUMAN_CURSOR_THRESHOLD_PX:
++                    self._report_human_activity()
++            self._last_cursor_x = x
++            self._last_cursor_y = y
++
+             # 棰戠巼鎺у埗
+             elapsed = (time.monotonic_ns() - t0) / 1e9
+             remaining = self._cursor_interval - elapsed
+             if remaining > 0:
+                 time.sleep(remaining)
+ 
++    def _report_human_activity(self) -> None:
++        """鎶ュ憡浜虹被娲诲姩浜嬩欢銆?""
++        with self._human_activity_lock:
++            self._human_activity_count += 1
++        if self._human_activity_callback is not None:
++            self._human_activity_callback()
++
+     @staticmethod
+     def _current_memory_mb() -> float:
+         import psutil
+diff --git a/eve/main.py b/eve/main.py
+index 16533f6..f124aab 100644
+--- a/eve/main.py
++++ b/eve/main.py
+@@ -1,123 +1,204 @@
+-"""
+-EVE Phase 1 瀹夊叏瀹為獙鍏ュ彛銆?-
+-榛樿锛?-- 涓嶅惎鍔ㄥ睆骞曟崟鑾?-- 涓嶅姞杞?YOLO
+-- 涓嶅姞杞?DeepSeek/Qwen
+-- 涓嶅紑鍚湡瀹炶緭鍑?-- 涓嶈鍙?Memory
+-- 涓嶅惎鍔?Dock
+-
+-鍔熻兘锛?-1. 鍒涘缓 RuntimeState
+-2. cold start
+-3. 鐢熸垚涓€鏉″亣 ActionCandidate
+-4. 杩愯涓€娆?mock 闂幆
+-5. 鎵撳嵃 OutputResult
+-6. 瑙﹀彂鎴栨ā鎷?Esc 鎬ュ仠
+-7. 瀹夊叏閫€鍑?-"""
++"""EVE 涓诲叆鍙?鈥?鍚姩銆佹帶鍒朵笌鐩戣銆?""
+ from __future__ import annotations
+-
+ import time
+-import uuid
+-
+-from eve.core import loop, safegate
+-from eve.state import ActionCandidate, ActionKind, OutputMode, RuntimeState
++import threading
++from pathlib import Path
++
++from eve.config import EVEConfig
++from eve.state import RuntimeState, OutputMode
++from eve.core.safegate import check, report_human_activity, emergency_stop, detect_human_cursor_activity
++from eve.core.loop import run_once, log_event
++from eve.core.runtime_state import RuntimeStateManager
++from eve.core.hormones import HormoneManager
++from eve.core.graph import TNNGraph, TNNOutputCache
++from eve.core.tnn_store import TNNStore
++from eve.core.model_adapter import LLMAdapter, VLMAdapter, YOLOAdapter
++from eve.core.prompts import (world_update_prompt, myself_update_prompt,
++                               active_tnn_selection_prompt, training_order_prompt,
++                               sleep_consolidation_prompt)
++from eve.core.sleep import SleepManager
++from eve.input.capture import CaptureManager
++from eve.input.buffer import InputBuffer
++from eve.output import mouse, keyboard, speak
++from eve.memory.memorizer import Memorizer
++from eve.memory.indexes import IndexManager
++from eve.memory.event import EventManager
++from eve.memory.retrieval import Retriever
++from eve.dock.trainer import Trainer
++from eve.dock.order import TrainingOrder
++
++
++def main():
++    """EVE 涓诲嚱鏁般€?+
++    鍚姩娴佺▼锛?+    1. 鍔犺浇閰嶇疆
++    2. 鍒濆鍖栨墍鏈夋ā鍧?+    3. 缁戝畾 GUI
++    4. 鍐峰惎鍔ㄧ瓑寰?+    5. 鍚姩澶氬惊鐜?+    6. 杩愯鐩村埌閫€鍑?+    """
++    print("=" * 60)
++    print("EVE 鈥?Digital Life Research System")
++    print("=" * 60)
++
++    # 1. Load config
++    config = EVEConfig.default()
++    print(f"[INIT] Config loaded: {config.runs_dir}")
++
++    # 2. Create runtime state
++    state = RuntimeState()
++    print("[INIT] RuntimeState created (default disabled)")
++
++    # 3. Initialize input
++    buffer = InputBuffer(retention_ns=2_000_000_000)
++    capture = CaptureManager(buffer, monitor_index=1, screen_fps=config.screen_fps)
++    print("[INIT] InputBuffer + CaptureManager ready")
++
++    # 4. Initialize runtime state manager
++    runtime_mgr = RuntimeStateManager(config)
++    print("[INIT] RuntimeStateManager ready")
++
++    # 5. Initialize Memory
++    memorizer = Memorizer(config.memory_dir)
++    memorizer.load_catalog()
++    index_mgr = IndexManager()
++    event_mgr = EventManager()
++    retriever = Retriever(memorizer, index_mgr)
++    print(f"[INIT] Memory ready (STM {len(memorizer.get_stm_ids())}, "
++          f"MTM {len(memorizer.get_mtm_ids())})")
++
++    # 6. Initialize TNN Store
++    tnn_store = TNNStore(config.tnn_weights_dir)
++    print(f"[INIT] TNN Store ready ({len(tnn_store.list_available())} TNNs)")
++
++    # 7. Initialize TNNGraph
++    output_cache = TNNOutputCache()
++    graph = TNNGraph(tnn_store, output_cache)
++    print("[INIT] TNNGraph ready")
++
++    # 8. Initialize Hormones
++    hormones = HormoneManager()
++    print("[INIT] HormoneManager ready")
++
++    # 9. Initialize model adapters (optional, may fail gracefully)
++    llm = LLMAdapter()
++    vlm = VLMAdapter()
++    yolo = YOLOAdapter()
++    model_adapters = {"llm": llm, "vlm": vlm, "yolo": yolo}
++
++    if llm.detect():
++        print(f"[INIT] LLM detected at: {llm.model_path}")
++    else:
++        print("[INIT] LLM: not available")
++    if yolo.detect():
++        print("[INIT] YOLO detected")
++
++    # 10. Initialize Dock
++    trainer = Trainer(tnn_store, memorizer)
++    print("[INIT] Dock Trainer ready")
++
++    # 11. Initialize Sleep Manager
++    sleep_mgr = SleepManager(memorizer, index_mgr, event_mgr, retriever,
++                              runtime_mgr, hormones, trainer, model_adapters)
++    print("[INIT] SleepManager ready")
++
++    # 12. Try to load previous snapshot
++    snapshot_path = config.snapshot_dir
++    snap_dir = Path(snapshot_path) / "latest"
++    if snap_dir.exists():
++        try:
++            runtime_mgr.load_snapshot(snap_dir)
++            print("[INIT] Previous snapshot loaded")
++        except Exception as e:
++            print(f"[INIT] Failed to load snapshot: {e}")
++    else:
++        print("[INIT] No previous snapshot found")
++
++    # 13. Initialize GUI
++    from eve.gui.control_panel import ControlPanel
++    gui = ControlPanel(
++        on_cold_start=lambda: _cold_start(state, capture, graph, gui),
++        on_emergency_stop=lambda: _do_emergency_stop(state, gui),
++        on_praise=lambda: _do_praise(state, hormones, gui),
++        on_criticize=lambda: _do_criticize(state, hormones, gui),
++        on_force_sleep=lambda: _do_force_sleep(state, sleep_mgr, gui),
++        on_manual_save=lambda: _do_save_snapshot(runtime_mgr, config, gui),
++    )
++    gui.bind_state(state, runtime_mgr.world, runtime_mgr.myself,
++                    runtime_mgr.blackboard, hormones, graph, tnn_store,
++                    memorizer, buffer, trainer, config)
+ 
++    # 14. Start GUI in main thread (it will block)
++    print("[READY] GUI starting. Press 'Cold Start' to begin.")
++    print("        Press Esc for emergency stop.")
++    gui.start()
+ 
+-def main() -> None:
+-    print("=" * 50)
+-    print("EVE Phase 1 鈥?鏈€灏?Mock 杩愯闂幆")
+-    print("=" * 50)
+-    print()
++    # 15. Cleanup on exit
++    print("[SHUTDOWN] Saving state...")
++    _do_save_snapshot(runtime_mgr, config, gui)
++    if capture.running:
++        capture.stop()
++    print("[SHUTDOWN] EVE stopped.")
+ 
+-    # 1. 鍒涘缓 RuntimeState锛堥粯璁?disabled锛?-    state = RuntimeState()
+-    loop.log_event(state, "runtime_start")
+-    print("[EVE] RuntimeState 宸插垱寤猴紙榛樿 disabled锛?)
+-    print()
+ 
+-    # 2. cold start
++def _cold_start(state, capture, graph, gui):
++    """鍐峰惎鍔細寮€濮嬫崟鑾枫€佸惎鐢ㄥ浘銆?""
+     state.cold_started = True
+-    loop.log_event(state, "cold_start")
+-    print("[EVE] Cold start 瀹屾垚")
+-    print()
+-
+-    # 3. 鍦烘櫙 A: disabled 妯″紡 鈥?鍔ㄤ綔搴旇闃绘柇
+-    print("鈹€鈹€ 鍦烘櫙 A: 榛樿 disabled 鈥?鍔ㄤ綔搴旇闃绘柇 鈹€鈹€")
+-    action_a = ActionCandidate(
+-        action_id=f"action_{uuid.uuid4().hex[:8]}",
+-        kind=ActionKind.MOUSE,
+-        payload={"x": 100, "y": 200, "button": "left"},
+-        origin="test_main",
+-    )
+-    result_a = loop.run_once(state, action_a)
+-    print(f"  Safegate 缁撴灉: allowed={result_a.executed}, blocked={result_a.blocked}, reason={result_a.reason}")
+-    print()
+-
+-    # 4. 鍦烘櫙 B: 鍒囨崲鍒?mock + 鎺堟潈榧犳爣
+-    print("鈹€鈹€ 鍦烘櫙 B: mock 妯″紡 + mouse 鎺堟潈 鈥?鍔ㄤ綔搴旀墽琛?鈹€鈹€")
+-    state.output_mode = OutputMode.MOCK
+-    state.mouse_allowed = True
+-    action_b = ActionCandidate(
+-        action_id=f"action_{uuid.uuid4().hex[:8]}",
+-        kind=ActionKind.MOUSE,
+-        payload={"x": 300, "y": 400, "button": "right"},
+-        origin="test_main",
+-    )
+-    result_b = loop.run_once(state, action_b)
+-    print(f"  Safegate 缁撴灉: allowed={result_b.executed}, blocked={result_b.blocked}, reason={result_b.reason}")
+-    print(f"  payload={result_b.payload}")
+-    print()
+-
+-    # 5. 鍦烘櫙 C: 妯℃嫙浜虹被鎺ョ 鈫?鍐荤粨閿紶
+-    print("鈹€鈹€ 鍦烘櫙 C: 浜虹被鎺ョ鍐荤粨 5 绉?鈹€鈹€")
+-    safegate.report_human_activity(state)
+-    loop.log_event(state, "human_takeover")
+-    print(f"  blocked_until_ns 宸茶缃?)
+-    action_c = ActionCandidate(
+-        action_id=f"action_{uuid.uuid4().hex[:8]}",
+-        kind=ActionKind.MOUSE,
+-        payload={"x": 500, "y": 600},
+-        origin="test_main",
+-    )
+-    result_c = loop.run_once(state, action_c)
+-    print(f"  Safegate 缁撴灉: allowed={result_c.executed}, blocked={result_c.blocked}, reason={result_c.reason}")
+-    print()
+-
+-    # 6. 鍦烘櫙 D: emergency stop
+-    print("鈹€鈹€ 鍦烘櫙 D: emergency stop 鈹€鈹€")
+-    safegate.emergency_stop(state)
+-    loop.log_event(state, "emergency_stop")
+-    action_d = ActionCandidate(
+-        action_id=f"action_{uuid.uuid4().hex[:8]}",
+-        kind=ActionKind.SPEAK,
+-        payload={"text": "hello"},
+-        origin="test_main",
+-    )
+-    result_d = loop.run_once(state, action_d)
+-    print(f"  Safegate 缁撴灉: allowed={result_d.executed}, blocked={result_d.blocked}, reason={result_d.reason}")
+-    print()
+-
+-    # 7. 杈撳嚭瀹屾暣 state 鎽樿
+-    print("鈹€鈹€ 杩愯鏃剁姸鎬佹憳瑕?鈹€鈹€")
+-    print(f"  cold_started:     {state.cold_started}")
+-    print(f"  emergency_stopped:  {state.emergency_stopped}")
+-    print(f"  output_mode:        {state.output_mode.value}")
+-    print(f"  mouse_allowed:      {state.mouse_allowed}")
+-    print(f"  keyboard_allowed:   {state.keyboard_allowed}")
+-    print(f"  speak_allowed:      {state.speak_allowed}")
+-    print(f"  blocked_until_ns:   {state.blocked_until_ns}")
+-    print()
+-
+-    # 8. 瀹夊叏閫€鍑?-    loop.log_event(state, "runtime_stop")
+-    print("=" * 50)
+-    print("EVE Phase 1 瀹為獙瀹屾垚锛屽畨鍏ㄩ€€鍑恒€?)
+-    print(f"鏃ュ織鍐欏叆: runs/phase1/")
+-    print("=" * 50)
++    capture.start()
++    graph.start()
++    log_event(state, "cold_start")
++    print("[EVE] Cold start complete. Capture running.")
++    gui.add_log("Cold start complete")
++
++
++def _do_emergency_stop(state, gui):
++    """瑙﹀彂绱ф€ュ仠姝€?""
++    emergency_stop(state)
++    log_event(state, "emergency_stop")
++    print("[EVE] EMERGENCY STOP triggered!")
++    gui.add_log("EMERGENCY STOP triggered!")
++
++
++def _do_praise(state, hormones, gui):
++    """鐢ㄦ埛琛ㄦ壃 EVE銆?""
++    hormones.apply_event("user_praise", intensity=1.0, description="User praised EVE")
++    log_event(state, "user_praise")
++    print("[EVE] User praised EVE")
++    gui.add_log("User praise applied")
++
++
++def _do_criticize(state, hormones, gui):
++    """鐢ㄦ埛鎵硅瘎 EVE銆?""
++    hormones.apply_event("user_critique", intensity=1.0, description="User criticized EVE")
++    log_event(state, "user_critique")
++    print("[EVE] User criticized EVE")
++    gui.add_log("User critique applied")
++
++
++def _do_force_sleep(state, sleep_mgr, gui):
++    """寮哄埗瑙﹀彂鐫＄湢鍛ㄦ湡銆?""
++    if not sleep_mgr.is_sleeping:
++        gui.add_log("Entering forced sleep...")
++        sleep_mgr.enter_sleep(state)
++        result = sleep_mgr.run_sleep_cycle()
++        sleep_mgr.wake_up(state)
++        gui.add_log(f"Forced sleep cycle completed: {result}")
++    else:
++        gui.add_log("Already sleeping, skipping force sleep")
++
++
++def _do_save_snapshot(runtime_mgr, config, gui):
++    """淇濆瓨褰撳墠鐘舵€佸揩鐓с€?""
++    snapshot_path = Path(config.snapshot_dir) / "latest"
++    try:
++        runtime_mgr.save_snapshot(snapshot_path)
++        print(f"[EVE] Snapshot saved to {snapshot_path}")
++        gui.add_log(f"Snapshot saved to {snapshot_path}")
++    except Exception as e:
++        print(f"[EVE] Snapshot save failed: {e}")
++        gui.add_log(f"Snapshot save failed: {e}")
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/eve/output/keyboard.py b/eve/output/keyboard.py
+index b5ce133..5f8f02f 100644
+--- a/eve/output/keyboard.py
++++ b/eve/output/keyboard.py
+@@ -1,7 +1,7 @@
+ """
+-EVE 閿洏杈撳嚭 鈥?浠呮敮鎸?disabled / mock 妯″紡銆?+EVE 閿洏杈撳嚭 鈥?鏀寔 disabled / mock / real 妯″紡銆? 
+-涓嶈皟鐢?keyboard.press/write銆丼endInput 鎴栦换浣曠湡瀹炵郴缁熸帶鍒?API銆?+REAL 妯″紡閫氳繃 pyautogui 鎵ц鐪熷疄绯荤粺璋冪敤锛屼粎鍦ㄦā寮忎负 REAL 鏃跺鍏ャ€? """
+ from __future__ import annotations
+ 
+@@ -32,15 +32,106 @@ def execute(
+             reason="output_disabled",
+         )
+ 
+-    return OutputResult(
+-        action_id=action_id,
+-        kind="keyboard",
+-        mode=mode.value,
+-        started_at_ns=started_ns,
+-        finished_at_ns=time.monotonic_ns(),
+-        executed=False,
+-        simulated=True,
+-        blocked=False,
+-        reason="mock_ok",
+-        payload=dict(payload),
+-    )
++    if mode == OutputMode.MOCK:
++        return OutputResult(
++            action_id=action_id,
++            kind="keyboard",
++            mode=mode.value,
++            started_at_ns=started_ns,
++            finished_at_ns=time.monotonic_ns(),
++            executed=False,
++            simulated=True,
++            blocked=False,
++            reason="mock_ok",
++            payload=dict(payload),
++        )
++
++    # REAL 妯″紡锛氫粎鍦ㄦ鏃跺鍏?pyautogui
++    return _execute_real(action_id, payload, started_ns)
++
++
++def _execute_real(
++    action_id: str,
++    payload: dict[str, Any],
++    started_ns: int,
++) -> OutputResult:
++    import pyautogui
++
++    pyautogui.FAILSAFE = False
++
++    action = payload.get("action", "press")
++    result_payload: dict[str, Any] = {}
++
++    try:
++        if action == "press":
++            keys = payload.get("keys", [])
++            if isinstance(keys, str):
++                keys = [keys]
++            for key in keys:
++                pyautogui.keyDown(key)
++            for key in reversed(keys):
++                pyautogui.keyUp(key)
++            result_payload = {"keys": keys}
++
++        elif action == "write":
++            text = payload.get("text", "")
++            interval = payload.get("interval", 0.0)
++            pyautogui.write(text, interval=interval)
++            result_payload = {"text": text, "interval": interval}
++
++        elif action == "hotkey":
++            keys = payload.get("keys", [])
++            if isinstance(keys, str):
++                keys = [keys]
++            pyautogui.hotkey(*keys)
++            result_payload = {"keys": list(keys)}
++
++        elif action == "keyDown":
++            key = payload.get("key", "")
++            pyautogui.keyDown(key)
++            result_payload = {"key": key}
++
++        elif action == "keyUp":
++            key = payload.get("key", "")
++            pyautogui.keyUp(key)
++            result_payload = {"key": key}
++
++        else:
++            return OutputResult(
++                action_id=action_id,
++                kind="keyboard",
++                mode="real",
++                started_at_ns=started_ns,
++                finished_at_ns=time.monotonic_ns(),
++                executed=False,
++                simulated=False,
++                blocked=True,
++                reason=f"unknown_action_{action}",
++            )
++
++        return OutputResult(
++            action_id=action_id,
++            kind="keyboard",
++            mode="real",
++            started_at_ns=started_ns,
++            finished_at_ns=time.monotonic_ns(),
++            executed=True,
++            simulated=False,
++            blocked=False,
++            reason="real_ok",
++            payload=result_payload,
++        )
++
++    except Exception as exc:
++        return OutputResult(
++            action_id=action_id,
++            kind="keyboard",
++            mode="real",
++            started_at_ns=started_ns,
++            finished_at_ns=time.monotonic_ns(),
++            executed=False,
++            simulated=False,
++            blocked=True,
++            reason=f"real_error_{exc}",
++            payload=result_payload,
++        )
+diff --git a/eve/output/mouse.py b/eve/output/mouse.py
+index 82a1e5d..9ae8675 100644
+--- a/eve/output/mouse.py
++++ b/eve/output/mouse.py
+@@ -1,7 +1,7 @@
+ """
+-EVE 榧犳爣杈撳嚭 鈥?浠呮敮鎸?disabled / mock 妯″紡銆?+EVE 榧犳爣杈撳嚭 鈥?鏀寔 disabled / mock / real 妯″紡銆? 
+-涓嶈皟鐢?pyautogui.click/moveTo銆丼endInput 鎴栦换浣曠湡瀹炵郴缁熸帶鍒?API銆?+REAL 妯″紡閫氳繃 pyautogui 鎵ц鐪熷疄绯荤粺璋冪敤锛屼粎鍦ㄦā寮忎负 REAL 鏃跺鍏ャ€? """
+ from __future__ import annotations
+ 
+@@ -32,16 +32,131 @@ def execute(
+             reason="output_disabled",
+         )
+ 
+-    # mock 妯″紡锛氬彧璁板綍鏈潵瑕佹墽琛岀殑鍔ㄤ綔锛屼笉鐪熷疄鎵ц
+-    return OutputResult(
+-        action_id=action_id,
+-        kind="mouse",
+-        mode=mode.value,
+-        started_at_ns=started_ns,
+-        finished_at_ns=time.monotonic_ns(),
+-        executed=False,
+-        simulated=True,
+-        blocked=False,
+-        reason="mock_ok",
+-        payload=dict(payload),
+-    )
++    if mode == OutputMode.MOCK:
++        return OutputResult(
++            action_id=action_id,
++            kind="mouse",
++            mode=mode.value,
++            started_at_ns=started_ns,
++            finished_at_ns=time.monotonic_ns(),
++            executed=False,
++            simulated=True,
++            blocked=False,
++            reason="mock_ok",
++            payload=dict(payload),
++        )
++
++    # REAL 妯″紡锛氫粎鍦ㄦ鏃跺鍏?pyautogui
++    return _execute_real(action_id, payload, started_ns)
++
++
++def _execute_real(
++    action_id: str,
++    payload: dict[str, Any],
++    started_ns: int,
++) -> OutputResult:
++    import pyautogui
++
++    pyautogui.FAILSAFE = False
++
++    action = payload.get("action", "move")
++    result_payload: dict[str, Any] = {}
++
++    try:
++        if action == "moveTo":
++            x, y = payload.get("x", 0), payload.get("y", 0)
++            duration = payload.get("duration", 0.0)
++            pyautogui.moveTo(x, y, duration=duration)
++            result_payload = {"x": x, "y": y, "duration": duration}
++
++        elif action == "moveRel":
++            dx, dy = payload.get("dx", 0), payload.get("dy", 0)
++            duration = payload.get("duration", 0.0)
++            pyautogui.moveRel(dx, dy, duration=duration)
++            result_payload = {"dx": dx, "dy": dy, "duration": duration}
++
++        elif action == "click":
++            x = payload.get("x")
++            y = payload.get("y")
++            button = payload.get("button", "left")
++            clicks = payload.get("clicks", 1)
++            if x is not None and y is not None:
++                pyautogui.click(x, y, clicks=clicks, button=button)
++                result_payload = {"x": x, "y": y, "button": button, "clicks": clicks}
++            else:
++                pyautogui.click(clicks=clicks, button=button)
++                result_payload = {"button": button, "clicks": clicks}
++
++        elif action == "doubleClick":
++            x = payload.get("x")
++            y = payload.get("y")
++            button = payload.get("button", "left")
++            if x is not None and y is not None:
++                pyautogui.doubleClick(x, y, button=button)
++                result_payload = {"x": x, "y": y, "button": button}
++            else:
++                pyautogui.doubleClick(button=button)
++                result_payload = {"button": button}
++
++        elif action == "drag":
++            x1, y1 = payload.get("x1", 0), payload.get("y1", 0)
++            x2, y2 = payload.get("x2", 0), payload.get("y2", 0)
++            duration = payload.get("duration", 0.5)
++            pyautogui.moveTo(x1, y1)
++            pyautogui.drag(x2 - x1, y2 - y1, duration=duration)
++            result_payload = {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "duration": duration}
++
++        elif action == "scroll":
++            clicks = payload.get("clicks", 1)
++            pyautogui.scroll(clicks)
++            result_payload = {"clicks": clicks}
++
++        elif action == "rightClick":
++            x = payload.get("x")
++            y = payload.get("y")
++            if x is not None and y is not None:
++                pyautogui.rightClick(x, y)
++                result_payload = {"x": x, "y": y}
++            else:
++                pyautogui.rightClick()
++                result_payload = {}
++
++        else:
++            return OutputResult(
++                action_id=action_id,
++                kind="mouse",
++                mode="real",
++                started_at_ns=started_ns,
++                finished_at_ns=time.monotonic_ns(),
++                executed=False,
++                simulated=False,
++                blocked=True,
++                reason=f"unknown_action_{action}",
++            )
++
++        return OutputResult(
++            action_id=action_id,
++            kind="mouse",
++            mode="real",
++            started_at_ns=started_ns,
++            finished_at_ns=time.monotonic_ns(),
++            executed=True,
++            simulated=False,
++            blocked=False,
++            reason="real_ok",
++            payload=result_payload,
++        )
++
++    except Exception as exc:
++        return OutputResult(
++            action_id=action_id,
++            kind="mouse",
++            mode="real",
++            started_at_ns=started_ns,
++            finished_at_ns=time.monotonic_ns(),
++            executed=False,
++            simulated=False,
++            blocked=True,
++            reason=f"real_error_{exc}",
++            payload=result_payload,
++        )
+diff --git a/eve/output/speak.py b/eve/output/speak.py
+index 9c1d5fe..64919c3 100644
+--- a/eve/output/speak.py
++++ b/eve/output/speak.py
+@@ -1,7 +1,7 @@
+ """
+-EVE 璇煶杈撳嚭 鈥?浠呮敮鎸?disabled / mock 妯″紡銆?+EVE 璇煶杈撳嚭 鈥?鏀寔 disabled / mock / real 妯″紡銆? 
+-涓嶈皟鐢?TTS 鎾斁銆乻ounddevice 鎴栦换浣曠湡瀹為煶棰?API銆?+REAL 妯″紡鎺ュ彛宸插氨缁絾灏氭湭瀹炵幇 TTS 鍚庣銆? """
+ from __future__ import annotations
+ 
+@@ -32,15 +32,38 @@ def execute(
+             reason="output_disabled",
+         )
+ 
++    if mode == OutputMode.MOCK:
++        return OutputResult(
++            action_id=action_id,
++            kind="speak",
++            mode=mode.value,
++            started_at_ns=started_ns,
++            finished_at_ns=time.monotonic_ns(),
++            executed=False,
++            simulated=True,
++            blocked=False,
++            reason="mock_ok",
++            payload=dict(payload),
++        )
++
++    # REAL 妯″紡锛氭帴鍙ｅ氨缁紝TTS 鍚庣灏氭湭瀹炵幇
++    return _execute_real(action_id, payload, started_ns)
++
++
++def _execute_real(
++    action_id: str,
++    payload: dict[str, Any],
++    started_ns: int,
++) -> OutputResult:
+     return OutputResult(
+         action_id=action_id,
+         kind="speak",
+-        mode=mode.value,
++        mode="real",
+         started_at_ns=started_ns,
+         finished_at_ns=time.monotonic_ns(),
+         executed=False,
+-        simulated=True,
+-        blocked=False,
+-        reason="mock_ok",
+-        payload=dict(payload),
++        simulated=False,
++        blocked=True,
++        reason="real_unimplemented_no_tts_backend",
++        payload={"text": payload.get("text", ""), "error": "TTS backend not implemented"},
+     )
+diff --git a/eve/state.py b/eve/state.py
+index d14a974..6d43b05 100644
+--- a/eve/state.py
++++ b/eve/state.py
+@@ -1,7 +1,8 @@
+ """
+-EVE Phase 1 鏈€灏忚繍琛屾椂鐘舵€佷笌鏁版嵁缁撴瀯銆?+EVE 杩愯鏃剁姸鎬佷笌鏁版嵁缁撴瀯銆? 
+-鍙寘鍚湰闃舵闇€瑕佺殑瀛楁锛屼笉寮曞叆 world/myself/blackboard/Memory/TNN/婵€绱犮€?+鍖呭惈 ActionCandidate銆丼afegateResult銆丱utputResult銆丷untimeState銆?+浠ュ強 Phase 2-4 鏂板鐨?WorldState銆丮yselfState銆丅lackboard銆乀imedEntry銆? """
+ from __future__ import annotations
+ 
+@@ -16,6 +17,7 @@ from typing import Any
+ class OutputMode(str, Enum):
+     DISABLED = "disabled"
+     MOCK = "mock"
++    REAL = "real"
+ 
+ 
+ class ActionKind(str, Enum):
+@@ -24,7 +26,7 @@ class ActionKind(str, Enum):
+     SPEAK = "speak"
+ 
+ 
+-# 鈹€鈹€ 鏁版嵁缁撴瀯 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
++# 鈹€鈹€ 鏍稿績鏁版嵁缁撴瀯 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+ 
+ 
+ @dataclass
+@@ -58,12 +60,12 @@ class SafegateResult:
+ class OutputResult:
+     """杈撳嚭鎵ц缁撴灉銆? 
+-    executed:  鐢佃剳涓婄湡瀹炲彂鐢熶簡鍔ㄤ綔锛堜粎鏈潵 real 妯″紡涓?True锛?+    executed:  鐢佃剳涓婄湡瀹炲彂鐢熶簡鍔ㄤ綔锛坮eal 妯″紡涓?True锛?     simulated: Mock 鍚庣澶勭悊浜嗗姩浣滀絾鏈湡瀹炴墽琛?     涓夌鐘舵€侊細
+       disabled/闃绘柇 鈫?executed=False, simulated=False
+       mock          鈫?executed=False, simulated=True
+-      鏈潵real      鈫?executed=True,  simulated=False
++      real          鈫?executed=True,  simulated=False
+     """
+     action_id: str
+     kind: str
+@@ -79,7 +81,7 @@ class OutputResult:
+ 
+ @dataclass
+ class RuntimeState:
+-    """Phase 1 鏈€灏忚繍琛屾椂鐘舵€併€?""
++    """EVE 杩愯鏃剁姸鎬併€?""
+     cold_started: bool = False
+     emergency_stopped: bool = False
+     output_mode: OutputMode = OutputMode.DISABLED
+@@ -89,9 +91,103 @@ class RuntimeState:
+     blocked_until_ns: int = 0
+     # EVE 棰勬湡浜х敓鐨勯紶鏍?閿洏浜嬩欢 ID 闆嗗悎锛堢敤浜庡尯鍒?EVE-origin 涓庝汉绫绘帴绠★級
+     eve_expected_events: set[str] = field(default_factory=set)
+-    # 褰撳墠鍋?state锛圥hase 1 闃舵鐢ㄤ竴涓畝鍗?dict 鍗犱綅锛?+    # 褰撳墠鍋?state锛堢敤涓€涓畝鍗?dict 鍗犱綅锛?     current_state: dict[str, Any] = field(default_factory=dict)
+     # pending 鍔ㄤ綔
+     pending_action: ActionCandidate | None = None
+     # 鏈€杩戜竴娆¤緭鍑虹粨鏋?     latest_output: OutputResult | None = None
++    # Phase 2-4: 浜虹被娲诲姩妫€娴?+    human_activity_detected_at_ns: int = 0
++
++
++# 鈹€鈹€ Phase 2-4 鏂板 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
++
++
++@dataclass
++class TimedEntry:
++    """Blackboard 涓殑涓€椤圭粨鏋溿€?""
++    entry_id: str
++    kind: str          # 缁撴灉绫诲瀷鏍囪瘑
++    producer: str      # 璋佷骇鐢熺殑
++    produced_at_ns: int
++    valid_until_ns: int  # 0 = 姘镐笉杩囨湡
++    payload: Any = None
++
++    def __post_init__(self):
++        if self.produced_at_ns == 0:
++            self.produced_at_ns = time.monotonic_ns()
++
++
++@dataclass
++class WorldState:
++    """EVE 瀵瑰閮ㄤ笘鐣岀殑璁よ瘑銆?""
++    scene: str = ""
++    sub_scene: str = ""
++    active_window: str = ""
++    visible_objects: list[str] = field(default_factory=list)
++    detected_text: str = ""
++    visual_results: dict[str, Any] = field(default_factory=dict)
++    uncertainty: str = ""
++    updated_at_ns: int = 0
++
++
++@dataclass
++class MyselfState:
++    """EVE 瀵硅嚜韬姸鎬佺殑璁よ瘑銆?""
++    what_im_thinking: str = ""
++    current_task: str = ""
++    task_progress: str = ""
++    loaded_tnn: list[str] = field(default_factory=list)
++    available_tnn_summary: list[str] = field(default_factory=list)
++    resource_status: dict[str, Any] = field(default_factory=dict)
++    hormone_levels: dict[str, float] = field(default_factory=dict)
++    tendencies: dict[str, float] = field(default_factory=dict)
++    control_summary: str = ""
++    updated_at_ns: int = 0
++
++
++@dataclass
++class Blackboard:
++    """涓嶅悓棰戠巼鑺傜偣浜ゆ崲涓存椂缁撴灉鐨勫叡浜尯銆?""
++    entries: dict[str, list[TimedEntry]] = field(default_factory=dict)
++
++    def write(self, entry: TimedEntry) -> None:
++        """鍐欏叆涓€椤圭粨鏋溿€?""
++        if entry.kind not in self.entries:
++            self.entries[entry.kind] = []
++        self.entries[entry.kind].append(entry)
++
++    def read(self, kind: str, producer: str | None = None) -> list[TimedEntry]:
++        """璇诲彇鎸囧畾绫诲瀷鐨勭粨鏋滐紝鑷姩娓呴櫎杩囨湡椤广€?""
++        entries = self.entries.get(kind, [])
++        now_ns = time.monotonic_ns()
++        result: list[TimedEntry] = []
++        kept: list[TimedEntry] = []
++        for e in entries:
++            expired = e.valid_until_ns > 0 and now_ns > e.valid_until_ns
++            if expired:
++                continue
++            kept.append(e)
++            if producer is None or e.producer == producer:
++                result.append(e)
++        self.entries[kind] = kept
++        return result
++
++    def latest(self, kind: str) -> TimedEntry | None:
++        """鑾峰彇鏈€鏂颁笉瓒呮湡鐨勭粨鏋溿€?""
++        entries = self.read(kind)
++        return entries[-1] if entries else None
++
++    def clear_expired(self) -> None:
++        """娓呴櫎鎵€鏈夎繃鏈熼」銆?""
++        now_ns = time.monotonic_ns()
++        for kind in list(self.entries.keys()):
++            kept = [
++                e for e in self.entries[kind]
++                if e.valid_until_ns == 0 or now_ns <= e.valid_until_ns
++            ]
++            if kept:
++                self.entries[kind] = kept
++            else:
++                del self.entries[kind]
