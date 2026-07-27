@@ -31,6 +31,23 @@ class ActionCandidate:
     created_at_ns: int = field(default_factory=time.monotonic_ns)
     valid_until_ns: int = 0
     origin: str = ""
+    observed_at_ns: int = 0
+
+    @property
+    def candidate_id(self) -> str:
+        return self.action_id
+
+    @property
+    def source(self) -> str:
+        return self.origin
+
+    @property
+    def action_type(self) -> str:
+        return self.kind.value
+
+    @property
+    def generated_at_ns(self) -> int:
+        return self.created_at_ns
 
 
 @dataclass(frozen=True)
@@ -122,10 +139,26 @@ class RuntimeState:
     loaded_tnn: dict[str, Any] = field(default_factory=dict)
     last_run_ns: dict[str, int] = field(default_factory=dict)
     tnn_outputs: dict[str, dict[str, TimedValue]] = field(default_factory=dict)
+    tnn_status: dict[str, str] = field(default_factory=dict)
+    loop_status: dict[str, Any] = field(default_factory=dict)
+    resource_status: dict[str, Any] = field(default_factory=dict)
+    runtime_stats: dict[str, int] = field(default_factory=dict)
     latest_output: OutputResult | None = None
     latest_error: RuntimeErrorRecord | None = None
     memory_ids: list[str] = field(default_factory=list)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    @property
+    def active_tnn(self) -> set[str]:
+        return self.myself.active_tnn
+
+    @property
+    def permissions(self) -> dict[str, bool]:
+        return {
+            "mouse": self.mouse_allowed,
+            "keyboard": self.keyboard_allowed,
+            "speak": self.speak_allowed,
+        }
 
     def publish(self, key: str, value: TimedValue) -> None:
         with self._lock:
@@ -146,6 +179,12 @@ class RuntimeState:
             if any(item.action_id == action.action_id for item in self.action_queue):
                 return False
             self.action_queue.append(action)
+            self.blackboard["latest_action_candidate"] = TimedValue(
+                value=action,
+                produced_at_ns=action.created_at_ns,
+                valid_until_ns=action.valid_until_ns,
+                producer=action.origin,
+            )
             return True
 
     def consume_action(self) -> ActionCandidate | None:
@@ -170,6 +209,16 @@ class RuntimeState:
                 )
                 for name, value in outputs.items()
             }
+            self.blackboard["latest_tnn_output"] = TimedValue(
+                value={"tnn_id": tnn_id, "outputs": outputs},
+                produced_at_ns=now_ns,
+                valid_until_ns=now_ns + ttl_ns if ttl_ns else 0,
+                producer=tnn_id,
+            )
+
+    def increment_stat(self, name: str, amount: int = 1) -> None:
+        with self._lock:
+            self.runtime_stats[name] = self.runtime_stats.get(name, 0) + amount
 
     def save_snapshot(self, path: str | Path) -> None:
         destination = Path(path)

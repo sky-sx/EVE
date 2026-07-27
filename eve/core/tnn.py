@@ -9,9 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-import torch
-
-from eve.dock.tinynn import TinyNN
 from eve.state import ActionCandidate, ActionKind, RuntimeState
 
 
@@ -56,19 +53,27 @@ class TNN(Protocol):
         ...
 
 
-def load_tnn(state: RuntimeState, node: TNN) -> None:
+def load_tnn(
+    state: RuntimeState,
+    node: TNN,
+    *,
+    activate: bool = True,
+) -> None:
     descriptor = node.descriptor
     if descriptor.tnn_id in state.loaded_tnn:
         raise ValueError(f"TNN already loaded: {descriptor.tnn_id}")
     if descriptor.run_frequency_hz <= 0:
         raise ValueError("run_frequency_hz must be positive")
     state.loaded_tnn[descriptor.tnn_id] = node
-    state.myself.active_tnn.add(descriptor.tnn_id)
+    state.tnn_status[descriptor.tnn_id] = "loaded"
+    if activate:
+        state.myself.active_tnn.add(descriptor.tnn_id)
 
 
 def unload_tnn(state: RuntimeState, tnn_id: str) -> None:
     state.loaded_tnn.pop(tnn_id, None)
     state.myself.active_tnn.discard(tnn_id)
+    state.tnn_status[tnn_id] = "unloaded"
     state.last_run_ns.pop(tnn_id, None)
     state.tnn_outputs.pop(tnn_id, None)
 
@@ -121,6 +126,7 @@ def run_node(
     if inputs is None:
         return None
     outputs = node.run(inputs)
+    state.increment_stat("tnn_invocations")
     unknown = set(outputs) - set(descriptor.outputs)
     if unknown:
         raise ValueError(f"{tnn_id} produced undeclared outputs: {sorted(unknown)}")
@@ -135,6 +141,18 @@ def run_node(
         action_id = str(action_data.get("action_id", f"{tnn_id}:{now_ns}"))
         kind = ActionKind(action_data["kind"])
         horizon_ns = int(action_data.get("horizon_ns", descriptor.output_ttl_ns))
+        observed_times: list[int] = []
+        for reference in descriptor.inputs.values():
+            source, key, field_name = reference.parts()
+            if source == "state":
+                sample = input_buffer.latest(key)
+                if sample is not None:
+                    observed_times.append(sample.timestamp_ns)
+            elif source == "tnn" and field_name is not None:
+                timed = state.tnn_outputs.get(key, {}).get(field_name)
+                if timed is not None:
+                    observed_times.append(timed.produced_at_ns)
+        observed_at_ns = max(observed_times, default=now_ns)
         state.enqueue_action(
             ActionCandidate(
                 action_id=action_id,
@@ -143,6 +161,7 @@ def run_node(
                 created_at_ns=now_ns,
                 valid_until_ns=now_ns + horizon_ns if horizon_ns else 0,
                 origin=tnn_id,
+                observed_at_ns=observed_at_ns,
             )
         )
     return outputs
@@ -191,6 +210,8 @@ class TrainedTNNNode:
         output_ttl_ns: int,
         action_output: str | None,
     ) -> None:
+        import torch
+
         self.model = model
         self.device = next(
             model.parameters(),
@@ -206,6 +227,8 @@ class TrainedTNNNode:
         )
 
     def run(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        import torch
+
         prepared: dict[str, Any] = {}
         for name, value in inputs.items():
             schema = self.model.get_input_schema().get(name, {})
@@ -223,6 +246,8 @@ class TrainedTNNNode:
 
 
 def _import_runtime_model(model_path: str | Path, factory: str) -> TinyNN:
+    from eve.dock.tinynn import TinyNN
+
     path = Path(model_path).resolve()
     module_name = f"_eve_runtime_tnn_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -250,7 +275,7 @@ def load_tnn_runtime(
     tnn_id: str,
     version: str | None = None,
     *,
-    device: str | torch.device = "cpu",
+    device: Any = "cpu",
     input_refs: dict[str, SourceRef | str] | None = None,
     run_frequency_hz: float = 1.0,
     output_ttl_ns: int = 1_000_000_000,
@@ -258,6 +283,8 @@ def load_tnn_runtime(
     factory: str = "create_tnn",
 ) -> TrainedTNNNode:
     """Create the sole live instance from a cataloged, persisted artifact."""
+    import torch
+
     artifact = memorizer.resolve_tnn_artifact(tnn_id, version)
     model = _import_runtime_model(artifact["model_path"], factory)
     resolved_device = torch.device(device)
@@ -287,6 +314,8 @@ def load_tnn_runtime(
 
 def unload_tnn_runtime(state: RuntimeState, tnn_id: str) -> None:
     """Detach one trained node, clear its cached state, and release its device."""
+    import torch
+
     node = state.loaded_tnn.get(tnn_id)
     unload_tnn(state, tnn_id)
     if isinstance(node, TrainedTNNNode):

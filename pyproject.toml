@@ -1,8 +1,13 @@
 [project]
 name = "eve-minimal-reflex-kernel"
 version = "0.1.0"
-description = "Synthetic-only EVE realtime reflex kernel prototype."
+description = "Safe EVE reflex runtime with smoke and real-input observe profiles."
 requires-python = ">=3.11"
+dependencies = [
+    "mss>=9.0",
+    "numpy>=1.24",
+    "torch>=2.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

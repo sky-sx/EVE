@@ -25,6 +25,7 @@ from eve.state import (
     OutputResult,
     RuntimeErrorRecord,
     RuntimeState,
+    TimedValue,
 )
 
 
@@ -60,12 +61,33 @@ def run_once(
 ) -> OutputResult:
     """Synchronous safe action chain retained for focused tests and callers."""
     decision = safegate.check(state, action)
+    state.publish(
+        "latest_safegate_result",
+        TimedValue(
+            value=decision,
+            produced_at_ns=decision.checked_at_ns,
+            producer="safegate",
+        ),
+    )
+    state.increment_stat(
+        "safegate_allowed" if decision.allowed else "safegate_blocked"
+    )
     result = (
         _dispatch_output(action, state.output_mode)
         if decision.allowed
         else _blocked_result(state, action, decision.reason)
     )
     state.latest_output = result
+    state.publish(
+        "latest_output_feedback",
+        TimedValue(
+            value=result,
+            produced_at_ns=result.finished_at_ns,
+            producer="output",
+        ),
+    )
+    if result.simulated:
+        state.increment_stat("mock_outputs")
     log_event(
         log_dir,
         "action_result",
@@ -107,7 +129,10 @@ class CoreLoop:
         self.interval_s = interval_s
         self.runtime_device = runtime_device
         self._stop_event = threading.Event()
+        self._failed_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._started_at_ns = 0
+        self._last_input_snapshot_ns = time.monotonic_ns()
 
     def load_tnn_runtime(
         self,
@@ -142,10 +167,18 @@ class CoreLoop:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def failed(self) -> bool:
+        return self._failed_event.is_set()
+
     def start(self) -> None:
         if self.running:
             return
         self._stop_event.clear()
+        self._failed_event.clear()
+        self._started_at_ns = time.monotonic_ns()
+        self._last_input_snapshot_ns = self._started_at_ns
+        self.state.loop_status["core"] = "running"
         self._thread = threading.Thread(target=self._run, name="eve-core")
         self._thread.start()
         log_event(self.log_dir, "core_started")
@@ -159,7 +192,22 @@ class CoreLoop:
         if thread.is_alive():
             raise RuntimeError("core thread did not stop")
         self._thread = None
+        self.state.loop_status["core"] = "failed" if self.failed else "stopped"
         log_event(self.log_dir, "core_stopped")
+
+    def stats(self) -> dict[str, float | int]:
+        duration_s = max(
+            (time.monotonic_ns() - self._started_at_ns) / 1_000_000_000,
+            1e-9,
+        )
+        iterations = self.state.runtime_stats.get("core_iterations", 0)
+        return {
+            "iterations": iterations,
+            "loop_hz": iterations / duration_s,
+            "tnn_invocations": self.state.runtime_stats.get(
+                "tnn_invocations", 0
+            ),
+        }
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -171,15 +219,32 @@ class CoreLoop:
                     "core",
                     exc,
                     {"cold_started": self.state.cold_started},
-                    "iteration_skipped_no_real_output",
+                    "core_stopped_no_real_output",
+                    critical=True,
                 )
+            if self.failed:
+                self._stop_event.set()
             elapsed_s = (time.monotonic_ns() - started_ns) / 1_000_000_000
             self._stop_event.wait(max(0.001, self.interval_s - elapsed_s))
 
     def step(self, now_ns: int | None = None) -> list[OutputResult]:
-        if not self.state.cold_started or self.state.myself.sleep_requested:
+        if (
+            not self.state.cold_started
+            or self.state.myself.sleep_requested
+            or self.state.emergency_stopped
+        ):
             return []
         now_ns = time.monotonic_ns() if now_ns is None else now_ns
+        self.state.increment_stat("core_iterations")
+        self.state.publish(
+            "latest_input_summary",
+            TimedValue(
+                value=self._input_summary(),
+                produced_at_ns=now_ns,
+                producer="input_buffer",
+            ),
+        )
+        self._maybe_remember_input(now_ns)
         for tnn_id in due_tnn_ids(self.state, now_ns):
             try:
                 outputs = run_node(self.state, self.input_buffer, tnn_id, now_ns)
@@ -192,11 +257,13 @@ class CoreLoop:
                     )
             except Exception as exc:
                 self.state.myself.active_tnn.discard(tnn_id)
+                self.state.tnn_status[tnn_id] = "failed"
                 self._record_error(
                     f"tnn:{tnn_id}",
                     exc,
                     {"tnn_id": tnn_id},
                     "node_paused_no_output",
+                    critical=True,
                 )
 
         results: list[OutputResult] = []
@@ -214,6 +281,7 @@ class CoreLoop:
                     exc,
                     {"action_id": action.action_id, "kind": action.kind.value},
                     "action_failed_no_retry",
+                    critical=True,
                 )
         self.state.myself.settle_hormones()
         return results
@@ -222,41 +290,30 @@ class CoreLoop:
         self, action: ActionCandidate, result: OutputResult
     ) -> None:
         try:
-            snapshot = {
-                kind: [
-                    {
-                        "timestamp_ns": sample.timestamp_ns,
-                        "index": sample.index,
-                        "value": sample.value,
-                    }
-                    for sample in samples
-                ]
-                for kind, samples in self.input_buffer.snapshot().items()
-            }
+            decision_value = self.state.read_latest("latest_safegate_result")
             records = [
-                ("input_snapshot", snapshot),
+                ("action_candidate", asdict(action)),
                 (
-                    "tnn_output",
-                    {
-                        "origin": action.origin,
-                        "outputs": {
-                            name: asdict(value)
-                            for name, value in self.state.tnn_outputs.get(
-                                action.origin, {}
-                            ).items()
-                        },
-                    },
+                    "safegate_result",
+                    asdict(decision_value.value) if decision_value else {},
                 ),
                 ("output_result", asdict(result)),
             ]
+            recorded_ids: list[str] = []
             for payload_type, payload in records:
-                memory_id = self.memorizer.create(payload, payload_type)
-                self.state.memory_ids.append(memory_id)
+                memory_id = self.memorizer.enqueue(
+                    payload,
+                    payload_type,
+                    priority="critical",
+                )
+                if memory_id is not None:
+                    self.state.memory_ids.append(memory_id)
+                    recorded_ids.append(memory_id)
             log_event(
                 self.log_dir,
                 "memory_recorded",
                 action_id=action.action_id,
-                memory_ids=self.state.memory_ids[-3:],
+                memory_ids=recorded_ids,
             )
         except Exception as exc:
             self._record_error(
@@ -264,7 +321,59 @@ class CoreLoop:
                 exc,
                 {"action_id": action.action_id},
                 "result_kept_in_runtime_memory",
+                critical=True,
             )
+
+    def _maybe_remember_input(self, now_ns: int) -> None:
+        if now_ns - self._last_input_snapshot_ns < 1_000_000_000:
+            return
+        memory_id = self.memorizer.enqueue(
+            self._input_summary(),
+            "input_snapshot",
+            priority="low",
+        )
+        self._last_input_snapshot_ns = now_ns
+        if memory_id is not None:
+            self.state.memory_ids.append(memory_id)
+
+    def _input_summary(self) -> dict[str, Any]:
+        screen = self.input_buffer.latest("screen")
+        cursor = self.input_buffer.latest("cursor")
+        screen_value = screen.value if screen is not None else None
+        cursor_value = cursor.value if cursor is not None else None
+        if cursor_value is not None and hasattr(cursor_value, "x"):
+            cursor_x = cursor_value.x
+            cursor_y = cursor_value.y
+        elif isinstance(cursor_value, (tuple, list)) and len(cursor_value) >= 2:
+            cursor_x, cursor_y = cursor_value[:2]
+        else:
+            cursor_x = cursor_y = None
+        return {
+            "screen": (
+                {
+                    "frame_id": getattr(screen_value, "frame_id", screen.index),
+                    "timestamp_ns": screen.timestamp_ns,
+                    "shape": list(getattr(
+                        getattr(screen_value, "image", None),
+                        "shape",
+                        (),
+                    )),
+                }
+                if screen is not None
+                else None
+            ),
+            "cursor": (
+                {
+                    "frame_id": getattr(cursor_value, "frame_id", cursor.index),
+                    "timestamp_ns": cursor.timestamp_ns,
+                    "x": cursor_x,
+                    "y": cursor_y,
+                    "speed": getattr(cursor_value, "speed", 0.0),
+                }
+                if cursor is not None
+                else None
+            ),
+        }
 
     def _record_error(
         self,
@@ -272,6 +381,8 @@ class CoreLoop:
         exc: Exception,
         relevant_source: Any,
         recovery_action: str,
+        *,
+        critical: bool = False,
     ) -> None:
         error = RuntimeErrorRecord(
             timestamp_ns=time.time_ns(),
@@ -283,4 +394,12 @@ class CoreLoop:
             recovery_action=recovery_action,
         )
         self.state.latest_error = error
+        if critical:
+            self._failed_event.set()
         log_event(self.log_dir, "runtime_error", **asdict(error))
+        if loop_node != "memory":
+            self.memorizer.enqueue(
+                asdict(error),
+                "runtime_error",
+                priority="critical",
+            )

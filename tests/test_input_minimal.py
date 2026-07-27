@@ -35,7 +35,8 @@ def test_capture_failure_is_visible_and_thread_stops():
         cursor_reader=lambda: (0, 0),
         error_callback=errors.append,
     )
-    capture.start()
+    with pytest.raises(RuntimeError, match="capture initialization failed"):
+        capture.start()
     deadline = time.monotonic() + 1
     while capture.running and time.monotonic() < deadline:
         time.sleep(0.01)

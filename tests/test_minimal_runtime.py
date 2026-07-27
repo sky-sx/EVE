@@ -86,12 +86,14 @@ def test_tnn_source_ref_to_action_and_consume_once(tmp_path):
     assert second == []
     assert state.consumed_action_ids == {"only-once"}
     assert len(state.memory_ids) == 3
+    memory.flush()
     assert {memory.get_unit(mid).payload_type for mid in state.memory_ids} == {
-        "input_snapshot",
-        "tnn_output",
+        "action_candidate",
+        "safegate_result",
         "output_result",
     }
     assert all(memory.read(mid) is not None for mid in state.memory_ids)
+    memory.stop_writer()
 
 
 def test_tnn_exception_is_structured_and_pauses_node(tmp_path):
@@ -99,7 +101,8 @@ def test_tnn_exception_is_structured_and_pauses_node(tmp_path):
     buffer = InputBuffer()
     buffer.store("cursor", (1, 2))
     load_tnn(state, BrokenNode())
-    loop = CoreLoop(state, buffer, Memorizer(tmp_path / "memory"), log_dir=tmp_path)
+    memory = Memorizer(tmp_path / "memory")
+    loop = CoreLoop(state, buffer, memory, log_dir=tmp_path)
 
     assert loop.step(time.monotonic_ns()) == []
     assert state.latest_error is not None
@@ -112,6 +115,7 @@ def test_tnn_exception_is_structured_and_pauses_node(tmp_path):
         for line in (tmp_path / "eve.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert any(item["event"] == "runtime_error" for item in records)
+    memory.stop_writer()
 
 
 def test_formal_entry_starts_and_stops_without_real_output(tmp_path):
