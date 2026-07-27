@@ -1,10 +1,17 @@
 """Minimal TNN runtime: descriptors naturally define the live data flow."""
 from __future__ import annotations
 
+import importlib.util
+import sys
 import time
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
+import torch
+
+from eve.dock.tinynn import TinyNN
 from eve.state import ActionCandidate, ActionKind, RuntimeState
 
 
@@ -169,3 +176,122 @@ class SmokeActionNode:
                 "horizon_ns": 1_000_000_000,
             }
         }
+
+
+class TrainedTNNNode:
+    """Adapter from the persisted TinyNN contract to the existing live node API."""
+
+    def __init__(
+        self,
+        model: TinyNN,
+        *,
+        tnn_id: str,
+        input_refs: dict[str, SourceRef],
+        run_frequency_hz: float,
+        output_ttl_ns: int,
+        action_output: str | None,
+    ) -> None:
+        self.model = model
+        self.device = next(
+            model.parameters(),
+            next(model.buffers(), torch.empty(0)),
+        ).device
+        self.descriptor = TNNDescriptor(
+            tnn_id=tnn_id,
+            inputs=input_refs,
+            outputs=tuple(model.get_output_schema()),
+            run_frequency_hz=run_frequency_hz,
+            output_ttl_ns=output_ttl_ns,
+            action_output=action_output,
+        )
+
+    def run(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        prepared: dict[str, Any] = {}
+        for name, value in inputs.items():
+            schema = self.model.get_input_schema().get(name, {})
+            dtype_name = schema.get("dtype")
+            dtype = getattr(torch, dtype_name, None) if dtype_name else None
+            if isinstance(value, torch.Tensor):
+                prepared[name] = value.to(device=self.device, dtype=dtype)
+            elif isinstance(dtype, torch.dtype):
+                prepared[name] = torch.as_tensor(
+                    value, device=self.device, dtype=dtype
+                )
+            else:
+                prepared[name] = value
+        return self.model.infer(prepared)
+
+
+def _import_runtime_model(model_path: str | Path, factory: str) -> TinyNN:
+    path = Path(model_path).resolve()
+    module_name = f"_eve_runtime_tnn_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot import TNN model: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        code = compile(path.read_bytes(), str(path), "exec")
+        exec(code, module.__dict__)
+        creator = getattr(module, factory, None)
+        if not callable(creator):
+            raise AttributeError(f"{path} does not define callable {factory}()")
+        model = creator()
+    finally:
+        sys.modules.pop(module_name, None)
+    if not isinstance(model, TinyNN):
+        raise TypeError(f"{factory}() must return TinyNN, got {type(model).__name__}")
+    return model
+
+
+def load_tnn_runtime(
+    state: RuntimeState,
+    memorizer: Any,
+    tnn_id: str,
+    version: str | None = None,
+    *,
+    device: str | torch.device = "cpu",
+    input_refs: dict[str, SourceRef | str] | None = None,
+    run_frequency_hz: float = 1.0,
+    output_ttl_ns: int = 1_000_000_000,
+    action_output: str | None = None,
+    factory: str = "create_tnn",
+) -> TrainedTNNNode:
+    """Create the sole live instance from a cataloged, persisted artifact."""
+    artifact = memorizer.resolve_tnn_artifact(tnn_id, version)
+    model = _import_runtime_model(artifact["model_path"], factory)
+    resolved_device = torch.device(device)
+    model.load_weights(artifact["weights_path"], map_location=resolved_device)
+    model.to(resolved_device)
+    model.eval()
+    refs = input_refs or {
+        name: SourceRef(f"blackboard:{name}") for name in model.get_input_schema()
+    }
+    normalized_refs = {
+        name: value if isinstance(value, SourceRef) else SourceRef(value)
+        for name, value in refs.items()
+    }
+    if set(normalized_refs) != set(model.get_input_schema()):
+        raise ValueError("runtime input references must match the model input schema")
+    node = TrainedTNNNode(
+        model,
+        tnn_id=tnn_id,
+        input_refs=normalized_refs,
+        run_frequency_hz=run_frequency_hz,
+        output_ttl_ns=output_ttl_ns,
+        action_output=action_output,
+    )
+    load_tnn(state, node)
+    return node
+
+
+def unload_tnn_runtime(state: RuntimeState, tnn_id: str) -> None:
+    """Detach one trained node, clear its cached state, and release its device."""
+    node = state.loaded_tnn.get(tnn_id)
+    unload_tnn(state, tnn_id)
+    if isinstance(node, TrainedTNNNode):
+        was_cuda = any(parameter.is_cuda for parameter in node.model.parameters())
+        node.model.to("cpu")
+        del node
+        if was_cuda and torch.cuda.is_available():
+            torch.cuda.empty_cache()

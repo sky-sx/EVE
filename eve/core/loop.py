@@ -10,7 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from eve.core import safegate
-from eve.core.tnn import due_tnn_ids, run_node
+from eve.core.tnn import (
+    SourceRef,
+    due_tnn_ids,
+    load_tnn_runtime as attach_tnn_runtime,
+    run_node,
+    unload_tnn_runtime as detach_tnn_runtime,
+)
 from eve.output import keyboard, mouse, speak
 from eve.state import (
     ActionCandidate,
@@ -90,6 +96,7 @@ class CoreLoop:
         *,
         log_dir: str | Path = "runs",
         interval_s: float = 0.02,
+        runtime_device: str = "cpu",
     ) -> None:
         if interval_s <= 0:
             raise ValueError("interval_s must be positive")
@@ -98,8 +105,38 @@ class CoreLoop:
         self.memorizer = memorizer
         self.log_dir = Path(log_dir)
         self.interval_s = interval_s
+        self.runtime_device = runtime_device
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def load_tnn_runtime(
+        self,
+        tnn_id: str,
+        version: str | None = None,
+        *,
+        input_refs: dict[str, SourceRef | str] | None = None,
+        run_frequency_hz: float = 1.0,
+        output_ttl_ns: int = 1_000_000_000,
+        action_output: str | None = None,
+        factory: str = "create_tnn",
+    ) -> Any:
+        """Load a persisted TNN into this Core lifecycle."""
+        return attach_tnn_runtime(
+            self.state,
+            self.memorizer,
+            tnn_id,
+            version,
+            device=self.runtime_device,
+            input_refs=input_refs,
+            run_frequency_hz=run_frequency_hz,
+            output_ttl_ns=output_ttl_ns,
+            action_output=action_output,
+            factory=factory,
+        )
+
+    def unload_tnn_runtime(self, tnn_id: str) -> None:
+        """Unload a persisted TNN and clear its live outputs and schedule state."""
+        detach_tnn_runtime(self.state, tnn_id)
 
     @property
     def running(self) -> bool:
