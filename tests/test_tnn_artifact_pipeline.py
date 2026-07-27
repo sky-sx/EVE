@@ -148,6 +148,7 @@ def test_generated_mixed_model_shapes_and_autograd(tmp_path):
 
 def test_train_store_destroy_and_core_reload_are_equivalent(tmp_path):
     memory = Memorizer(tmp_path / "memory")
+    expected_device = "cuda" if torch.cuda.is_available() else "cpu"
     sample_ids = [
         memory.create(
             {
@@ -171,12 +172,18 @@ def test_train_store_destroy_and_core_reload_are_equivalent(tmp_path):
         epochs=1,
         definition={"mode": "json", "version": "v1", "structure": mixed_structure()},
     )
-    result = Trainer(memory, workspace_root=tmp_path / "workspace").process_order(order)
+    trainer = Trainer(memory, workspace_root=tmp_path / "workspace")
+    assert trainer.training_device.type == expected_device
+    result = trainer.process_order(order)
     assert result.success, result.error
     assert {path.name for path in Path(result.artifact_path).iterdir()} >= {
         "model.py", "weights.pt", "structure.json",
         "description.json", "training.json",
     }
+    training_record = json.loads(
+        (Path(result.artifact_path) / "training.json").read_text(encoding="utf-8")
+    )
+    assert training_record["training_device"] == expected_device
 
     inputs = {
         "image": torch.randn(4, 1, 32, 32),
@@ -192,13 +199,24 @@ def test_train_store_destroy_and_core_reload_are_equivalent(tmp_path):
     loop = CoreLoop(InputBuffer(), memory, state=state)
     node = loop.load_tnn_runtime("mixed-model", "v1")
     actual = node["run"](inputs)
+    assert node["device"] == expected_device
+    assert next(node["model"].parameters()).device.type == expected_device
     assert all(
-        torch.max(torch.abs(expected[name] - actual[name])).item() < 1e-6
+        torch.max(torch.abs(expected[name] - actual[name].cpu())).item() < 1e-6
         for name in expected
     )
     loop.unload_tnn_runtime("mixed-model")
     assert "mixed-model" not in state["loaded_tnn"]
     assert "mixed-model" not in state["tnn_outputs"]
+
+
+def test_explicit_cpu_device_override_remains_available(tmp_path):
+    memory = Memorizer(tmp_path / "memory")
+    trainer = Trainer(memory, training_device="cpu")
+    loop = CoreLoop(InputBuffer(), memory, runtime_device="cpu")
+
+    assert trainer.training_device.type == "cpu"
+    assert loop.runtime_device == "cpu"
 
 
 def test_unknown_op_is_rejected_explicitly():

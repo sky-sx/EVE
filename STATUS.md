@@ -78,6 +78,14 @@ Safegate 只检查权限、急停、冷启动状态、人类接管、动作有�
 
 `memory/memorizer.py` 仍负责异步有界写入、JSON/NPY 可恢复存储、增量 Catalog、按 ID 和最小条件检索及 TNN artifact。未使用的 Event 和 `related_ids` 已删除。
 
+## 默认计算设备
+
+- Trainer 在 CUDA 可用时默认使用 `cuda`，否则回退 CPU；
+- Core 加载 TNN artifact 时同样默认使用 `cuda`，否则回退 CPU；
+- 调用方仍可显式传入 `"cpu"`；
+- 当前 PyTorch 识别到 `NVIDIA GeForce RTX 5080`；
+- 已用现有螺旋三分类 artifact 验证：Trainer 默认 `cuda`，Core 节点为 `cuda`，模型参数实际位于 `cuda:0`。
+
 ## 当前验证结果
 
 最终回归：
@@ -85,7 +93,7 @@ Safegate 只检查权限、急停、冷启动状态、人类接管、动作有�
 ```text
 python -m pytest -q
 ..........................
-26 passed in 4.12s
+27 passed in 4.40s
 ```
 
 最终 smoke：

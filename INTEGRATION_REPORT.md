@@ -67,6 +67,15 @@ Safegate 仅做权限、急停、冷启动、接管截止时间、有效期、�
 
 Memory 仍异步写入并增量追加 Catalog；数组使用 NPY 而非 repr；支持 ID、类型、关键词和时间条件的最小检索；TNN artifact 仍在同一文件保存与读取。
 
+训练与推理设备均采用 CUDA 优先策略：RTX 5080 可用时 Trainer 默认选择 `cuda`，Core artifact 加载也默认选择 `cuda`；没有 CUDA 时回退 CPU，并保留显式 CPU 覆盖。实际加载现有螺旋三分类 artifact 得到：
+
+```text
+trainer_default: cuda
+core_node_device: cuda
+parameter_device: cuda:0
+gpu: NVIDIA GeForce RTX 5080
+```
+
 ## 5. 测试与运行证据
 
 收拢前基线：
@@ -80,7 +89,7 @@ Memory 仍异步写入并增量追加 Catalog；数组使用 NPY 而非 repr；�
 ```text
 python -m pytest -q
 ..........................
-26 passed in 4.12s
+27 passed in 4.40s
 ```
 
 验收覆盖文件集合和导入边界、Capture 独立 PID、Buffer 生命周期/健康/窗口、Capture 异常到 Main 非零退出、active/loaded 分离、TinyNN artifact 重载、Mock-only observe、Esc、Core/Memory 错误和资源清理。

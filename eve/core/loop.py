@@ -289,7 +289,7 @@ class CoreLoop:
         state: dict[str, Any] | None = None,
         log_dir: str | Path = "runs",
         interval_s: float = 0.02,
-        runtime_device: str = "cpu",
+        runtime_device: str | None = None,
         tnn_id: str | None = None,
         smoke_node: bool = False,
     ) -> None:
@@ -390,7 +390,10 @@ class CoreLoop:
             raise TypeError(
                 f"{factory}() must return TinyNN, got {type(model).__name__}"
             )
-        device = torch.device(self.runtime_device)
+        device = torch.device(
+            self.runtime_device
+            or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         model.load_weights(artifact["weights_path"], map_location=device)
         model.to(device)
         model.eval()
@@ -425,7 +428,7 @@ class CoreLoop:
                     prepared[name] = value
             return model.infer(prepared)
 
-        return register_runtime_tnn(
+        node = register_runtime_tnn(
             self.state,
             tnn_id,
             infer,
@@ -436,6 +439,9 @@ class CoreLoop:
             action_output=action_output,
             model=model,
         )
+        node["device"] = str(device)
+        self.state["resource_status"]["tnn_device"] = str(device)
+        return node
 
     def unload_tnn_runtime(self, tnn_id: str) -> None:
         node = unregister_runtime_tnn(self.state, tnn_id)

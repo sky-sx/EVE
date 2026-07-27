@@ -187,6 +187,7 @@ class EVEApplication:
             "cursor_latency_ms": capture["cursor_average_latency_ms"],
             "core_loop_hz": core["loop_hz"],
             "tnn_invocations": core["tnn_invocations"],
+            "tnn_device": self.state["resource_status"].get("tnn_device"),
             "safegate_allowed": stats.get("safegate_allowed", 0),
             "safegate_blocked": stats.get("safegate_blocked", 0),
             "mock_outputs": stats.get("mock_outputs", 0),

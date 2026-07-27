@@ -427,7 +427,7 @@ class Trainer:
         legacy_memorizer: Any | None = None,
         *,
         workspace_root: str | Path = "dock/workspace",
-        training_device: str | torch.device = "cpu",
+        training_device: str | torch.device | None = None,
         **legacy_options: Any,
     ) -> None:
         # The former storage keyword is accepted but deliberately not retained.
@@ -440,7 +440,11 @@ class Trainer:
         if self._memorizer is None:
             raise TypeError("memorizer is required")
         self.workspace_root = Path(workspace_root)
-        self.training_device = torch.device(training_device)
+        self.training_device = torch.device(
+            training_device
+            if training_device is not None
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         self._queue: list[TrainingOrder] = []
         self._current_order: TrainingOrder | None = None
         self._running = False
@@ -551,7 +555,14 @@ class Trainer:
 
         tnn.save_weights(str(artifact / "weights.pt"))
         self._write_metadata(
-            artifact, order, structure, version, train_metrics, eval_metrics, len(samples)
+            artifact,
+            order,
+            structure,
+            version,
+            train_metrics,
+            eval_metrics,
+            len(samples),
+            str(self.training_device),
         )
         memory_id = self._memorizer.store_tnn_artifact(
             source_directory=str(artifact),
@@ -662,6 +673,7 @@ class Trainer:
         train_metrics: list[dict[str, Any]],
         eval_metrics: list[dict[str, Any]],
         sample_count: int,
+        training_device: str,
     ) -> None:
         documents = {
             "structure.json": structure,
@@ -674,6 +686,7 @@ class Trainer:
             "training.json": {
                 "order": asdict(order),
                 "sample_count": sample_count,
+                "training_device": training_device,
                 "train_metrics": train_metrics,
                 "evaluation_metrics": eval_metrics,
             },
