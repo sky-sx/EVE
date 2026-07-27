@@ -1,137 +1,103 @@
-"""
-EVE 键盘输出 — 支持 disabled / mock / real 模式。
-
-REAL 模式通过 pyautogui 执行真实系统调用，仅在模式为 REAL 时导入。
-"""
+"""Keyboard output with disabled, mock, and explicit real modes."""
 from __future__ import annotations
 
 import time
 from typing import Any
 
-from eve.state import OutputMode, OutputResult
+
+def _result(
+    action_id: str,
+    mode: str,
+    started_ns: int,
+    *,
+    executed: bool = False,
+    simulated: bool = False,
+    blocked: bool = False,
+    reason: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "action_id": action_id,
+        "kind": "keyboard",
+        "mode": mode,
+        "started_at_ns": started_ns,
+        "finished_at_ns": time.monotonic_ns(),
+        "executed": executed,
+        "simulated": simulated,
+        "blocked": blocked,
+        "reason": reason,
+        "payload": dict(payload or {}),
+    }
 
 
 def execute(
-    action_id: str,
-    payload: dict[str, Any],
-    mode: OutputMode,
-) -> OutputResult:
-    """执行键盘动作。"""
+    action_id: str, payload: dict[str, Any], mode: str
+) -> dict[str, Any]:
     started_ns = time.monotonic_ns()
-
-    if mode == OutputMode.DISABLED:
-        return OutputResult(
-            action_id=action_id,
-            kind="keyboard",
-            mode=mode.value,
-            started_at_ns=started_ns,
-            finished_at_ns=time.monotonic_ns(),
-            executed=False,
-            simulated=False,
-            blocked=True,
-            reason="output_disabled",
+    if mode == "disabled":
+        return _result(
+            action_id, mode, started_ns, blocked=True, reason="output_disabled"
         )
-
-    if mode == OutputMode.MOCK:
-        return OutputResult(
-            action_id=action_id,
-            kind="keyboard",
-            mode=mode.value,
-            started_at_ns=started_ns,
-            finished_at_ns=time.monotonic_ns(),
-            executed=False,
+    if mode == "mock":
+        return _result(
+            action_id,
+            mode,
+            started_ns,
             simulated=True,
-            blocked=False,
             reason="mock_ok",
-            payload=dict(payload),
+            payload=payload,
         )
-
-    # REAL 模式：仅在此时导入 pyautogui
+    if mode != "real":
+        raise ValueError(f"unknown output mode: {mode}")
     return _execute_real(action_id, payload, started_ns)
 
 
 def _execute_real(
-    action_id: str,
-    payload: dict[str, Any],
-    started_ns: int,
-) -> OutputResult:
+    action_id: str, payload: dict[str, Any], started_ns: int
+) -> dict[str, Any]:
     import pyautogui
 
     pyautogui.FAILSAFE = False
-
     action = payload.get("action", "press")
-    result_payload: dict[str, Any] = {}
-
     try:
         if action == "press":
             keys = payload.get("keys", [])
-            if isinstance(keys, str):
-                keys = [keys]
+            keys = [keys] if isinstance(keys, str) else list(keys)
             for key in keys:
                 pyautogui.keyDown(key)
             for key in reversed(keys):
                 pyautogui.keyUp(key)
-            result_payload = {"keys": keys}
-
         elif action == "write":
-            text = payload.get("text", "")
-            interval = payload.get("interval", 0.0)
-            pyautogui.write(text, interval=interval)
-            result_payload = {"text": text, "interval": interval}
-
+            pyautogui.write(
+                payload.get("text", ""),
+                interval=payload.get("interval", 0.0),
+            )
         elif action == "hotkey":
             keys = payload.get("keys", [])
-            if isinstance(keys, str):
-                keys = [keys]
-            pyautogui.hotkey(*keys)
-            result_payload = {"keys": list(keys)}
-
-        elif action == "keyDown":
-            key = payload.get("key", "")
-            pyautogui.keyDown(key)
-            result_payload = {"key": key}
-
-        elif action == "keyUp":
-            key = payload.get("key", "")
-            pyautogui.keyUp(key)
-            result_payload = {"key": key}
-
+            pyautogui.hotkey(*(keys if isinstance(keys, list) else [keys]))
+        elif action in {"keyDown", "keyUp"}:
+            getattr(pyautogui, action)(payload.get("key", ""))
         else:
-            return OutputResult(
-                action_id=action_id,
-                kind="keyboard",
-                mode="real",
-                started_at_ns=started_ns,
-                finished_at_ns=time.monotonic_ns(),
-                executed=False,
-                simulated=False,
+            return _result(
+                action_id,
+                "real",
+                started_ns,
                 blocked=True,
                 reason=f"unknown_action_{action}",
             )
-
-        return OutputResult(
-            action_id=action_id,
-            kind="keyboard",
-            mode="real",
-            started_at_ns=started_ns,
-            finished_at_ns=time.monotonic_ns(),
+        return _result(
+            action_id,
+            "real",
+            started_ns,
             executed=True,
-            simulated=False,
-            blocked=False,
             reason="real_ok",
-            payload=result_payload,
+            payload=payload,
         )
-
     except Exception as exc:
-        return OutputResult(
-            action_id=action_id,
-            kind="keyboard",
-            mode="real",
-            started_at_ns=started_ns,
-            finished_at_ns=time.monotonic_ns(),
-            executed=False,
-            simulated=False,
+        return _result(
+            action_id,
+            "real",
+            started_ns,
             blocked=True,
             reason=f"real_error_{exc}",
-            payload=result_payload,
         )

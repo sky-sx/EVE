@@ -1,4 +1,4 @@
-"""Safe process entry point for smoke and real-input observation profiles."""
+"""Safe process entry point; Main controls Input only through InputBuffer."""
 from __future__ import annotations
 
 import argparse
@@ -12,50 +12,41 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from eve.core.loop import CoreLoop, log_event
-from eve.core.safegate import emergency_stop, report_human_activity
-from eve.core.tnn import SmokeActionNode, SourceRef, load_tnn
+from eve.core.loop import CoreLoop, create_runtime_state, log_event
+from eve.core.safegate import emergency_stop
 from eve.input.buffer import InputBuffer
-from eve.input.capture import Capture, CaptureError, CursorState
 from eve.memory.memorizer import Memorizer
-from eve.state import OutputMode, RuntimeErrorRecord, RuntimeState
 
 
 class EVEApplication:
-    """Own one complete runtime lifecycle and its verified shutdown order."""
+    """Own one runtime and enforce its shutdown order."""
 
     def __init__(
         self,
         *,
         profile: str = "smoke",
-        mode: OutputMode | None = None,
+        mode: str | None = None,
         run_dir: str | Path = "runs",
         memory_dir: str | Path | None = None,
-        capture: Capture | None = None,
+        input_buffer: InputBuffer | None = None,
         tnn_id: str | None = None,
-        allow_mock_actions: bool | None = None,
+        allow_mock_actions: bool = False,
     ) -> None:
         if profile not in {"smoke", "observe"}:
             raise ValueError(f"unsupported runtime profile: {profile}")
-        if mode == OutputMode.REAL:
+        normalized_mode = getattr(mode, "value", mode) or "mock"
+        if normalized_mode == "real":
             raise ValueError("real output is disabled in this integration stage")
         self.profile = profile
         self.run_dir = Path(run_dir)
-        self.tnn_id = tnn_id
-        self.buffer = capture.buffer if capture is not None else InputBuffer()
-        legacy_permissions = mode is not None
-        if allow_mock_actions is None:
-            allow_mock_actions = legacy_permissions
-        self.state = RuntimeState(
-            output_mode=mode or OutputMode.MOCK,
-            mouse_allowed=allow_mock_actions,
-            keyboard_allowed=allow_mock_actions,
-            speak_allowed=allow_mock_actions,
+        self.buffer = input_buffer or InputBuffer(profile=profile)
+        self.state = create_runtime_state(
+            output_mode=normalized_mode,
+            allow_mock_actions=allow_mock_actions,
         )
         self._critical_event = threading.Event()
         self._stop_requested = threading.Event()
         self._watch_thread: threading.Thread | None = None
-        self._previous_cursor: tuple[int, int] | None = None
         self.started_at_ns = 0
         self.finished_at_ns = 0
         self.exit_reason = "not_started"
@@ -63,93 +54,53 @@ class EVEApplication:
             Path(memory_dir) if memory_dir is not None else self.run_dir / "memory",
             writer_error_callback=self._memory_error,
         )
-        if capture is not None:
-            self.capture = capture
-            self.capture._error_callback = self._capture_error
-        elif profile == "smoke":
-            self.capture = Capture(
-                self.buffer,
-                screen_fps=30.0,
-                cursor_hz=60.0,
-                screen_reader=lambda: {"source": "synthetic_smoke"},
-                cursor_reader=lambda: (10, 10),
-                error_callback=self._capture_error,
-            )
-        else:
-            self.capture = Capture(
-                self.buffer,
-                screen_fps=30.0,
-                cursor_hz=60.0,
-                cursor_callback=self._cursor_observed,
-                error_callback=self._capture_error,
-            )
         self.core = CoreLoop(
-            self.state,
             self.buffer,
             self.memory,
+            state=self.state,
             log_dir=self.run_dir,
+            tnn_id=tnn_id,
+            smoke_node=tnn_id is None,
         )
 
     @property
     def running(self) -> bool:
-        return self.state.cold_started and not self._stop_requested.is_set()
+        return self.state["cold_started"] and not self._stop_requested.is_set()
 
     @property
     def critical_failure(self) -> bool:
         return self._critical_event.is_set() or self.core.failed
 
     def start(self, *, load_smoke_node: bool = True) -> None:
-        if self.state.cold_started:
+        if self.running:
             return
+        self.core.smoke_node = load_smoke_node and self.core.tnn_id is None
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.started_at_ns = time.monotonic_ns()
         self.exit_reason = "running"
         self._critical_event.clear()
         self._stop_requested.clear()
         self.memory.start_writer()
-        self.state.resource_status.update(
-            {
-                "memory_writer": "running",
-                "capture": "starting",
-                "core": "starting",
-            }
+        self.state["resource_status"].update(
+            {"memory_writer": "running", "capture": "starting", "core": "starting"}
         )
-        self.state.cold_started = True
         try:
-            if self.tnn_id is not None:
-                self.state.active_tnn.add(self.tnn_id)
-                artifact = self.memory.resolve_tnn_artifact(self.tnn_id)
-                structure = json.loads(
-                    Path(artifact["structure_path"]).read_text(encoding="utf-8")
-                )
-                refs = {
-                    name: SourceRef(
-                        f"state:{name}"
-                        if name in {"screen", "cursor"}
-                        else f"blackboard:{name}"
-                    )
-                    for name in structure.get("input_schema", {})
-                }
-                self.core.load_tnn_runtime(self.tnn_id, input_refs=refs)
-            elif load_smoke_node:
-                self.state.active_tnn.add("smoke_rule")
-                load_tnn(self.state, SmokeActionNode(), activate=False)
-            self.capture.start()
-            self.state.resource_status["capture"] = "running"
+            self.buffer.start_capture()
+            self.state["resource_status"]["capture"] = "running"
             self.core.start()
-            self.state.resource_status["core"] = "running"
+            self.state["resource_status"]["core"] = "running"
             self._watch_thread = threading.Thread(
-                target=self._watch_stop,
-                name="eve-stop-watch",
+                target=self._watch_stop, name="eve-stop-watch"
             )
             self._watch_thread.start()
             log_event(
                 self.run_dir,
                 "runtime_started",
                 profile=self.profile,
-                output_mode=self.state.output_mode.value,
-                permissions=self.state.permissions,
-                tnn_id=self.tnn_id or "smoke_rule",
+                output_mode=self.state["output_mode"],
+                permissions=self.state["permissions"],
+                tnn_id=self.core.tnn_id or "smoke_rule",
+                capture_pid=self.buffer.capture_process_id,
             )
         except Exception:
             self.exit_reason = "startup_error"
@@ -162,15 +113,13 @@ class EVEApplication:
             raise
 
     def wait(self, duration_s: float | None = None) -> bool:
-        deadline = (
-            time.monotonic() + duration_s if duration_s is not None else None
-        )
+        deadline = time.monotonic() + duration_s if duration_s is not None else None
         while not self._stop_requested.wait(0.02):
             if deadline is not None and time.monotonic() >= deadline:
                 self.exit_reason = "duration_elapsed"
                 self._stop_requested.set()
                 break
-        if self.core.failed and self.state.latest_error is not None:
+        if self.core.failed:
             self._critical_event.set()
             self.exit_reason = "core_error"
         return not self.critical_failure
@@ -181,30 +130,22 @@ class EVEApplication:
         self._stop_requested.set()
 
     def stop(self) -> None:
+        """Stop Loop and Memory first, then Buffer closes Capture and shared memory."""
         self._stop_requested.set()
         failures: list[Exception] = []
-        try:
-            self.capture.stop()
-        except Exception as exc:
-            failures.append(exc)
-        try:
-            self.core.stop()
-        except Exception as exc:
-            failures.append(exc)
-        try:
-            self.memory.stop_writer()
-        except Exception as exc:
-            failures.append(exc)
-        self.buffer.close()
-        self.state.resource_status.update(
+        for stop in (self.core.stop, self.memory.stop_writer, self.buffer.close):
+            try:
+                stop()
+            except Exception as exc:
+                failures.append(exc)
+        self.state["resource_status"].update(
             {
-                "capture": "stopped",
                 "core": "stopped",
                 "memory_writer": "stopped",
+                "capture": "stopped",
                 "input_buffer": "closed",
             }
         )
-        self.state.cold_started = False
         watch = self._watch_thread
         if watch is not None and watch is not threading.current_thread():
             watch.join(3.0)
@@ -212,7 +153,7 @@ class EVEApplication:
                 failures.append(RuntimeError("stop watch thread did not stop"))
         self._watch_thread = None
         try:
-            self.state.save_snapshot(self.run_dir / "state_snapshot.json")
+            self.core.save_snapshot(self.run_dir / "state_snapshot.json")
         except Exception as exc:
             failures.append(exc)
         self.finished_at_ns = time.monotonic_ns()
@@ -230,44 +171,35 @@ class EVEApplication:
         finished_ns = self.finished_at_ns or time.monotonic_ns()
         duration_s = (
             max(0, finished_ns - self.started_at_ns) / 1_000_000_000
-            if self.started_at_ns
-            else 0.0
+            if self.started_at_ns else 0.0
         )
-        capture_stats = self.capture.stats()
-        core_stats = self.core.stats()
-        memory_stats = self.memory.writer_stats()
+        capture = self.buffer.capture_stats()
+        core = self.core.stats()
+        memory = self.memory.writer_stats()
+        stats = self.state["runtime_stats"]
+        latest_error = self.state["latest_error"]
         return {
             "profile": self.profile,
             "duration_s": duration_s,
-            "screen_fps": capture_stats["screen_fps"],
-            "cursor_hz": capture_stats["cursor_hz"],
-            "screen_latency_ms": capture_stats[
-                "screen_average_latency_ms"
-            ],
-            "cursor_latency_ms": capture_stats[
-                "cursor_average_latency_ms"
-            ],
-            "core_loop_hz": core_stats["loop_hz"],
-            "tnn_invocations": core_stats["tnn_invocations"],
-            "safegate_allowed": self.state.runtime_stats.get(
-                "safegate_allowed", 0
-            ),
-            "safegate_blocked": self.state.runtime_stats.get(
-                "safegate_blocked", 0
-            ),
-            "mock_outputs": self.state.runtime_stats.get("mock_outputs", 0),
+            "screen_fps": capture["screen_fps"],
+            "cursor_hz": capture["cursor_hz"],
+            "screen_latency_ms": capture["screen_average_latency_ms"],
+            "cursor_latency_ms": capture["cursor_average_latency_ms"],
+            "core_loop_hz": core["loop_hz"],
+            "tnn_invocations": core["tnn_invocations"],
+            "safegate_allowed": stats.get("safegate_allowed", 0),
+            "safegate_blocked": stats.get("safegate_blocked", 0),
+            "mock_outputs": stats.get("mock_outputs", 0),
             "real_output_calls": 0,
-            "memory_written": memory_stats["written"],
-            "memory_dropped": memory_stats["dropped"],
-            "memory_failed": memory_stats["failed"],
+            "memory_written": memory["written"],
+            "memory_dropped": memory["dropped"],
+            "memory_failed": memory["failed"],
             "critical_error": (
-                self.state.latest_error.message
-                if self.state.latest_error is not None
-                else memory_stats["last_error"]
+                latest_error.get("message") if latest_error else memory["last_error"]
             ),
             "exit_reason": self.exit_reason,
             "threads_stopped": not (
-                self.capture.running
+                self.buffer.capture_running
                 or self.core.running
                 or self.memory.writer_running
                 or (
@@ -275,6 +207,7 @@ class EVEApplication:
                     and self._watch_thread.is_alive()
                 )
             ),
+            "capture_process_stopped": not self.buffer.capture_running,
             "log": str(self.run_dir / "eve.jsonl"),
         }
 
@@ -286,51 +219,44 @@ class EVEApplication:
                 log_event(self.run_dir, "emergency_stop", source="global_escape")
                 self._stop_requested.set()
                 return
+            capture_error = self.buffer.capture_error
+            if capture_error is not None:
+                self.state["latest_error"] = capture_error
+                self._critical_event.set()
+                self.exit_reason = "capture_error"
+                self._stop_requested.set()
+                return
+            if not self.buffer.capture_running:
+                self.state["latest_error"] = {
+                    "loop_node": "capture_process",
+                    "exception_type": "ProcessExit",
+                    "message": "Capture exited unexpectedly",
+                }
+                self._critical_event.set()
+                self.exit_reason = "capture_error"
+                self._stop_requested.set()
+                return
             if self.core.failed:
                 self._critical_event.set()
                 self.exit_reason = "core_error"
                 self._stop_requested.set()
                 return
 
-    def _cursor_observed(self, cursor: CursorState) -> None:
-        current = (cursor.x, cursor.y)
-        if self._previous_cursor is not None and current != self._previous_cursor:
-            self.state.human_activity_detected_at_ns = cursor.captured_at_ns
-            report_human_activity(self.state)
-        self._previous_cursor = current
-
-    def _capture_error(self, error: CaptureError) -> None:
-        self.state.latest_error = RuntimeErrorRecord(
-            timestamp_ns=error.timestamp_ns,
-            loop_node=error.source,
-            exception_type=error.exception_type,
-            message=error.message,
-            traceback=error.traceback,
-            relevant_source=error.source,
-            recovery_action=error.recovery_action,
-        )
-        self._critical_event.set()
-        self.exit_reason = "capture_error"
-        self._stop_requested.set()
-        log_event(self.run_dir, "runtime_error", **error.__dict__)
-
     def _memory_error(self, error: Exception) -> None:
-        self.state.latest_error = RuntimeErrorRecord(
-            timestamp_ns=time.time_ns(),
-            loop_node="memory_writer",
-            exception_type=type(error).__name__,
-            message=str(error),
-            traceback="".join(traceback.format_exception(error)),
-            relevant_source="memory",
-            recovery_action="runtime_stopped_for_memory_integrity",
-        )
+        self.state["latest_error"] = {
+            "timestamp_ns": time.time_ns(),
+            "loop_node": "memory_writer",
+            "exception_type": type(error).__name__,
+            "message": str(error),
+            "traceback": "".join(traceback.format_exception(error)),
+            "recovery_action": "runtime_stopped_for_memory_integrity",
+        }
         self._critical_event.set()
         self.exit_reason = "memory_error"
         self._stop_requested.set()
 
 
 def _global_escape_pressed() -> bool:
-    """Use the Windows global key state; console focus is not required."""
     try:
         return bool(ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000)
     except (AttributeError, OSError):
@@ -340,9 +266,7 @@ def _global_escape_pressed() -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the safe EVE integration")
     parser.add_argument(
-        "--profile",
-        choices=("smoke", "observe", "control"),
-        default="smoke",
+        "--profile", choices=("smoke", "observe", "control"), default="smoke"
     )
     parser.add_argument("--duration", type=float)
     parser.add_argument("--tnn-id")
@@ -383,23 +307,21 @@ def main(argv: list[str] | None = None) -> int:
         application.exit_reason = "keyboard_interrupt"
     except Exception as exc:
         exit_code = 1
-        if application.state.latest_error is None:
-            application.state.latest_error = RuntimeErrorRecord(
-                timestamp_ns=time.time_ns(),
-                loop_node="main",
-                exception_type=type(exc).__name__,
-                message=str(exc),
-                traceback=traceback.format_exc(),
-                relevant_source=args.profile,
-                recovery_action="startup_or_runtime_aborted",
-            )
+        if application.state["latest_error"] is None:
+            application.state["latest_error"] = {
+                "timestamp_ns": time.time_ns(),
+                "loop_node": "main",
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+                "recovery_action": "startup_or_runtime_aborted",
+            }
     finally:
         try:
             application.stop()
         except Exception:
             exit_code = 1
-    summary = application.summary()
-    print(json.dumps(summary, ensure_ascii=False))
+    print(json.dumps(application.summary(), ensure_ascii=False))
     return exit_code
 
 

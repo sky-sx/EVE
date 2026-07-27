@@ -25,20 +25,11 @@ class MemoryUnit:
 
 
 @dataclass(frozen=True)
-class Event:
-    event_id: str
-    memory_ids: tuple[str, ...]
-    created_at_ns: int
-    description: str = ""
-
-
-@dataclass(frozen=True)
 class MemoryWriteRequest:
     memory_id: str
     payload: Any
     payload_type: str
     priority: str
-    related_ids: tuple[str, ...]
     requested_at_ns: int
 
 
@@ -67,7 +58,6 @@ class Memorizer:
         self.catalog: dict[str, MemoryUnit] = {}
         self.stm: list[str] = []
         self.mtm: set[str] = set()
-        self.events: dict[str, Event] = {}
         self._lock = threading.RLock()
         self._condition = threading.Condition(threading.Lock())
         self._queue: deque[MemoryWriteRequest] = deque()
@@ -127,7 +117,6 @@ class Memorizer:
         payload_type: str = "json",
         *,
         priority: str = "normal",
-        related_ids: tuple[str, ...] = (),
     ) -> str | None:
         """Queue a write without doing payload encoding or disk I/O."""
         if priority not in {"low", "normal", "critical"}:
@@ -140,7 +129,6 @@ class Memorizer:
             payload=payload,
             payload_type=payload_type,
             priority=priority,
-            related_ids=tuple(related_ids),
             requested_at_ns=time.time_ns(),
         )
         overflow_error: Exception | None = None
@@ -256,19 +244,6 @@ class Memorizer:
             raise KeyError(memory_id)
         self.mtm.add(memory_id)
         self._append_catalog({"op": "promote", "memory_id": memory_id})
-
-    def create_event(self, memory_ids: list[str], description: str = "") -> Event:
-        missing = set(memory_ids) - set(self.catalog)
-        if missing:
-            raise KeyError(f"unknown MemoryID(s): {sorted(missing)}")
-        event = Event(
-            event_id=f"event_{time.time_ns()}_{uuid.uuid4().hex[:6]}",
-            memory_ids=tuple(memory_ids),
-            created_at_ns=time.time_ns(),
-            description=description,
-        )
-        self.events[event.event_id] = event
-        return event
 
     def search(
         self,

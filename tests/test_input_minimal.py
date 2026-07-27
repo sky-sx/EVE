@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
 
 from eve.input.buffer import InputBuffer
-from eve.input.capture import Capture
 
 
 def test_buffer_has_monotonic_latest_range_and_recent_window():
@@ -16,33 +16,35 @@ def test_buffer_has_monotonic_latest_range_and_recent_window():
 
     assert buffer.latest("cursor").value == (3, 3)
     assert [sample.value for sample in buffer.range("cursor", 400, 1_300)] == [
-        (2, 2),
-        (3, 3),
+        (2, 2), (3, 3)
     ]
     with pytest.raises(ValueError):
         buffer.store("cursor", (0, 0), timestamp_ns=1_100)
 
 
-def test_capture_failure_is_visible_and_thread_stops():
-    errors = []
-
-    def broken_screen():
-        raise OSError("capture unavailable")
-
-    capture = Capture(
-        InputBuffer(),
-        screen_reader=broken_screen,
-        cursor_reader=lambda: (0, 0),
-        error_callback=errors.append,
-    )
-    with pytest.raises(RuntimeError, match="capture initialization failed"):
-        capture.start()
-    deadline = time.monotonic() + 1
-    while capture.running and time.monotonic() < deadline:
+def test_buffer_owns_independent_capture_process_and_stops_it():
+    buffer = InputBuffer(profile="smoke")
+    buffer.start_capture()
+    child_pid = buffer.capture_process_id
+    deadline = time.monotonic() + 2
+    while buffer.get_latest_screen() is None and time.monotonic() < deadline:
         time.sleep(0.01)
-    capture.stop()
 
-    assert capture.last_error is not None
-    assert capture.last_error.exception_type == "OSError"
-    assert capture.last_error.recovery_action == "capture_stopped_no_output"
-    assert len(errors) == 1
+    assert child_pid is not None and child_pid != os.getpid()
+    assert buffer.capture_running
+    assert buffer.get_state()["latest"]["screen"] is not None
+    buffer.close()
+    assert not buffer.capture_running
+
+
+def test_capture_failure_is_propagated_through_buffer():
+    buffer = InputBuffer(
+        profile="smoke",
+        capture_options={"screen_mode": "error"},
+    )
+    with pytest.raises(RuntimeError, match="capture process initialization failed"):
+        buffer.start_capture()
+    assert buffer.capture_error is not None
+    assert buffer.capture_error["exception_type"] == "OSError"
+    assert not buffer.capture_running
+    buffer.close()

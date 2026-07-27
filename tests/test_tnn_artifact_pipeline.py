@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from eve.core.tnn import load_tnn_runtime, unload_tnn_runtime
+from eve.core.loop import CoreLoop, create_runtime_state
 from eve.dock.trainer import (
     TrainingOrder,
     Trainer,
@@ -15,7 +15,7 @@ from eve.dock.trainer import (
     _write_generated_model,
 )
 from eve.memory.memorizer import Memorizer
-from eve.state import RuntimeState
+from eve.input.buffer import InputBuffer
 
 
 def mixed_structure() -> dict:
@@ -188,16 +188,17 @@ def test_train_store_destroy_and_core_reload_are_equivalent(tmp_path):
     expected = trained.infer(inputs)
     del trained
 
-    state = RuntimeState()
-    node = load_tnn_runtime(state, memory, "mixed-model", "v1")
-    actual = node.run(inputs)
+    state = create_runtime_state()
+    loop = CoreLoop(InputBuffer(), memory, state=state)
+    node = loop.load_tnn_runtime("mixed-model", "v1")
+    actual = node["run"](inputs)
     assert all(
         torch.max(torch.abs(expected[name] - actual[name])).item() < 1e-6
         for name in expected
     )
-    unload_tnn_runtime(state, "mixed-model")
-    assert "mixed-model" not in state.loaded_tnn
-    assert "mixed-model" not in state.tnn_outputs
+    loop.unload_tnn_runtime("mixed-model")
+    assert "mixed-model" not in state["loaded_tnn"]
+    assert "mixed-model" not in state["tnn_outputs"]
 
 
 def test_unknown_op_is_rejected_explicitly():
@@ -317,7 +318,8 @@ def create_tnn():
     assert result.success, result.error
     assert result.metrics["custom_step"] == 1.0
 
-    state = RuntimeState()
-    node = load_tnn_runtime(state, memory, "special-copy", "v2")
-    assert node.run({"x": torch.ones(1, 1)})["y"].item() > 0
-    unload_tnn_runtime(state, "special-copy")
+    state = create_runtime_state()
+    loop = CoreLoop(InputBuffer(), memory, state=state)
+    node = loop.load_tnn_runtime("special-copy", "v2")
+    assert node["run"]({"x": torch.ones(1, 1)})["y"].item() > 0
+    loop.unload_tnn_runtime("special-copy")
