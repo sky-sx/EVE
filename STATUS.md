@@ -8,13 +8,13 @@
 
 - `python -m eve.main --profile control` 已启用 PySide6 GUI，不再返回占位退出码 2。
 - GUI 共八页：实时视觉、文本与认知、资源与节点、冷启动与急停、Memory/Blackboard、权限与倾向、设置/激素/反馈、TNN。
-- 程序启动只打开 GUI；用户点击冷启动后才启动 Capture、Core、Memory writer、LLM/VLM worker 和 TNN 调度。
+- 程序启动只打开 GUI；用户点击冷启动后才启动 Capture、Core、Memory writer、LLM、YOLO、VLM 教师 worker 和 TNN 调度。
 - Capture 仍由 Buffer 独占管理并运行在独立进程；进程内现有屏幕、光标、键盘活动和活动窗口四个采集线程。没有麦克风、录音或语音识别输入。
-- Core 现有本地 LLM、VLM、OpenAI-compatible 云端请求和 TNN 生命周期有界队列。模型推理与 TNN 加载不在 GUI 主线程执行。
-- 本地 LLM 默认使用 `eve/core/deepseek-7b`，VLM 默认使用 `eve/core/qwen`；两者只允许 CUDA 4-bit NF4 加载，并验证模型的 `is_loaded_in_4bit`。不支持时明确报错，不会回退到 FP16/FP32。
-- 当前机器没有配置可用的本地生成式 LLM/VLM 权重，因此状态如实显示 `not_configured`；尚无真实本地 LLM/VLM 回答验收证据。
+- Core 现有普通 LLM 对话、内部结构化 LLM 决策、YOLO/TNN 运行时视觉、按需 VLM 教师复核、OpenAI-compatible 云端请求和 TNN 生命周期队列。模型推理与 TNN 加载不在 GUI 主线程执行。
+- 本地 LLM 默认使用 `eve/core/deepseek-7b` 并强制 CUDA 4-bit NF4；VLM 教师默认使用 `eve/core/qwen`，只在显式教师复核请求时按需加载；YOLO 默认使用 `eve/core/yolo26/weights/yolo26n.pt`。
+- 本地 LLM 已真实完成普通文本对话，保持 `cuda:0`、`4bit-nf4`、`ready`，测试回复耗时约 1.485 秒。YOLO 已在 RTX 5080 上真实加载、预热和推理，合成帧推理约 8.27 ms。
 - Core 的结构化 LLM 结果采用整批预校验和原子更新；无效结果不会部分覆盖 world、myself、Blackboard 或 active_tnn。
-- VLM 结果保存模型名、参考帧 ID/时间、请求/完成时间；迟到结果记为 `stale`，不会覆盖当前视觉结果。
+- YOLO 持续把检测框、类别、置信度和帧时间写入 `current_visual_result`；视觉 TNN 若消费 `state:screen` 并输出 `detections`，可成为当前运行时视觉结果。VLM 教师结果写入独立的 `latest_teacher_review`，迟到结果记为 `stale`，不会覆盖运行时视觉。
 - 真实鼠标、键盘、Unicode 文本和异步 TTS 执行路径已接入，但每次启动所有原子权限均重新为 `false`。本轮未代替用户授权并执行真实键鼠/TTS。
 - Safegate 分别检查鼠标移动/点击/双击/滚轮/拖拽、逐键权限、组合键全部按键、`send_text` 和 `speak`；急停会清空待执行动作并停止输出。
 - 六个最小激素值、自然恢复、表扬/批评反馈和行为倾向已接入；它们不能绕过权限或 Safegate。
@@ -26,7 +26,7 @@
 
 ```text
 python -m pytest -q
-33 passed in 6.00s
+36 passed in 5.94s
 ```
 
 本阶段真实 `observe` 十分钟长跑：
@@ -60,7 +60,7 @@ spiral_three_class output device: cuda:0
 
 当前仍未完成或无证据：
 
-- 没有可用本地 LLM/VLM 权重，故未完成真实模型回答和视觉理解人工验收；
+- 本地 LLM 普通对话和 YOLO 实时推理已验证；VLM 教师输出质量仍需人工验收；
 - OpenAI-compatible 云端仅完成接口和错误状态，未配置 API key 做真实调用；
 - 物理 Esc、真实鼠标/键盘/TTS 与完整 24 步人工交互验收仍需用户在桌面会话中完成；
 - QNN、自动 TNN 生成/成长/拆分/合并/替换、影子部署和红蓝圆三角实验仍未实现；

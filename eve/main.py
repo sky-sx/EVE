@@ -12,7 +12,14 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from eve.core.loop import CoreLoop, create_runtime_state, log_event
+from eve.core.loop import (
+    DEFAULT_LOCAL_LLM_PATH,
+    DEFAULT_VLM_PATH,
+    DEFAULT_YOLO_PATH,
+    CoreLoop,
+    create_runtime_state,
+    log_event,
+)
 from eve.core.safegate import emergency_stop, reset_emergency
 from eve.input.buffer import InputBuffer
 from eve.memory.memorizer import Memorizer
@@ -32,6 +39,7 @@ class EVEApplication:
         input_buffer: InputBuffer | None = None,
         tnn_id: str | None = None,
         allow_mock_actions: bool = False,
+        use_default_local_models: bool = True,
     ) -> None:
         if profile not in {"smoke", "observe", "control"}:
             raise ValueError(f"unsupported runtime profile: {profile}")
@@ -67,6 +75,33 @@ class EVEApplication:
             smoke_node=tnn_id is None,
         )
         self.core.load_snapshot(self.run_dir / "state_snapshot.json")
+        if profile == "control" and use_default_local_models:
+            model_config = self.state["model_config"]
+            model_config["local_llm_path"] = (
+                model_config.get("local_llm_path") or DEFAULT_LOCAL_LLM_PATH
+            )
+            model_config["vlm_path"] = (
+                model_config.get("vlm_path") or DEFAULT_VLM_PATH
+            )
+            model_config["yolo_model_path"] = (
+                model_config.get("yolo_model_path") or DEFAULT_YOLO_PATH
+            )
+            for name, path in (
+                ("local_llm", model_config["local_llm_path"]),
+                ("vlm", model_config["vlm_path"]),
+                ("yolo", model_config["yolo_model_path"]),
+            ):
+                self.state["model_status"][name].update(
+                    {
+                        "state": "configured",
+                        "path": path,
+                        "quantization": (
+                            "4bit-nf4-required"
+                            if name in {"local_llm", "vlm"}
+                            else "native-cuda"
+                        ),
+                    }
+                )
 
     @property
     def running(self) -> bool:
@@ -348,6 +383,20 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=repr)
 
 
+def _conversation_text(items: list[dict[str, Any]]) -> str:
+    lines = []
+    for item in items:
+        user = str(item.get("user", "")).strip()
+        reply = str(item.get("reply", "")).strip()
+        if user:
+            lines.append(f"用户：{user}")
+        if reply:
+            lines.append(f"EVE：{reply}")
+        if user or reply:
+            lines.append("")
+    return "\n".join(lines).strip() or "暂无对话"
+
+
 def _format_ns(value: Any) -> str:
     try:
         number = int(value)
@@ -482,12 +531,19 @@ class EVEControlWindow:
                 right = qt["QVBoxLayout"]()
                 self.visual_metrics = qt["QLabel"]("未启动")
                 self.visual_metrics.setWordWrap(True)
-                self.visual_result = self._readonly(qt, 260)
-                analyze = qt["QPushButton"]("分析当前帧")
+                self.visual_result = self._readonly(qt, 170)
+                self.teacher_visual_result = self._readonly(qt, 130)
+                analyze = qt["QPushButton"]("YOLO/TNN 分析当前帧")
                 analyze.clicked.connect(self._request_visual)
+                teacher = qt["QPushButton"]("VLM 教师复核当前帧")
+                teacher.clicked.connect(self._request_teacher_review)
                 right.addWidget(self.visual_metrics)
                 right.addWidget(analyze)
+                right.addWidget(qt["QLabel"]("运行时视觉结果"))
                 right.addWidget(self.visual_result)
+                right.addWidget(teacher)
+                right.addWidget(qt["QLabel"]("VLM 教师结果"))
+                right.addWidget(self.teacher_visual_result)
                 row.addLayout(right, 2)
                 layout.addLayout(row)
                 note = qt["QLabel"](
@@ -649,6 +705,7 @@ class EVEControlWindow:
                 config = self.application.state["model_config"]
                 self.local_path = qt["QLineEdit"](config["local_llm_path"])
                 self.vlm_path = qt["QLineEdit"](config["vlm_path"])
+                self.yolo_path = qt["QLineEdit"](config["yolo_model_path"])
                 self.cloud_url = qt["QLineEdit"](config["cloud_base_url"])
                 self.cloud_model = qt["QLineEdit"](config["cloud_model"])
                 self.cloud_key = qt["QLineEdit"]()
@@ -658,7 +715,8 @@ class EVEControlWindow:
                 self.cloud_enabled = qt["QCheckBox"]()
                 self.cloud_enabled.setChecked(bool(config["cloud_enabled"]))
                 form.addRow("本地 LLM 路径（强制 4-bit NF4）", self.local_path)
-                form.addRow("VLM 路径（强制 4-bit NF4）", self.vlm_path)
+                form.addRow("VLM 教师路径（按需 4-bit NF4）", self.vlm_path)
+                form.addRow("YOLO 运行时视觉路径", self.yolo_path)
                 form.addRow("云端 base_url", self.cloud_url)
                 form.addRow("云端 model", self.cloud_model)
                 form.addRow("API key（仅内存，不保存）", self.cloud_key)
@@ -775,7 +833,13 @@ class EVEControlWindow:
 
             def _request_visual(self) -> None:
                 try:
-                    self.application.core.submit_visual_request()
+                    self.application.core.submit_runtime_visual_analysis()
+                except Exception as exc:
+                    self._background_error = str(exc)
+
+            def _request_teacher_review(self) -> None:
+                try:
+                    self.application.core.submit_teacher_review()
                 except Exception as exc:
                     self._background_error = str(exc)
 
@@ -798,6 +862,7 @@ class EVEControlWindow:
                         {
                             "local_llm_path": self.local_path.text().strip(),
                             "vlm_path": self.vlm_path.text().strip(),
+                            "yolo_model_path": self.yolo_path.text().strip(),
                             "cloud_base_url": self.cloud_url.text().strip(),
                             "cloud_model": self.cloud_model.text().strip(),
                             "cloud_enabled": self.cloud_enabled.isChecked(),
@@ -920,12 +985,18 @@ class EVEControlWindow:
                 )
                 result = state.get("visual_result")
                 self.visual_result.setPlainText(
-                    _json_text(result) if result else "暂无真实 VLM 结果"
+                    _json_text(result) if result else "暂无 YOLO/TNN 结果"
+                )
+                teacher_result = state.get("teacher_visual_result")
+                self.teacher_visual_result.setPlainText(
+                    _json_text(teacher_result)
+                    if teacher_result
+                    else "尚未请求 VLM 教师复核"
                 )
 
             def _refresh_text(self, state: dict[str, Any]) -> None:
                 self.conversation_view.setPlainText(
-                    _json_text(state["conversation"][-30:])
+                    _conversation_text(state["conversation"][-30:])
                 )
                 self.thinking_view.setPlainText(
                     str(state["myself"].get("what_im_thinking", ""))
@@ -951,7 +1022,7 @@ class EVEControlWindow:
                     f"tensor test={cuda.get('tensor_test_passed', '未验证')}"
                 )
                 required = [
-                    "capture", "buffer", "core", "local_llm", "vlm",
+                    "capture", "buffer", "core", "local_llm", "yolo", "vlm",
                     "cloud_llm", "memory_writer", "memory_review", "safegate",
                     "mouse_output", "keyboard_output", "speak_output", "dock",
                 ]

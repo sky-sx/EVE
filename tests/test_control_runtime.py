@@ -9,6 +9,7 @@ import numpy as np
 from eve.core.loop import (
     DEFAULT_LOCAL_LLM_PATH,
     DEFAULT_VLM_PATH,
+    DEFAULT_YOLO_PATH,
     MAX_LOADED_TNN,
     CoreLoop,
     create_runtime_state,
@@ -54,6 +55,7 @@ def test_local_models_have_repo_defaults_and_legacy_empty_snapshot_is_migrated(
         DEFAULT_LOCAL_LLM_PATH
     )
     assert runtime.state["model_config"]["vlm_path"] == DEFAULT_VLM_PATH
+    assert runtime.state["model_config"]["yolo_model_path"] == DEFAULT_YOLO_PATH
     assert runtime.state["model_status"]["local_llm"]["state"] == "configured"
     assert runtime.state["model_status"]["vlm"]["state"] == "configured"
 
@@ -64,6 +66,7 @@ def test_local_models_have_repo_defaults_and_legacy_empty_snapshot_is_migrated(
                 "model_config": {
                     "local_llm_path": "",
                     "vlm_path": "",
+                    "yolo_model_path": "",
                     "cloud_enabled": True,
                 }
             }
@@ -75,6 +78,7 @@ def test_local_models_have_repo_defaults_and_legacy_empty_snapshot_is_migrated(
         DEFAULT_LOCAL_LLM_PATH
     )
     assert runtime.state["model_config"]["vlm_path"] == DEFAULT_VLM_PATH
+    assert runtime.state["model_config"]["yolo_model_path"] == DEFAULT_YOLO_PATH
     assert runtime.state["model_config"]["cloud_enabled"] is True
 
 
@@ -126,6 +130,7 @@ def test_control_cold_start_pause_emergency_reset_and_clean_stop(
         profile="control",
         run_dir=tmp_path,
         input_buffer=synthetic_buffer(),
+        use_default_local_models=False,
     )
     try:
         runtime.start(load_smoke_node=False)
@@ -163,6 +168,7 @@ def test_control_cold_start_pause_emergency_reset_and_clean_stop(
         profile="control",
         run_dir=tmp_path,
         input_buffer=synthetic_buffer(),
+        use_default_local_models=False,
     )
     assert not restarted.state["permissions"]["mouse"]["move"]
 
@@ -213,11 +219,44 @@ def test_llm_queue_valid_json_updates_and_invalid_result_is_atomic(tmp_path):
 
         before_world = dict(state["world"])
         core.submit_user_message("invalid")
-        wait_until(lambda: state["model_status"]["local_llm"]["state"] == "error")
+        wait_until(
+            lambda: state["model_status"]["local_llm"].get(
+                "last_request_state"
+            )
+            == "error"
+        )
+        assert state["model_status"]["local_llm"]["state"] == "ready"
         assert state["world"] == before_world
         assert "must_not_apply" not in state["world"]
     finally:
         core.stop()
+        memory.stop_writer()
+
+
+def test_real_llm_user_request_accepts_plain_text_reply(tmp_path, monkeypatch):
+    state = create_runtime_state()
+    memory = Memorizer(tmp_path / "memory")
+    core = CoreLoop(InputBuffer(), memory, state=state, log_dir=tmp_path)
+    monkeypatch.setattr(
+        core,
+        "_generate_local_chat",
+        lambda context: f"直接回复：{context['user_message']}",
+    )
+    state["model_status"]["local_llm"]["state"] = "ready"
+    memory.start_writer()
+    try:
+        request = {
+            "request_id": "chat_test",
+            "kind": "user",
+            "message": "你好",
+            "requested_at_ns": time.monotonic_ns(),
+            "memory_id": None,
+        }
+        core._process_llm_request(request)
+        assert state["conversation"][-1]["reply"] == "直接回复：你好"
+        assert state["model_status"]["local_llm"]["state"] == "ready"
+        assert "latest_llm_reply" in state["blackboard"]
+    finally:
         memory.stop_writer()
 
 
@@ -261,13 +300,65 @@ def test_vlm_stale_result_is_bound_but_not_current(tmp_path):
         )
         buffer.store("screen", second, timestamp_ns=second.captured_at_ns)
         release.set()
-        wait_until(lambda: state.get("last_visual_result") is not None)
+        wait_until(
+            lambda: state.get("last_teacher_visual_result") is not None
+        )
 
-        assert state["last_visual_result"]["reference_frame_id"] == 1
-        assert state["last_visual_result"]["status"] == "stale"
+        assert state["last_teacher_visual_result"]["reference_frame_id"] == 1
+        assert state["last_teacher_visual_result"]["status"] == "stale"
+        assert state["teacher_visual_result"] is None
         assert state["visual_result"] is None
     finally:
         release.set()
+        core.stop()
+        memory.stop_writer()
+
+
+def test_yolo_runtime_visual_writes_blackboard_without_vlm(tmp_path):
+    buffer = InputBuffer()
+    memory = Memorizer(tmp_path / "memory")
+    state = create_runtime_state()
+
+    def backend(_image):
+        return {
+            "detections": [
+                {
+                    "bbox": [1.0, 2.0, 7.0, 8.0],
+                    "confidence": 0.9,
+                    "class_id": 0,
+                    "class_name": "object",
+                }
+            ],
+            "inference_time_ms": 1.5,
+        }
+
+    core = CoreLoop(
+        buffer,
+        memory,
+        state=state,
+        log_dir=tmp_path,
+        runtime_visual_backend=backend,
+    )
+    memory.start_writer()
+    try:
+        core.start()
+        wait_until(lambda: state["model_status"]["yolo"]["state"] == "ready")
+        frame = ScreenFrame(
+            frame_id=7,
+            captured_at_ns=time.monotonic_ns(),
+            slot=0,
+            image=np.zeros((8, 8, 4), dtype=np.uint8),
+        )
+        buffer.store("screen", frame, timestamp_ns=frame.captured_at_ns)
+        wait_until(lambda: state["visual_result"] is not None)
+
+        result = state["visual_result"]
+        assert result["source"] == "yolo"
+        assert result["reference_frame_id"] == 7
+        assert result["detection_count"] == 1
+        assert state["blackboard"]["current_visual_result"]["producer"] == "yolo"
+        assert state["teacher_visual_result"] is None
+    finally:
         core.stop()
         memory.stop_writer()
 

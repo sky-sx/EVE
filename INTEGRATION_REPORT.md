@@ -6,14 +6,14 @@
 
 - `main.py`：移除 control 占位阻断，加入八页 PySide6 GUI、冷启动/暂停/恢复/正常停机/急停/显式解除、权限变更、设置、快照恢复和状态刷新。
 - `input/capture.py`、`input/buffer.py`：增加键盘活动与活动窗口小数据；仍由 Buffer 独占 Capture 进程和共享内存，并区分 EVE 输出与用户接管。
-- `core/loop.py`：加入有界 LLM/VLM/cloud/TNN 队列、原子 JSON 更新、帧绑定、CUDA 实测、六个最小激素、节点/资源状态、五 TNN 上限和快照。
+- `core/loop.py`：普通 LLM 对话与内部结构化决策分流；YOLO/视觉 TNN 负责运行时屏幕感知；VLM 只作为按需教师复核；保留有界队列、帧绑定、CUDA 实测、节点/资源状态、五 TNN 上限和快照。
 - `core/safegate.py`：改为鼠标与逐键原子授权，组合键必须全部满足，Unicode/粘贴同时检查 `send_text`、CTRL 和 V。
 - `output/*.py`：完成真实鼠标/键盘边界、按键释放、Unicode 粘贴和可停止的异步 TTS。
 - `memory/memorizer.py`：恢复最小 Event，补充真实计数、检索、TNN artifact 列表和强制整理进度/ETA。
 - `pyproject.toml`：声明 GUI、模型、量化、资源、真实输出和 TTS 所需依赖。
-- `tests/test_control_runtime.py`：覆盖八页 GUI、冷启动前静止、生命周期、LLM 原子更新、VLM 迟到隔离、权限和 TNN 五槽上限。
+- `tests/test_control_runtime.py`：覆盖八页 GUI、冷启动前静止、生命周期、LLM 普通对话与原子更新、YOLO Blackboard 写入、VLM 教师迟到隔离、权限和 TNN 五槽上限。
 
-RTX 5080 Tensor 同步测试通过，现有螺旋三分类 TNN 的参数和输出均为 `cuda:0`。本地 LLM 默认路径已配置为 `eve/core/deepseek-7b`，VLM 默认路径已配置为 `eve/core/qwen`；代码强制 4-bit NF4，未伪造模型结果。YOLO 位于 `eve/core/yolo26`，本阶段尚未接入教师链路。真实键鼠/TTS 和物理 Esc 仍等待用户人工授权验收。
+RTX 5080 Tensor 同步测试通过，现有螺旋三分类 TNN 的参数和输出均为 `cuda:0`。本地 LLM 已以 4-bit NF4 在 `cuda:0` 完成真实普通对话，回复耗时约 1.485 秒。YOLO 已从 `eve/core/yolo26/weights/yolo26n.pt` 在 RTX 5080 上加载、预热并完成约 8.27 ms 的合成帧推理。Qwen VLM 改为显式请求时按需加载的教师，不再占用实时屏幕分析入口。完整自动测试为 `36 passed in 5.94s`。真实键鼠/TTS、物理 Esc 以及 VLM 教师输出质量仍等待用户人工授权验收。
 
 本阶段另完成 `runs/control_stage_observe_10m_20260728` 的真实输入十分钟长跑：601.797 秒，屏幕 28.7913 FPS，光标 59.7749 Hz，Core 32.1579 Hz，TNN 调用 9,460 次，Memory 写入/丢弃/失败为 601/0/0，runtime error 为 0，退出后 Core、Memory、Capture 和项目线程均已停止。observe 未开放真实 Output。
 

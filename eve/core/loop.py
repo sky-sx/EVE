@@ -22,6 +22,7 @@ MAX_LOADED_TNN = 5
 CORE_MODEL_DIR = Path(__file__).resolve().parent
 DEFAULT_LOCAL_LLM_PATH = str(CORE_MODEL_DIR / "deepseek-7b")
 DEFAULT_VLM_PATH = str(CORE_MODEL_DIR / "qwen")
+DEFAULT_YOLO_PATH = str(CORE_MODEL_DIR / "yolo26" / "weights" / "yolo26n.pt")
 DEFAULT_HORMONES = {
     "dopamine": 0.5,
     "serotonin": 0.5,
@@ -65,23 +66,23 @@ def create_runtime_state(
         "loop_status": {"core": "not_started"},
         "node_status": {},
         "model_status": {
-            "local_llm": {
-                "state": "configured",
-                "device": None,
-                "path": DEFAULT_LOCAL_LLM_PATH,
-                "quantization": "4bit-nf4-required",
-            },
+            "local_llm": {"state": "not_configured", "device": None},
             "vlm": {
-                "state": "configured",
+                "state": "not_configured",
                 "device": None,
-                "path": DEFAULT_VLM_PATH,
-                "quantization": "4bit-nf4-required",
+                "role": "teacher",
+            },
+            "yolo": {
+                "state": "not_configured",
+                "device": None,
+                "role": "runtime_visual",
             },
             "cloud_llm": {"state": "disabled", "device": "cloud"},
         },
         "model_config": {
-            "local_llm_path": DEFAULT_LOCAL_LLM_PATH,
-            "vlm_path": DEFAULT_VLM_PATH,
+            "local_llm_path": "",
+            "vlm_path": "",
+            "yolo_model_path": "",
             "cloud_base_url": "",
             "cloud_model": "",
             "cloud_timeout_s": 30.0,
@@ -110,6 +111,7 @@ def create_runtime_state(
         "memory_ids": [],
         "conversation": [],
         "visual_result": None,
+        "teacher_visual_result": None,
         "cloud_result": None,
         "cuda_status": {},
         "last_feedback": None,
@@ -291,6 +293,28 @@ def _run_tnn(
         node["output_ttl_ns"],
         tnn_id,
     )
+    if (
+        "detections" in outputs
+        and any(
+            reference == "state:screen"
+            for reference in node["inputs"].values()
+        )
+    ):
+        visual_result = {
+            "source": "tnn",
+            "role": "runtime_visual",
+            "tnn_id": tnn_id,
+            "completed_at_ns": now_ns,
+            "detections": outputs["detections"],
+            "status": "current",
+        }
+        state["visual_result"] = visual_result
+        state["blackboard"]["current_visual_result"] = _timed(
+            visual_result,
+            now_ns,
+            node["output_ttl_ns"],
+            tnn_id,
+        )
     action_output = node["action_output"]
     if action_output and action_output in outputs:
         if not isinstance(outputs[action_output], dict):
@@ -453,6 +477,7 @@ class CoreLoop:
         smoke_node: bool = False,
         local_llm_backend: Callable[[dict[str, Any]], Any] | None = None,
         vlm_backend: Callable[[dict[str, Any]], Any] | None = None,
+        runtime_visual_backend: Callable[[Any], Any] | None = None,
         cloud_backend: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         if interval_s <= 0:
@@ -467,6 +492,7 @@ class CoreLoop:
         self.smoke_node = smoke_node
         self.local_llm_backend = local_llm_backend
         self.vlm_backend = vlm_backend
+        self.runtime_visual_backend = runtime_visual_backend
         self.cloud_backend = cloud_backend
         self._stop_event = threading.Event()
         self._failed_event = threading.Event()
@@ -483,6 +509,9 @@ class CoreLoop:
         self._local_tokenizer: Any = None
         self._vlm_model: Any = None
         self._vlm_processor: Any = None
+        self._yolo_detector: Any = None
+        self._yolo_force_event = threading.Event()
+        self._model_load_lock = threading.Lock()
         self._request_serial = 0
         self._last_autonomous_ns = time.monotonic_ns()
         self._last_hormone_ns = time.monotonic_ns()
@@ -509,7 +538,7 @@ class CoreLoop:
         if not self.state["cold_started"]:
             raise RuntimeError("cold start EVE before sending a message")
         status = self.state["model_status"]["local_llm"]
-        if status.get("state") != "ready":
+        if status.get("state") not in {"ready", "running", "queued"}:
             raise RuntimeError(
                 status.get("error") or f"local LLM is {status.get('state')}"
             )
@@ -535,8 +564,14 @@ class CoreLoop:
             self._llm_requests.put_nowait(request)
         except queue.Full as exc:
             raise RuntimeError("local LLM request queue is full") from exc
-        self.state["model_status"]["local_llm"].update(
-            {"state": "queued", "request_id": request_id}
+        status["queued_request_id"] = request_id
+        if status.get("state") == "ready":
+            status["state"] = "queued"
+        log_event(
+            self.log_dir,
+            "llm_chat_requested",
+            request_id=request_id,
+            message_length=len(text),
         )
         return request_id
 
@@ -544,17 +579,22 @@ class CoreLoop:
         self._cancel_generation.set()
         self._cancel_vlm.set()
         self._cancel_cloud.set()
-        self.state["model_status"]["local_llm"]["state"] = "cancel_requested"
+        status = self.state["model_status"]["local_llm"]
+        if status.get("state") in {"queued", "running"}:
+            status["state"] = "cancel_requested"
 
-    def submit_visual_request(
-        self, *, prompt: str = "请简要分析当前屏幕。"
+    def submit_teacher_review(
+        self, *, prompt: str = "请复核当前屏幕并生成可用于训练的视觉标签。"
     ) -> str:
         if not self.state["cold_started"]:
-            raise RuntimeError("cold start EVE before requesting VLM")
+            raise RuntimeError("cold start EVE before requesting VLM teacher")
         status = self.state["model_status"]["vlm"]
-        if status.get("state") != "ready":
+        if status.get("state") not in {
+            "configured", "teacher_idle", "ready"
+        }:
             raise RuntimeError(
-                status.get("error") or f"VLM is {status.get('state')}"
+                status.get("error")
+                or f"VLM teacher is {status.get('state')}"
             )
         sample = self.input_buffer.get_latest_screen()
         if sample is None:
@@ -579,6 +619,40 @@ class CoreLoop:
             raise RuntimeError("VLM request queue is full") from exc
         self.state["model_status"]["vlm"].update(
             {"state": "queued", "request_id": request_id}
+        )
+        log_event(
+            self.log_dir,
+            "vlm_teacher_review_requested",
+            request_id=request_id,
+            reference_frame_id=frame.frame_id,
+        )
+        return request_id
+
+    def submit_visual_request(
+        self, *, prompt: str = "请复核当前屏幕并生成可用于训练的视觉标签。"
+    ) -> str:
+        """Backward-compatible alias for an explicit VLM teacher review."""
+        return self.submit_teacher_review(prompt=prompt)
+
+    def submit_runtime_visual_analysis(self) -> str:
+        if not self.state["cold_started"]:
+            raise RuntimeError("cold start EVE before requesting visual analysis")
+        status = self.state["model_status"]["yolo"]
+        if status.get("state") != "ready":
+            raise RuntimeError(
+                status.get("error")
+                or f"runtime visual node is {status.get('state')}"
+            )
+        sample = self.input_buffer.get_latest_screen()
+        if sample is None:
+            raise RuntimeError("no screen frame is available")
+        request_id = f"visual_{time.time_ns()}"
+        self._yolo_force_event.set()
+        log_event(
+            self.log_dir,
+            "runtime_visual_requested",
+            request_id=request_id,
+            reference_frame_id=sample.value.frame_id,
         )
         return request_id
 
@@ -822,6 +896,7 @@ class CoreLoop:
         workers = (
             ("eve-local-llm", self._local_llm_worker),
             ("eve-vlm", self._vlm_worker),
+            ("eve-yolo", self._yolo_worker),
             ("eve-cloud-llm", self._cloud_worker),
             ("eve-tnn-lifecycle", self._tnn_lifecycle_worker),
         )
@@ -837,6 +912,7 @@ class CoreLoop:
         self._cancel_generation.set()
         self._cancel_vlm.set()
         self._cancel_cloud.set()
+        self._yolo_force_event.set()
         for requests in (
             self._llm_requests,
             self._vlm_requests,
@@ -856,6 +932,7 @@ class CoreLoop:
         self._local_tokenizer = None
         self._vlm_model = None
         self._vlm_processor = None
+        self._yolo_detector = None
         try:
             import torch
 
@@ -863,6 +940,180 @@ class CoreLoop:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
+
+    def _yolo_worker(self) -> None:
+        status = self.state["model_status"]["yolo"]
+        detector = None
+        try:
+            path = self.state["model_config"].get("yolo_model_path", "")
+            if self.runtime_visual_backend is None:
+                if not path:
+                    status.update(
+                        {
+                            "state": "not_configured",
+                            "error": "YOLO model path is empty",
+                        }
+                    )
+                    return
+                from eve.core.yolo26.detector import YOLODetector
+
+                detector = YOLODetector(model_path=path)
+                status.update({"state": "loading", "path": path})
+                with self._model_load_lock:
+                    if not detector.load():
+                        raise RuntimeError("YOLO detector failed to load")
+                self._yolo_detector = detector
+                status.update(
+                    {
+                        "state": "ready",
+                        "device": "cuda:0",
+                        "model": path,
+                        "role": "runtime_visual",
+                        "error": None,
+                    }
+                )
+            else:
+                status.update(
+                    {
+                        "state": "ready",
+                        "device": "injected",
+                        "model": "test_backend",
+                        "role": "runtime_visual",
+                        "error": None,
+                    }
+                )
+            self._yolo_frame_loop(detector)
+        except Exception as exc:
+            status.update(
+                {
+                    "state": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "finished_at_ns": time.monotonic_ns(),
+                }
+            )
+            log_event(
+                self.log_dir,
+                "runtime_visual_failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            self._record_error("yolo", exc, critical=False)
+        finally:
+            if detector is not None:
+                detector.unload()
+
+    def _yolo_frame_loop(self, detector: Any) -> None:
+        status = self.state["model_status"]["yolo"]
+        log_event(
+            self.log_dir,
+            "runtime_visual_ready",
+            model=status.get("model"),
+            device=status.get("device"),
+        )
+        last_frame_id = -1
+        while not self._model_stop.is_set():
+            sample = self.input_buffer.get_latest_screen()
+            if sample is not None:
+                frame = sample.value
+                if int(frame.frame_id) != last_frame_id:
+                    last_frame_id = int(frame.frame_id)
+                    self._run_yolo_frame(frame, detector)
+            self._yolo_force_event.wait(0.1)
+            self._yolo_force_event.clear()
+
+    def _run_yolo_frame(self, frame: Any, detector: Any) -> None:
+        status = self.state["model_status"]["yolo"]
+        started_ns = time.monotonic_ns()
+        try:
+            raw = (
+                self.runtime_visual_backend(frame.image)
+                if self.runtime_visual_backend is not None
+                else detector.detect(frame.image)
+            )
+            result = self._normalize_yolo_result(frame, raw, started_ns)
+            finished_ns = int(result["completed_at_ns"])
+            with self.state["_state_lock"]:
+                self.state["visual_result"] = result
+                self.state["blackboard"]["current_visual_result"] = _timed(
+                    result,
+                    finished_ns,
+                    ttl_ns=1_000_000_000,
+                    producer="yolo",
+                )
+            stats = self.state["runtime_stats"]
+            stats["yolo_calls"] = stats.get("yolo_calls", 0) + 1
+            status.update(
+                {
+                    "state": "ready",
+                    "finished_at_ns": finished_ns,
+                    "last_duration_ms": result["duration_ms"],
+                    "last_request_error": None,
+                    "error": None,
+                }
+            )
+        except Exception as exc:
+            status.update(
+                {
+                    "state": "ready",
+                    "last_request_error": f"{type(exc).__name__}: {exc}",
+                    "finished_at_ns": time.monotonic_ns(),
+                }
+            )
+            log_event(
+                self.log_dir,
+                "runtime_visual_frame_failed",
+                reference_frame_id=getattr(frame, "frame_id", None),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    def _normalize_yolo_result(
+        self, frame: Any, raw: Any, started_ns: int
+    ) -> dict[str, Any]:
+        detections, inference_ms = self._yolo_detection_payload(
+            raw, started_ns
+        )
+        return {
+            "source": "yolo",
+            "role": "runtime_visual",
+            "model": self.state["model_status"]["yolo"].get("model"),
+            "reference_frame_id": int(frame.frame_id),
+            "reference_frame_timestamp_ns": int(frame.captured_at_ns),
+            "completed_at_ns": time.monotonic_ns(),
+            "duration_ms": inference_ms,
+            "detections": detections,
+            "detection_count": len(detections),
+            "status": "current",
+        }
+
+    @staticmethod
+    def _yolo_detection_payload(
+        raw: Any, started_ns: int
+    ) -> tuple[list[dict[str, Any]], float]:
+        if isinstance(raw, dict):
+            return (
+                list(raw.get("detections", [])),
+                float(
+                    raw.get(
+                        "inference_time_ms",
+                        (time.monotonic_ns() - started_ns) / 1_000_000,
+                    )
+                ),
+            )
+        detections = []
+        for item in raw.detections:
+            detections.append(
+                {
+                    "bbox": [
+                        float(item.x1),
+                        float(item.y1),
+                        float(item.x2),
+                        float(item.y2),
+                    ],
+                    "confidence": float(item.confidence),
+                    "class_id": int(item.class_id),
+                    "class_name": str(item.class_name),
+                }
+            )
+        return detections, float(raw.inference_time_ms)
 
     def _tnn_lifecycle_worker(self) -> None:
         while not self._model_stop.is_set():
@@ -895,7 +1146,8 @@ class CoreLoop:
             if self.local_llm_backend is None:
                 path = self.state["model_config"].get("local_llm_path", "")
                 if path:
-                    self._load_local_llm(path)
+                    with self._model_load_lock:
+                        self._load_local_llm(path)
                 else:
                     status.update(
                         {"state": "not_configured", "error": "model path is empty"}
@@ -922,10 +1174,21 @@ class CoreLoop:
                 except Exception as exc:
                     status.update(
                         {
-                            "state": "error",
-                            "error": f"{type(exc).__name__}: {exc}",
+                            "state": "ready",
+                            "error": None,
+                            "last_request_state": "error",
+                            "last_request_error": (
+                                f"{type(exc).__name__}: {exc}"
+                            ),
                             "finished_at_ns": time.monotonic_ns(),
                         }
+                    )
+                    log_event(
+                        self.log_dir,
+                        "llm_request_failed",
+                        request_id=request.get("request_id"),
+                        request_kind=request.get("kind"),
+                        error=f"{type(exc).__name__}: {exc}",
                     )
                     self._record_error("local_llm", exc, critical=False)
         except Exception as exc:
@@ -1039,14 +1302,32 @@ class CoreLoop:
         context = self._llm_context(request)
         if self.local_llm_backend is not None:
             raw = self.local_llm_backend(context)
+        elif request["kind"] == "user":
+            raw = self._generate_local_chat(context)
         else:
             raw = self._generate_local_llm(context)
         if self._cancel_generation.is_set():
-            status.update({"state": "cancelled", "finished_at_ns": time.monotonic_ns()})
+            status.update(
+                {
+                    "state": "ready",
+                    "last_request_state": "cancelled",
+                    "finished_at_ns": time.monotonic_ns(),
+                }
+            )
             return
         try:
-            result = raw if isinstance(raw, dict) else self._parse_model_json(str(raw))
-            self._apply_llm_result(request, result)
+            if (
+                self.local_llm_backend is None
+                and request["kind"] == "user"
+            ):
+                self._apply_chat_reply(request, str(raw))
+            else:
+                result = (
+                    raw
+                    if isinstance(raw, dict)
+                    else self._parse_model_json(str(raw))
+                )
+                self._apply_llm_result(request, result)
         except Exception as exc:
             summary = self._safe_model_output_summary(str(raw))
             error = {
@@ -1055,11 +1336,26 @@ class CoreLoop:
                 "raw_output_summary": summary,
                 "timestamp_ns": time.monotonic_ns(),
             }
-            status.update({"state": "error", "error": error["message"], **error})
+            status.update(
+                {
+                    "state": "ready",
+                    "error": None,
+                    "last_request_state": "error",
+                    "last_request_error": error["message"],
+                    **error,
+                }
+            )
             self.state["blackboard"]["local_llm_error"] = _timed(
                 error, error["timestamp_ns"], producer="local_llm"
             )
             self.memorizer.enqueue(error, "local_llm_error", priority="critical")
+            log_event(
+                self.log_dir,
+                "llm_request_failed",
+                request_id=request["request_id"],
+                request_kind=request["kind"],
+                error=error["message"],
+            )
             return
         finished_ns = time.monotonic_ns()
         status.update(
@@ -1068,7 +1364,16 @@ class CoreLoop:
                 "finished_at_ns": finished_ns,
                 "last_duration_ms": (finished_ns - started_ns) / 1_000_000,
                 "error": None,
+                "last_request_state": "completed",
+                "last_request_error": None,
             }
+        )
+        log_event(
+            self.log_dir,
+            "llm_request_completed",
+            request_id=request["request_id"],
+            request_kind=request["kind"],
+            duration_ms=(finished_ns - started_ns) / 1_000_000,
         )
         stats = self.state["runtime_stats"]
         stats["local_llm_calls"] = stats.get("local_llm_calls", 0) + 1
@@ -1103,6 +1408,58 @@ class CoreLoop:
         }
 
     def _generate_local_llm(self, context: dict[str, Any]) -> str:
+        system = (
+            "你是 EVE 的本地运行模型。只输出一个 JSON 对象，不输出隐藏推理。"
+            "字段必须为 reply, thinking_summary, world_update, myself_update, "
+            "blackboard_updates, active_tnn, memory_candidates。"
+        )
+        user = json.dumps(context, ensure_ascii=False, default=_value_summary)
+        return self._generate_from_messages(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_new_tokens=512,
+            suppress_reasoning=True,
+        )
+
+    def _generate_local_chat(self, context: dict[str, Any]) -> str:
+        history = []
+        for exchange in self.state["conversation"][-8:]:
+            user = str(exchange.get("user", "")).strip()
+            reply = str(exchange.get("reply", "")).strip()
+            if user:
+                history.append({"role": "user", "content": user})
+            if reply:
+                history.append({"role": "assistant", "content": reply})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 EVE 的本地对话模型。直接、清楚地回答用户。"
+                    "不要输出 JSON，不要展示隐藏推理。"
+                ),
+            },
+            *history,
+            {"role": "user", "content": str(context["user_message"])},
+        ]
+        raw = self._generate_from_messages(
+            messages,
+            max_new_tokens=512,
+            suppress_reasoning=True,
+        )
+        reply = self._visible_model_reply(raw)
+        if not reply:
+            raise ValueError("local LLM returned no visible reply")
+        return reply
+
+    def _generate_from_messages(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_new_tokens: int,
+        suppress_reasoning: bool,
+    ) -> str:
         import torch
         from transformers import StoppingCriteria, StoppingCriteriaList
 
@@ -1113,38 +1470,78 @@ class CoreLoop:
                 del input_ids, scores, kwargs
                 return cancel_event.is_set()
 
-        system = (
-            "你是 EVE 的本地运行模型。只输出一个 JSON 对象，不输出隐藏推理。"
-            "字段必须为 reply, thinking_summary, world_update, myself_update, "
-            "blackboard_updates, active_tnn, memory_candidates。"
-        )
-        user = json.dumps(context, ensure_ascii=False, default=_value_summary)
         tokenizer = self._local_tokenizer
         model = self._local_model
         if hasattr(tokenizer, "apply_chat_template"):
             prompt = tokenizer.apply_chat_template(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
+                messages,
                 tokenize=False,
                 add_generation_prompt=True,
             )
         else:
-            prompt = f"{system}\n{user}\n"
+            prompt = "\n".join(
+                f"{message['role']}: {message['content']}"
+                for message in messages
+            )
+            prompt += "\nassistant:"
+        if suppress_reasoning and prompt.rstrip().endswith("<think>"):
+            prompt += "</think>\n\n"
         inputs = tokenizer(prompt, return_tensors="pt")
         device = next(model.parameters()).device
         inputs = {name: value.to(device) for name, value in inputs.items()}
         with torch.inference_mode():
             output = model.generate(
                 **inputs,
-                max_new_tokens=512,
+                max_new_tokens=max_new_tokens,
                 do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
                 stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
             )
         generated = output[0, inputs["input_ids"].shape[1] :]
         return tokenizer.decode(generated, skip_special_tokens=True)
+
+    @staticmethod
+    def _visible_model_reply(raw: str) -> str:
+        text = str(raw)
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[-1]
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+        text = re.sub(r"^```(?:text)?\s*|\s*```$", "", text.strip())
+        return text.strip()
+
+    def _apply_chat_reply(self, request: dict[str, Any], reply: str) -> None:
+        visible_reply = self._visible_model_reply(reply)
+        if not visible_reply:
+            raise ValueError("local LLM returned an empty reply")
+        now_ns = time.monotonic_ns()
+        exchange = {
+            "request_id": request["request_id"],
+            "kind": "user",
+            "user": request["message"],
+            "reply": visible_reply,
+            "thinking_summary": "",
+            "timestamp_ns": now_ns,
+        }
+        with self.state["_state_lock"]:
+            self.state["conversation"].append(exchange)
+            self.state["conversation"] = self.state["conversation"][-100:]
+            self.state["blackboard"]["latest_llm_reply"] = _timed(
+                exchange, now_ns, producer="local_llm"
+            )
+        reply_id = self.memorizer.enqueue(
+            exchange, "llm_reply", priority="critical"
+        )
+        related = [
+            memory_id
+            for memory_id in (request.get("memory_id"), reply_id)
+            if memory_id
+        ]
+        if related:
+            self.memorizer.create_event(
+                related,
+                summary="LLM user conversation",
+                tags=["llm", "chat"],
+            )
 
     @staticmethod
     def _parse_model_json(raw: str) -> dict[str, Any]:
@@ -1263,7 +1660,14 @@ class CoreLoop:
             if self.vlm_backend is None:
                 path = self.state["model_config"].get("vlm_path", "")
                 if path:
-                    self._load_vlm(path)
+                    status.update(
+                        {
+                            "state": "teacher_idle",
+                            "path": path,
+                            "role": "teacher",
+                            "error": None,
+                        }
+                    )
                 else:
                     status.update(
                         {"state": "not_configured", "error": "model path is empty"}
@@ -1285,14 +1689,35 @@ class CoreLoop:
                     return
                 self._cancel_vlm.clear()
                 try:
+                    if self.vlm_backend is None and self._vlm_model is None:
+                        path = self.state["model_config"].get("vlm_path", "")
+                        with self._model_load_lock:
+                            self._load_vlm(path)
                     self._process_vlm_request(request)
                 except Exception as exc:
+                    reusable = (
+                        self._vlm_model is not None
+                        or self.vlm_backend is not None
+                    )
                     status.update(
                         {
-                            "state": "error",
-                            "error": f"{type(exc).__name__}: {exc}",
+                            "state": "ready" if reusable else "error",
+                            "error": (
+                                None
+                                if reusable
+                                else f"{type(exc).__name__}: {exc}"
+                            ),
+                            "last_request_error": (
+                                f"{type(exc).__name__}: {exc}"
+                            ),
                             "finished_at_ns": time.monotonic_ns(),
                         }
+                    )
+                    log_event(
+                        self.log_dir,
+                        "vlm_teacher_review_failed",
+                        request_id=request.get("request_id"),
+                        error=f"{type(exc).__name__}: {exc}",
                     )
                     self._record_error("vlm", exc, critical=False)
         except Exception as exc:
@@ -1367,7 +1792,11 @@ class CoreLoop:
             analysis = self._generate_vlm(request)
         if self._cancel_vlm.is_set():
             status.update(
-                {"state": "cancelled", "finished_at_ns": time.monotonic_ns()}
+                {
+                    "state": "ready",
+                    "last_request_state": "cancelled",
+                    "finished_at_ns": time.monotonic_ns(),
+                }
             )
             return
         finished_ns = time.monotonic_ns()
@@ -1379,6 +1808,7 @@ class CoreLoop:
         result = {
             "request_id": request["request_id"],
             "model": status.get("model", "injected"),
+            "role": "teacher",
             "reference_frame_id": request["frame_id"],
             "reference_frame_timestamp_ns": request["frame_timestamp_ns"],
             "requested_at_ns": request["requested_at_ns"],
@@ -1387,26 +1817,26 @@ class CoreLoop:
             "status": "stale" if stale else "current",
             "error": None,
         }
-        self.state["last_visual_result"] = result
+        self.state["last_teacher_visual_result"] = result
         if not stale:
-            self.state["visual_result"] = result
-            self.state["blackboard"]["current_visual_result"] = _timed(
-                result, finished_ns, producer="vlm"
+            self.state["teacher_visual_result"] = result
+            self.state["blackboard"]["latest_teacher_review"] = _timed(
+                result, finished_ns, producer="vlm_teacher"
             )
-        self.state["blackboard"]["latest_vlm_result"] = _timed(
-            result, finished_ns, producer="vlm"
+        self.state["blackboard"]["latest_vlm_teacher_result"] = _timed(
+            result, finished_ns, producer="vlm_teacher"
         )
         image_id = self.memorizer.enqueue(
             request["image"], "screen_image", priority="normal"
         )
         result_id = self.memorizer.enqueue(
-            result, "vlm_result", priority="critical"
+            result, "vlm_teacher_result", priority="critical"
         )
         if image_id and result_id:
             self.memorizer.create_event(
                 [image_id, result_id],
-                summary="VLM screen analysis",
-                tags=["vlm", result["status"]],
+                summary="VLM teacher screen review",
+                tags=["vlm", "teacher", result["status"]],
             )
         status.update(
             {
@@ -1418,6 +1848,14 @@ class CoreLoop:
         )
         stats = self.state["runtime_stats"]
         stats["vlm_calls"] = stats.get("vlm_calls", 0) + 1
+        log_event(
+            self.log_dir,
+            "vlm_teacher_review_completed",
+            request_id=request["request_id"],
+            reference_frame_id=request["frame_id"],
+            status=result["status"],
+            duration_ms=(finished_ns - started_ns) / 1_000_000,
+        )
         self._adjust_hormones(
             {"acetylcholine": 0.002},
             "vlm_success",
@@ -1441,11 +1879,29 @@ class CoreLoop:
             image = image[..., :3][..., ::-1]
         processor = self._vlm_processor
         model = self._vlm_model
-        inputs = processor(
-            images=Image.fromarray(image),
-            text=request["prompt"],
-            return_tensors="pt",
-        )
+        pil_image = Image.fromarray(image)
+        if hasattr(processor, "apply_chat_template"):
+            inputs = processor.apply_chat_template(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": pil_image},
+                            {"type": "text", "text": request["prompt"]},
+                        ],
+                    }
+                ],
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+        else:
+            inputs = processor(
+                images=pil_image,
+                text=request["prompt"],
+                return_tensors="pt",
+            )
         device = next(model.parameters()).device
         inputs = {name: value.to(device) for name, value in inputs.items()}
         with torch.inference_mode():
@@ -1455,7 +1911,13 @@ class CoreLoop:
                 do_sample=False,
                 stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
             )
-        return processor.batch_decode(output, skip_special_tokens=True)[0]
+        prompt_length = int(inputs["input_ids"].shape[1])
+        generated = output[:, prompt_length:]
+        return processor.batch_decode(
+            generated,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
 
     def _cloud_worker(self) -> None:
         status = self.state["model_status"]["cloud_llm"]
@@ -1861,7 +2323,9 @@ class CoreLoop:
             for name, value in saved_model_config.items():
                 if name not in self.state["model_config"]:
                     continue
-                if name in {"local_llm_path", "vlm_path"} and not value:
+                if name in {
+                    "local_llm_path", "vlm_path", "yolo_model_path"
+                } and not value:
                     continue
                 self.state["model_config"][name] = value
         self.state["restored_tnn_descriptions"] = list(
@@ -2128,7 +2592,7 @@ class CoreLoop:
             "actual_hz": 0.0,
             "last_error": review.get("last_error"),
         }
-        for name in ("local_llm", "vlm", "cloud_llm"):
+        for name in ("local_llm", "yolo", "vlm", "cloud_llm"):
             model = self.state["model_status"][name]
             self.state["node_status"][name] = {
                 "state": model.get("state", "unknown"),
