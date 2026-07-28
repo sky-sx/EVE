@@ -1,5 +1,28 @@
 # EVE 完整目标架构
 
+## 2026-07-28 已落地的交互运行时边界
+
+`main.py` 现在直接承载 PySide6 八页监视与控制窗口。GUI 只读 Buffer/Core/Memory 发布状态并向 Core 提交有界请求；它不直接访问 Capture、模型、Memory 文件或 Output。
+
+```text
+GUI / main.py
+  ↓ 冷启动、暂停、恢复、急停、关闭、用户请求
+InputBuffer ↔ Capture 独立进程（屏幕/光标/键盘活动/活动窗口）
+  ↓
+Core（world / myself / Blackboard / LLM / VLM / cloud / TNN≤5）
+  ↔ Memory（异步写入 / Event / 检索 / 整理）
+  ↓ 动作候选
+Safegate（原子权限 / 急停 / 接管 / 有效期 / 最低范围）
+  ↓
+Output（鼠标 / 键盘 / Unicode 文本 / TTS）
+  ↓
+Core / Memory
+```
+
+本地生成式模型的固定边界是 CUDA 4-bit NF4，加载后必须检查模型真实量化状态；没有模型权重或量化失败时节点进入可见错误状态。Input 不包含麦克风、录音、音量或语音识别；TTS 仅属于 Output。
+
+运行时只使用 Core 现有 `loaded_tnn` 和 SourceRef 关系呈现五个 TNN 槽位，不建立第二套 TNNGraph、Manager 或 Router。
+
 本文是 `EVE完整架构描述.txt` 的结构化工程表达，描述目标架构，不代表所有能力已经实现。当前实现状态只见 `STATUS.md`。若本文与完整架构原文冲突，以原文和用户最新明确决定为准。
 
 ## 1. 总体原则

@@ -1,6 +1,70 @@
 # EVE 当前实现状态
 
-更新时间：2026-07-27 CST
+更新时间：2026-07-28 CST
+
+## 2026-07-28 GUI 与正式交互运行时状态（当前权威摘要）
+
+以下摘要取代本文后半部分的旧阶段“尚未实现”列表；旧记录仅保留为历史证据。
+
+- `python -m eve.main --profile control` 已启用 PySide6 GUI，不再返回占位退出码 2。
+- GUI 共八页：实时视觉、文本与认知、资源与节点、冷启动与急停、Memory/Blackboard、权限与倾向、设置/激素/反馈、TNN。
+- 程序启动只打开 GUI；用户点击冷启动后才启动 Capture、Core、Memory writer、LLM/VLM worker 和 TNN 调度。
+- Capture 仍由 Buffer 独占管理并运行在独立进程；进程内现有屏幕、光标、键盘活动和活动窗口四个采集线程。没有麦克风、录音或语音识别输入。
+- Core 现有本地 LLM、VLM、OpenAI-compatible 云端请求和 TNN 生命周期有界队列。模型推理与 TNN 加载不在 GUI 主线程执行。
+- 本地 LLM 默认使用 `eve/core/deepseek-7b`，VLM 默认使用 `eve/core/qwen`；两者只允许 CUDA 4-bit NF4 加载，并验证模型的 `is_loaded_in_4bit`。不支持时明确报错，不会回退到 FP16/FP32。
+- 当前机器没有配置可用的本地生成式 LLM/VLM 权重，因此状态如实显示 `not_configured`；尚无真实本地 LLM/VLM 回答验收证据。
+- Core 的结构化 LLM 结果采用整批预校验和原子更新；无效结果不会部分覆盖 world、myself、Blackboard 或 active_tnn。
+- VLM 结果保存模型名、参考帧 ID/时间、请求/完成时间；迟到结果记为 `stale`，不会覆盖当前视觉结果。
+- 真实鼠标、键盘、Unicode 文本和异步 TTS 执行路径已接入，但每次启动所有原子权限均重新为 `false`。本轮未代替用户授权并执行真实键鼠/TTS。
+- Safegate 分别检查鼠标移动/点击/双击/滚轮/拖拽、逐键权限、组合键全部按键、`send_text` 和 `speak`；急停会清空待执行动作并停止输出。
+- 六个最小激素值、自然恢复、表扬/批评反馈和行为倾向已接入；它们不能绕过权限或 Safegate。
+- Memory 已支持 Event、STM/MTM/LTM 真实计数、按 ID/关键词/时间检索、强制整理的真实进度与动态 ETA。
+- `MAX_LOADED_TNN = 5`；第六个加载请求被明确拒绝且原五个保持不变。TNN 加载前检查文件、设备、RAM 和 VRAM。
+- 正常停机保存 world、myself、必要 Blackboard、active_tnn、loaded_tnn 描述和模型设置；权限和 API key 不进入恢复快照。
+
+当前自动回归：
+
+```text
+python -m pytest -q
+33 passed in 6.00s
+```
+
+本阶段真实 `observe` 十分钟长跑：
+
+```text
+run: runs/control_stage_observe_10m_20260728
+duration: 601.797 s
+screen: 28.7913 FPS / 19.5298 ms average capture latency
+cursor: 59.7749 Hz / 0.00125 ms average capture latency
+core: 32.1579 Hz
+TNN invocations: 9,460
+Memory written/dropped/failed: 601/0/0
+runtime errors: 0
+shutdown records: 1
+threads stopped: true
+Capture process stopped: true
+real Output calls: 0
+```
+
+真实 CUDA 验证：
+
+```text
+torch: 2.10.0+cu130
+torch CUDA: 13.0
+GPU: NVIDIA GeForce RTX 5080
+Compute Capability: 12.0
+CUDA Tensor + synchronize: passed
+spiral_three_class parameter device: cuda:0
+spiral_three_class output device: cuda:0
+```
+
+当前仍未完成或无证据：
+
+- 没有可用本地 LLM/VLM 权重，故未完成真实模型回答和视觉理解人工验收；
+- OpenAI-compatible 云端仅完成接口和错误状态，未配置 API key 做真实调用；
+- 物理 Esc、真实鼠标/键盘/TTS 与完整 24 步人工交互验收仍需用户在桌面会话中完成；
+- QNN、自动 TNN 生成/成长/拆分/合并/替换、影子部署和红蓝圆三角实验仍未实现；
+- 复杂 Memory Graph、图压缩和自动睡眠策略仍未实现。
 
 本文只记录当前工作区已经实现并实际验证的事实。
 

@@ -2,7 +2,20 @@
 from __future__ import annotations
 
 import time
+import threading
 from typing import Any
+
+_STOP = threading.Event()
+
+
+def stop_all() -> None:
+    """Prevent new mouse actions after an emergency stop."""
+    _STOP.set()
+
+
+def reset_stop() -> None:
+    """Re-arm mouse output only after the user explicitly resets EVE."""
+    _STOP.clear()
 
 
 def _result(
@@ -60,6 +73,15 @@ def _execute_real(
     pyautogui.FAILSAFE = False
     action = payload.get("action", "moveTo")
     try:
+        if _STOP.is_set():
+            return _result(
+                action_id,
+                "real",
+                started_ns,
+                blocked=True,
+                reason="emergency_stopped",
+                payload=payload,
+            )
         if action == "moveTo":
             pyautogui.moveTo(
                 payload.get("x", 0),
@@ -72,7 +94,7 @@ def _execute_real(
                 payload.get("dy", 0),
                 duration=payload.get("duration", 0.0),
             )
-        elif action in {"click", "doubleClick", "rightClick"}:
+        elif action in {"click", "doubleClick", "rightClick", "middleClick"}:
             function = getattr(pyautogui, action)
             kwargs = {
                 key: payload[key]
@@ -86,6 +108,7 @@ def _execute_real(
                 payload.get("x2", 0) - payload.get("x1", 0),
                 payload.get("y2", 0) - payload.get("y1", 0),
                 duration=payload.get("duration", 0.5),
+                button=payload.get("button", "left"),
             )
         elif action == "scroll":
             pyautogui.scroll(payload.get("clicks", 1))

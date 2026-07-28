@@ -1,12 +1,22 @@
 [project]
 name = "eve-minimal-reflex-kernel"
 version = "0.1.0"
-description = "Safe EVE reflex runtime with smoke and real-input observe profiles."
+description = "Safe EVE desktop runtime with smoke, observe, and control profiles."
 requires-python = ">=3.11"
 dependencies = [
     "mss>=9.0",
     "numpy>=1.24",
+    "openai>=1.0",
+    "pillow>=10.0",
+    "psutil>=5.9",
+    "pyautogui>=0.9",
+    "pyperclip>=1.8",
+    "PySide6>=6.7",
+    "pyttsx3>=2.90",
     "torch>=2.0",
+    "transformers>=5.12,<6",
+    "accelerate>=1.0",
+    "bitsandbytes>=0.45",
 ]
 
 [tool.pytest.ini_options]

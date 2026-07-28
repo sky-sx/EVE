@@ -61,7 +61,7 @@ class InputBuffer:
             raise ValueError("retention_ns must be positive")
         if max_samples_per_kind <= 0:
             raise ValueError("max_samples_per_kind must be positive")
-        if profile not in {"smoke", "observe"}:
+        if profile not in {"smoke", "observe", "control"}:
             raise ValueError(f"unsupported input profile: {profile}")
         self.retention_ns = retention_ns
         self.max_samples_per_kind = max_samples_per_kind
@@ -87,7 +87,14 @@ class InputBuffer:
         self._capture_started_at_ns = 0
         self._screen_count = 0
         self._cursor_count = 0
+        self._keyboard_count = 0
+        self._window_count = 0
+        self._dropped_screen_frames = 0
+        self._last_screen_frame_id = 0
         self._last_cursor_position: tuple[int, int] | None = None
+        self._expected_mouse_until_ns = 0
+        self._expected_mouse_target: tuple[int, int] | None = None
+        self._expected_keyboard_until_ns = 0
         self.human_activity_detected_at_ns = 0
         self.human_takeover_until_ns = 0
 
@@ -110,6 +117,8 @@ class InputBuffer:
             "screen_slots": max(4, int(self.screen_fps * 1.25)),
             "screen_mode": "synthetic" if self.profile == "smoke" else "real",
             "cursor_mode": "synthetic" if self.profile == "smoke" else "real",
+            "keyboard_mode": "synthetic" if self.profile == "smoke" else "real",
+            "window_mode": "synthetic" if self.profile == "smoke" else "real",
             "startup_timeout_s": startup_timeout_s,
             **self.capture_options,
         }
@@ -214,6 +223,13 @@ class InputBuffer:
         return {
             "screen_frames": screen_count,
             "cursor_samples": cursor_count,
+            "keyboard_samples": int(
+                final.get("keyboard_samples", self._keyboard_count)
+            ),
+            "window_samples": int(
+                final.get("window_samples", self._window_count)
+            ),
+            "dropped_screen_frames": self._dropped_screen_frames,
             "screen_fps": screen_count / duration_s,
             "cursor_hz": cursor_count / duration_s,
             "screen_average_latency_ms": (
@@ -291,17 +307,54 @@ class InputBuffer:
         window = self.snapshot(min(self.retention_ns, 1_000_000_000))
         screen = window.get("screen", [])
         cursor = window.get("cursor", [])
+        keyboard = window.get("keyboard_activity", [])
+        active_window = window.get("active_window", [])
         return {
             "screen": screen,
             "cursor": cursor,
+            "keyboard_activity": keyboard,
+            "active_window": active_window,
             "latest": {
                 "screen": screen[-1] if screen else None,
                 "cursor": cursor[-1] if cursor else None,
+                "keyboard_activity": keyboard[-1] if keyboard else None,
+                "active_window": active_window[-1] if active_window else None,
             },
             "capture": self.capture_health(),
             "human_activity_detected_at_ns": self.human_activity_detected_at_ns,
             "human_takeover_until_ns": self.human_takeover_until_ns,
+            "dropped_screen_frames": self._dropped_screen_frames,
         }
+
+    def mark_eve_mouse_action(
+        self,
+        action_id: str,
+        *,
+        target: tuple[int, int] | None,
+        duration_s: float = 0.0,
+    ) -> None:
+        """Mark the short motion window so EVE movement is not user takeover."""
+        del action_id
+        now_ns = time.monotonic_ns()
+        self._expected_mouse_until_ns = now_ns + int(
+            (max(0.0, duration_s) + 0.35) * 1_000_000_000
+        )
+        self._expected_mouse_target = target
+
+    def mark_eve_keyboard_action(
+        self, action_id: str, *, duration_s: float = 0.25
+    ) -> None:
+        del action_id
+        self._expected_keyboard_until_ns = time.monotonic_ns() + int(
+            max(0.1, duration_s) * 1_000_000_000
+        )
+
+    def submit_user_text(self, text: str) -> TimedSample:
+        return self.store(
+            "user_text",
+            {"text": str(text)},
+            timestamp_ns=time.monotonic_ns(),
+        )
 
     def get_latest_screen(self) -> TimedSample | None:
         samples = self.snapshot(min(self.retention_ns, 1_000_000_000)).get(
@@ -356,6 +409,10 @@ class InputBuffer:
                     self._receive_screen(message)
                 elif message_type == "cursor":
                     self._receive_cursor(message)
+                elif message_type == "keyboard_activity":
+                    self._receive_keyboard_activity(message)
+                elif message_type == "active_window":
+                    self._receive_active_window(message)
                 elif message_type == "health":
                     self._capture_health = dict(message)
                     if message.get("state") == "running":
@@ -403,6 +460,11 @@ class InputBuffer:
             image=image,
         )
         self.store("screen", frame, timestamp_ns=frame.captured_at_ns)
+        if self._last_screen_frame_id:
+            self._dropped_screen_frames += max(
+                0, frame.frame_id - self._last_screen_frame_id - 1
+            )
+        self._last_screen_frame_id = frame.frame_id
         self._screen_count += 1
 
     def _receive_cursor(self, message: dict[str, Any]) -> None:
@@ -417,13 +479,58 @@ class InputBuffer:
         )
         current = (cursor.x, cursor.y)
         if self._last_cursor_position is not None and current != self._last_cursor_position:
-            self.human_activity_detected_at_ns = cursor.captured_at_ns
-            self.human_takeover_until_ns = (
-                cursor.captured_at_ns + 5_000_000_000
-            )
+            expected = self._is_expected_mouse_motion(current, cursor.captured_at_ns)
+            if not expected:
+                self.human_activity_detected_at_ns = cursor.captured_at_ns
+                self.human_takeover_until_ns = (
+                    cursor.captured_at_ns + 5_000_000_000
+                )
         self._last_cursor_position = current
         self.store("cursor", cursor, timestamp_ns=cursor.captured_at_ns)
         self._cursor_count += 1
+
+    def _is_expected_mouse_motion(
+        self, current: tuple[int, int], timestamp_ns: int
+    ) -> bool:
+        if timestamp_ns > self._expected_mouse_until_ns:
+            return False
+        target = self._expected_mouse_target
+        previous = self._last_cursor_position
+        if target is None or previous is None:
+            return False
+        previous_distance = (
+            (previous[0] - target[0]) ** 2 + (previous[1] - target[1]) ** 2
+        )
+        current_distance = (
+            (current[0] - target[0]) ** 2 + (current[1] - target[1]) ** 2
+        )
+        return current_distance <= previous_distance + 4
+
+    def _receive_keyboard_activity(self, message: dict[str, Any]) -> None:
+        timestamp_ns = int(message["timestamp_ns"])
+        value = {
+            "active": bool(message["active"]),
+            "active_key_count": int(message["active_key_count"]),
+            "last_activity_ns": timestamp_ns if message["active"] else 0,
+        }
+        if value["active"] and timestamp_ns > self._expected_keyboard_until_ns:
+            self.human_activity_detected_at_ns = timestamp_ns
+            self.human_takeover_until_ns = timestamp_ns + 5_000_000_000
+        self.store("keyboard_activity", value, timestamp_ns=timestamp_ns)
+        self._keyboard_count += 1
+
+    def _receive_active_window(self, message: dict[str, Any]) -> None:
+        timestamp_ns = int(message["timestamp_ns"])
+        self.store(
+            "active_window",
+            {
+                "title": str(message.get("title", "")),
+                "process": str(message.get("process", "")),
+                "updated_at_ns": timestamp_ns,
+            },
+            timestamp_ns=timestamp_ns,
+        )
+        self._window_count += 1
 
     def _check_capture_process(self) -> None:
         process = self._process

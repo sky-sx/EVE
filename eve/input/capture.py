@@ -22,26 +22,29 @@ def capture_process_main(
     stop_event: Event,
     config: dict[str, Any],
 ) -> None:
-    """Run screen and cursor capture threads inside the Capture subprocess."""
+    """Run screen, cursor, keyboard-activity and window threads in Capture."""
     send_lock = threading.Lock()
     id_lock = threading.Lock()
     screen_ready = threading.Event()
     cursor_ready = threading.Event()
+    keyboard_ready = threading.Event()
+    window_ready = threading.Event()
     shared: SharedMemory | None = None
-    frame_id = 0
+    frame_ids = {"screen": 0, "cursor": 0}
     stats = {
         "screen_frames": 0,
         "cursor_samples": 0,
         "screen_latency_ns": 0,
         "cursor_latency_ns": 0,
+        "keyboard_samples": 0,
+        "window_samples": 0,
     }
     started_at_ns = time.monotonic_ns()
 
-    def next_frame_id() -> int:
-        nonlocal frame_id
+    def next_frame_id(kind: str) -> int:
         with id_lock:
-            frame_id += 1
-            return frame_id
+            frame_ids[kind] += 1
+            return frame_ids[kind]
 
     def send(message: dict[str, Any]) -> None:
         with send_lock:
@@ -105,7 +108,7 @@ def capture_process_main(
                     )
                 if tuple(image.shape) != shape or image.dtype != dtype:
                     raise RuntimeError("screen shape or dtype changed during capture")
-                current_id = next_frame_id()
+                current_id = next_frame_id("screen")
                 slot = current_id % slots
                 target = np.ndarray(
                     shape,
@@ -161,7 +164,7 @@ def capture_process_main(
                     velocity_y = (
                         (y - previous_y) / elapsed_s if elapsed_s > 0 else 0.0
                     )
-                current_id = next_frame_id()
+                current_id = next_frame_id("cursor")
                 send(
                     {
                         "type": "cursor",
@@ -187,16 +190,93 @@ def capture_process_main(
         finally:
             cursor_ready.set()
 
+    def keyboard_loop() -> None:
+        """Publish activity only; never record typed text or key sequences."""
+        try:
+            reader = _keyboard_activity_reader(config)
+            period_ns = int(
+                1_000_000_000 / float(config.get("keyboard_hz", 30.0))
+            )
+            next_capture_ns = time.monotonic_ns()
+            previous_active = False
+            while not stop_event.is_set():
+                wait_until(next_capture_ns)
+                if stop_event.is_set():
+                    break
+                active_count = int(reader())
+                active = active_count > 0
+                captured_at_ns = time.monotonic_ns()
+                if active != previous_active or active:
+                    send(
+                        {
+                            "type": "keyboard_activity",
+                            "timestamp_ns": captured_at_ns,
+                            "active": active,
+                            "active_key_count": active_count,
+                        }
+                    )
+                    stats["keyboard_samples"] += 1
+                previous_active = active
+                keyboard_ready.set()
+                next_capture_ns = max(next_capture_ns + period_ns, captured_at_ns)
+        except Exception as exc:
+            fail("keyboard_input", exc)
+        finally:
+            keyboard_ready.set()
+
+    def window_loop() -> None:
+        try:
+            reader = _active_window_reader(config)
+            period_ns = int(
+                1_000_000_000 / float(config.get("window_hz", 4.0))
+            )
+            next_capture_ns = time.monotonic_ns()
+            previous: tuple[str, str] | None = None
+            while not stop_event.is_set():
+                wait_until(next_capture_ns)
+                if stop_event.is_set():
+                    break
+                title, process_name = reader()
+                captured_at_ns = time.monotonic_ns()
+                current = (str(title), str(process_name))
+                if current != previous:
+                    send(
+                        {
+                            "type": "active_window",
+                            "timestamp_ns": captured_at_ns,
+                            "title": current[0],
+                            "process": current[1],
+                        }
+                    )
+                    stats["window_samples"] += 1
+                    previous = current
+                window_ready.set()
+                next_capture_ns = max(next_capture_ns + period_ns, captured_at_ns)
+        except Exception as exc:
+            fail("window_input", exc)
+        finally:
+            window_ready.set()
+
     threads = [
         threading.Thread(target=screen_loop, name="capture-screen"),
         threading.Thread(target=cursor_loop, name="capture-cursor"),
+        threading.Thread(target=keyboard_loop, name="capture-keyboard"),
+        threading.Thread(target=window_loop, name="capture-window"),
     ]
     for thread in threads:
         thread.start()
     try:
         deadline = time.monotonic() + float(config.get("startup_timeout_s", 5.0))
         while not stop_event.is_set():
-            if screen_ready.is_set() and cursor_ready.is_set():
+            if all(
+                event.is_set()
+                for event in (
+                    screen_ready,
+                    cursor_ready,
+                    keyboard_ready,
+                    window_ready,
+                )
+            ):
                 send(
                     {
                         "type": "health",
@@ -300,3 +380,62 @@ def _cursor_reader(config: dict[str, Any]) -> Callable[[], tuple[int, int]]:
         return int(point.x), int(point.y)
 
     return read_cursor
+
+
+def _keyboard_activity_reader(config: dict[str, Any]) -> Callable[[], int]:
+    mode = config.get("keyboard_mode", "real")
+    if mode == "synthetic":
+        active_count = int(config.get("synthetic_active_key_count", 0))
+        return lambda: active_count
+    if mode == "error":
+        raise OSError("keyboard activity capture unavailable")
+    if mode != "real":
+        raise ValueError(f"unknown keyboard capture mode: {mode}")
+
+    # Exclude mouse virtual keys. Only an aggregate count leaves this process.
+    virtual_keys = tuple(range(0x08, 0xFF))
+
+    def read_keyboard_activity() -> int:
+        return sum(
+            1
+            for virtual_key in virtual_keys
+            if ctypes.windll.user32.GetAsyncKeyState(virtual_key) & 0x8000
+        )
+
+    return read_keyboard_activity
+
+
+def _active_window_reader(
+    config: dict[str, Any],
+) -> Callable[[], tuple[str, str]]:
+    mode = config.get("window_mode", "real")
+    if mode == "synthetic":
+        title = str(config.get("synthetic_window_title", "Synthetic Window"))
+        process_name = str(config.get("synthetic_window_process", "synthetic.exe"))
+        return lambda: (title, process_name)
+    if mode == "error":
+        raise OSError("active window capture unavailable")
+    if mode != "real":
+        raise ValueError(f"unknown window capture mode: {mode}")
+
+    def read_active_window() -> tuple[str, str]:
+        handle = ctypes.windll.user32.GetForegroundWindow()
+        if not handle:
+            return "", ""
+        length = ctypes.windll.user32.GetWindowTextLengthW(handle)
+        buffer = ctypes.create_unicode_buffer(max(length + 1, 1))
+        ctypes.windll.user32.GetWindowTextW(handle, buffer, len(buffer))
+        process_id = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(
+            handle, ctypes.byref(process_id)
+        )
+        process_name = ""
+        try:
+            import psutil
+
+            process_name = psutil.Process(process_id.value).name()
+        except Exception:
+            process_name = f"pid:{process_id.value}"
+        return buffer.value, process_name
+
+    return read_active_window

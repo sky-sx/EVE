@@ -2,6 +2,29 @@
 
 本文件只保留当前仍有效的实现顺序和待实验问题。目标语义见 `ARCHITECTURE.md`，代码事实见 `STATUS.md`。
 
+## 2026-07-28 当前下一步（取代旧的最高优先级）
+
+本轮 GUI 与正式交互运行时主干已接通。接下来不再继续扩张框架，优先补齐缺少真实外部条件的验收：
+
+1. 用户提供或选择一个可本地加载的生成式 LLM 路径和一个 VLM 路径；两者必须支持 CUDA 4-bit NF4，禁止静默全精度回退。
+2. 在桌面会话中完成 control 的 24 步人工验收，尤其是物理 Esc、原子授权后的真实鼠标/键盘/Unicode/TTS，以及关闭后的进程/共享内存检查。
+3. 为实际模型记录首 token/总延迟、显存占用、取消行为、错误恢复和长期稳定性；没有权重时不填写伪造结果。
+4. 用真实已存在的五个 TNN artifact 做五槽同时加载与资源压力验收；自动测试已经验证纯运行时五槽上限和第六个拒绝语义。
+5. 确认当前最小 Event/Memory 整理确实服务实际交互后，再决定是否增加任何图关系；不预建 Memory Graph。
+
+4-bit 本地模型策略已经确定，不再作为未决问题：
+
+```text
+CUDA required
+BitsAndBytesConfig(load_in_4bit=True)
+NF4 + double quantization
+BF16 compute
+verify is_loaded_in_4bit
+failure => visible error, never FP16/FP32 fallback
+```
+
+以下旧路线保留为历史背景，其中 GUI、键盘活动/活动窗口、Event、LLM/VLM 队列、云端接口、六个最小激素和受控真实 Output 已在当前阶段实现；音频输入明确不在本阶段范围。
+
 ## 1. 当前最高优先级：修复运行语义漂移
 
 在继续扩展 Dock 或模型能力前，先完成最小 TNN 生命周期闭环：
@@ -101,4 +124,3 @@
 - 唯一的下一步。
 
 使用 `EXPERIMENT_RECORD_TEMPLATE.md` 记录，不再新增一次性根目录 Prompt、审计报告或“完成状态”文档。
-

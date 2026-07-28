@@ -25,6 +25,16 @@ class MemoryUnit:
 
 
 @dataclass(frozen=True)
+class Event:
+    event_id: str
+    started_at_ns: int
+    ended_at_ns: int
+    memory_ids: tuple[str, ...]
+    summary: str
+    tags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class MemoryWriteRequest:
     memory_id: str
     payload: Any
@@ -50,6 +60,7 @@ class Memorizer:
         self.payload_dir = self.base_dir / "payloads"
         self.tnn_dir = self.base_dir / "TNNweights"
         self.catalog_path = self.base_dir / "catalog.jsonl"
+        self.event_catalog_path = self.base_dir / "events.jsonl"
         self.legacy_catalog_path = self.base_dir / "catalog.json"
         self.payload_dir.mkdir(parents=True, exist_ok=True)
         self.tnn_dir.mkdir(parents=True, exist_ok=True)
@@ -58,19 +69,33 @@ class Memorizer:
         self.catalog: dict[str, MemoryUnit] = {}
         self.stm: list[str] = []
         self.mtm: set[str] = set()
+        self.events: dict[str, Event] = {}
         self._lock = threading.RLock()
         self._condition = threading.Condition(threading.Lock())
         self._queue: deque[MemoryWriteRequest] = deque()
         self._writer_thread: threading.Thread | None = None
         self._writer_stop = False
         self._writer_busy = False
+        self._writer_current_id: str | None = None
         self._writer_error_callback = writer_error_callback
         self.last_writer_error: Exception | None = None
         self._enqueued_count = 0
         self._written_count = 0
         self._dropped_count = 0
         self._failed_count = 0
+        self._review_thread: threading.Thread | None = None
+        self._review_stop = threading.Event()
+        self._review_status: dict[str, Any] = {
+            "state": "idle",
+            "total": 0,
+            "processed": 0,
+            "remaining": 0,
+            "eta_s": None,
+            "last_result": None,
+            "last_error": None,
+        }
         self.load_catalog()
+        self._load_events()
 
     @property
     def writer_running(self) -> bool:
@@ -93,6 +118,7 @@ class Memorizer:
         self._writer_thread.start()
 
     def stop_writer(self, timeout_s: float = 3.0, *, flush: bool = True) -> None:
+        self.stop_review(timeout_s)
         failure: Exception | None = None
         if flush:
             try:
@@ -245,6 +271,139 @@ class Memorizer:
         self.mtm.add(memory_id)
         self._append_catalog({"op": "promote", "memory_id": memory_id})
 
+    @property
+    def ltm_count(self) -> int:
+        return len(self.catalog)
+
+    def counts(self) -> dict[str, int]:
+        return {
+            "stm": len(self.stm),
+            "mtm": len(self.mtm),
+            "ltm": self.ltm_count,
+            "events": len(self.events),
+        }
+
+    def create_event(
+        self,
+        memory_ids: list[str],
+        summary: str = "",
+        tags: list[str] | tuple[str, ...] = (),
+        *,
+        started_at_ns: int | None = None,
+        ended_at_ns: int | None = None,
+    ) -> Event:
+        with self._condition:
+            pending = {request.memory_id for request in self._queue}
+            if self._writer_current_id is not None:
+                pending.add(self._writer_current_id)
+        missing = set(memory_ids) - set(self.catalog) - pending
+        if missing:
+            raise KeyError(f"unknown MemoryID(s): {sorted(missing)}")
+        now_ns = time.time_ns()
+        event = Event(
+            event_id=f"event_{now_ns}_{uuid.uuid4().hex[:8]}",
+            started_at_ns=int(started_at_ns or now_ns),
+            ended_at_ns=int(ended_at_ns or now_ns),
+            memory_ids=tuple(memory_ids),
+            summary=str(summary),
+            tags=tuple(str(tag) for tag in tags),
+        )
+        with self._lock:
+            self.events[event.event_id] = event
+            with self.event_catalog_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(asdict(event), ensure_ascii=False) + "\n"
+                )
+                handle.flush()
+        return event
+
+    def read_event(self, event_id: str) -> Event | None:
+        return self.events.get(event_id)
+
+    def latest_event(self) -> Event | None:
+        return max(
+            self.events.values(),
+            key=lambda item: item.ended_at_ns,
+            default=None,
+        )
+
+    def force_review(self) -> bool:
+        if self._review_thread is not None and self._review_thread.is_alive():
+            return False
+        self._review_stop.clear()
+        self._review_thread = threading.Thread(
+            target=self._review_loop,
+            name="eve-memory-review",
+        )
+        self._review_thread.start()
+        return True
+
+    def stop_review(self, timeout_s: float = 3.0) -> None:
+        self._review_stop.set()
+        thread = self._review_thread
+        if thread is not None:
+            thread.join(timeout_s)
+            if thread.is_alive():
+                raise RuntimeError("memory review did not stop")
+        self._review_thread = None
+
+    @property
+    def review_running(self) -> bool:
+        return self._review_thread is not None and self._review_thread.is_alive()
+
+    def review_status(self) -> dict[str, Any]:
+        return dict(self._review_status)
+
+    def _review_loop(self) -> None:
+        started = time.monotonic()
+        candidates = [
+            memory_id for memory_id in list(self.stm) if memory_id not in self.mtm
+        ]
+        total = len(candidates)
+        self._review_status.update(
+            {
+                "state": "running",
+                "total": total,
+                "processed": 0,
+                "remaining": total,
+                "eta_s": None,
+                "last_error": None,
+            }
+        )
+        try:
+            for index, memory_id in enumerate(candidates, start=1):
+                if self._review_stop.is_set():
+                    self._review_status["state"] = "cancelled"
+                    return
+                self.promote_to_mtm(memory_id)
+                elapsed = max(time.monotonic() - started, 1e-9)
+                rate = index / elapsed
+                remaining = total - index
+                self._review_status.update(
+                    {
+                        "processed": index,
+                        "remaining": remaining,
+                        "eta_s": remaining / rate if rate > 0 else None,
+                    }
+                )
+            self._review_status.update(
+                {
+                    "state": "completed",
+                    "eta_s": 0.0,
+                    "last_result": {
+                        "processed": total,
+                        "finished_at_ns": time.time_ns(),
+                    },
+                }
+            )
+        except Exception as exc:
+            self._review_status.update(
+                {
+                    "state": "error",
+                    "last_error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
     def search(
         self,
         *,
@@ -360,6 +519,25 @@ class Memorizer:
             **{name: str(path) for name, path in required_paths.items()},
         }
 
+    def list_tnn_artifacts(self) -> list[dict[str, str]]:
+        artifacts = []
+        for unit in self.catalog.values():
+            if unit.payload_type != "tnn_artifact":
+                continue
+            descriptor = self.read(unit.memory_id)
+            if isinstance(descriptor, dict):
+                artifacts.append(
+                    {
+                        "memory_id": unit.memory_id,
+                        "tnn_id": str(descriptor.get("tnn_id", "")),
+                        "version": str(descriptor.get("version", "")),
+                        "artifact_path": str(descriptor.get("artifact_path", "")),
+                    }
+                )
+        return sorted(
+            artifacts, key=lambda item: (item["tnn_id"], item["version"])
+        )
+
     def save_catalog(self) -> None:
         """Compatibility no-op: catalog mutations are already appended."""
 
@@ -396,6 +574,18 @@ class Memorizer:
             elif operation == "promote" and record["memory_id"] in self.catalog:
                 self.mtm.add(record["memory_id"])
 
+    def _load_events(self) -> None:
+        if not self.event_catalog_path.exists():
+            return
+        for line in self.event_catalog_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            data = json.loads(line)
+            data["memory_ids"] = tuple(data.get("memory_ids", ()))
+            data["tags"] = tuple(data.get("tags", ()))
+            event = Event(**data)
+            self.events[event.event_id] = event
+
     def _writer_loop(self) -> None:
         while True:
             with self._condition:
@@ -405,6 +595,7 @@ class Memorizer:
                     return
                 request = self._queue.popleft()
                 self._writer_busy = True
+                self._writer_current_id = request.memory_id
             try:
                 self._create_with_id(
                     request.memory_id,
@@ -423,6 +614,7 @@ class Memorizer:
             finally:
                 with self._condition:
                     self._writer_busy = False
+                    self._writer_current_id = None
                     self._condition.notify_all()
 
     def _create_with_id(

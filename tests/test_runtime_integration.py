@@ -111,8 +111,14 @@ def test_profiles_are_mock_and_observe_completes_full_chain(tmp_path, monkeypatc
         "eve.output.mouse._execute_real",
         lambda *args, **kwargs: pytest.fail("real mouse backend was called"),
     )
-    assert main(["--profile", "control"]) == 2
-    assert "control profile is not enabled" in capsys.readouterr().err
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    assert main(
+        [
+            "--profile", "control", "--duration", "0.05",
+            "--run-dir", str(tmp_path / "control-gui"),
+        ]
+    ) == 0
+    assert "control profile is not enabled" not in capsys.readouterr().err
 
     application = EVEApplication(
         profile="observe",
@@ -187,7 +193,7 @@ def test_smoke_cli_escape_and_capture_error_have_clean_exit_codes(
     assert not failing.capture_running
 
 
-def test_critical_core_error_propagates_and_all_workers_stop(tmp_path, monkeypatch):
+def test_tnn_error_isolated_and_all_workers_stop(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "_global_escape_pressed", lambda: False)
     application = EVEApplication(
         profile="smoke",
@@ -209,7 +215,10 @@ def test_critical_core_error_propagates_and_all_workers_stop(tmp_path, monkeypat
     application.core.smoke_node = False
     application.start(load_smoke_node=False)
 
-    assert not application.wait(1.0)
+    assert application.wait(0.2)
+    assert application.core.running
+    assert application.state["tnn_status"]["critical-broken"] == "failed"
+    assert "critical-broken" not in application.state["active_tnn"]
     application.stop()
     assert application.state["latest_error"]["loop_node"] == "tnn:critical-broken"
     assert application.summary()["threads_stopped"]
