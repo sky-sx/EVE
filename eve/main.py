@@ -203,6 +203,10 @@ class EVEApplication:
                 stop()
             except Exception as exc:
                 failures.append(exc)
+        try:
+            self.core.save_readable_snapshots(self.run_dir)
+        except Exception as exc:
+            failures.append(exc)
         self.state["resource_status"].update(
             {
                 "core": "stopped",
@@ -382,14 +386,26 @@ class EVEApplication:
         return self.memory.force_review()
 
     def memory_view_snapshot(self) -> dict[str, Any]:
-        latest_id = self.memory.stm[-1] if self.memory.stm else None
+        stm_ids = self.memory.tier_ids("stm")
+        latest_id = stm_ids[-1] if stm_ids else None
         latest_unit = self.memory.get_unit(latest_id) if latest_id else None
         latest_event = self.memory.latest_event()
+        ltm_ids = self.memory.tier_ids("ltm")
+        latest_ltm_id = ltm_ids[-1] if ltm_ids else None
         return {
             "counts": self.memory.counts(),
             "review": self.memory.review_status(),
             "latest_memory": latest_unit.__dict__ if latest_unit else None,
             "latest_event": latest_event.__dict__ if latest_event else None,
+            "ltm_memory_ids": ltm_ids[-50:],
+            "latest_ltm": (
+                {
+                    "memory_id": latest_ltm_id,
+                    "payload": self.memory.read(latest_ltm_id),
+                }
+                if latest_ltm_id
+                else None
+            ),
         }
 
 
@@ -595,11 +611,13 @@ class EVEControlWindow:
                 self.thinking_view = self._readonly(qt, 100)
                 self.world_view = self._readonly(qt, 180)
                 self.myself_view = self._readonly(qt, 180)
-                grid.addWidget(qt["QLabel"]("可见思想摘要"), 0, 0)
+                grid.addWidget(
+                    qt["QLabel"]("LLM-based self update 摘要"), 0, 0
+                )
                 grid.addWidget(self.thinking_view, 1, 0)
                 grid.addWidget(qt["QLabel"]("world"), 0, 1)
                 grid.addWidget(self.world_view, 1, 1)
-                grid.addWidget(qt["QLabel"]("myself / 当前任务"), 0, 2)
+                grid.addWidget(qt["QLabel"]("self / 当前任务"), 0, 2)
                 grid.addWidget(self.myself_view, 1, 2)
                 layout.addLayout(grid)
 
@@ -1047,6 +1065,7 @@ class EVEControlWindow:
                     "capture", "buffer", "core", "local_llm", "yolo", "vlm",
                     "cloud_llm", "memory_writer", "memory_review", "safegate",
                     "mouse_output", "keyboard_output", "speak_output", "dock",
+                    "qnn",
                 ]
                 nodes = state["node_status"]
                 names = required + [
@@ -1104,6 +1123,8 @@ class EVEControlWindow:
                         {
                             "latest_memory": snapshot["latest_memory"],
                             "latest_event": snapshot["latest_event"],
+                            "latest_ltm": snapshot["latest_ltm"],
+                            "ltm_memory_ids": snapshot["ltm_memory_ids"],
                         }
                     )
                 )
@@ -1228,6 +1249,12 @@ class EVEControlWindow:
                 self.tnn_detail.setPlainText(
                     _json_text(
                         {
+                            "dock": state.get("dock_status", {}),
+                            "qnn": state.get("qnn_status", {}),
+                            "training_orders": state.get("training_orders", {}),
+                            "available_artifacts": (
+                                self.application.memory.list_tnn_artifacts()
+                            ),
                             "connections_from_core_source_refs": connections,
                             "slots": [
                                 {

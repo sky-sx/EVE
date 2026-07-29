@@ -22,13 +22,12 @@ def capture_process_main(
     stop_event: Event,
     config: dict[str, Any],
 ) -> None:
-    """Run screen, cursor, keyboard-activity and window threads in Capture."""
+    """Run screen, cursor, and keyboard-activity threads in Capture."""
     send_lock = threading.Lock()
     id_lock = threading.Lock()
     screen_ready = threading.Event()
     cursor_ready = threading.Event()
     keyboard_ready = threading.Event()
-    window_ready = threading.Event()
     shared: SharedMemory | None = None
     frame_ids = {"screen": 0, "cursor": 0}
     stats = {
@@ -37,7 +36,6 @@ def capture_process_main(
         "screen_latency_ns": 0,
         "cursor_latency_ns": 0,
         "keyboard_samples": 0,
-        "window_samples": 0,
     }
     started_at_ns = time.monotonic_ns()
 
@@ -224,44 +222,10 @@ def capture_process_main(
         finally:
             keyboard_ready.set()
 
-    def window_loop() -> None:
-        try:
-            reader = _active_window_reader(config)
-            period_ns = int(
-                1_000_000_000 / float(config.get("window_hz", 4.0))
-            )
-            next_capture_ns = time.monotonic_ns()
-            previous: tuple[str, str] | None = None
-            while not stop_event.is_set():
-                wait_until(next_capture_ns)
-                if stop_event.is_set():
-                    break
-                title, process_name = reader()
-                captured_at_ns = time.monotonic_ns()
-                current = (str(title), str(process_name))
-                if current != previous:
-                    send(
-                        {
-                            "type": "active_window",
-                            "timestamp_ns": captured_at_ns,
-                            "title": current[0],
-                            "process": current[1],
-                        }
-                    )
-                    stats["window_samples"] += 1
-                    previous = current
-                window_ready.set()
-                next_capture_ns = max(next_capture_ns + period_ns, captured_at_ns)
-        except Exception as exc:
-            fail("window_input", exc)
-        finally:
-            window_ready.set()
-
     threads = [
         threading.Thread(target=screen_loop, name="capture-screen"),
         threading.Thread(target=cursor_loop, name="capture-cursor"),
         threading.Thread(target=keyboard_loop, name="capture-keyboard"),
-        threading.Thread(target=window_loop, name="capture-window"),
     ]
     for thread in threads:
         thread.start()
@@ -274,7 +238,6 @@ def capture_process_main(
                     screen_ready,
                     cursor_ready,
                     keyboard_ready,
-                    window_ready,
                 )
             ):
                 send(
@@ -403,39 +366,3 @@ def _keyboard_activity_reader(config: dict[str, Any]) -> Callable[[], int]:
         )
 
     return read_keyboard_activity
-
-
-def _active_window_reader(
-    config: dict[str, Any],
-) -> Callable[[], tuple[str, str]]:
-    mode = config.get("window_mode", "real")
-    if mode == "synthetic":
-        title = str(config.get("synthetic_window_title", "Synthetic Window"))
-        process_name = str(config.get("synthetic_window_process", "synthetic.exe"))
-        return lambda: (title, process_name)
-    if mode == "error":
-        raise OSError("active window capture unavailable")
-    if mode != "real":
-        raise ValueError(f"unknown window capture mode: {mode}")
-
-    def read_active_window() -> tuple[str, str]:
-        handle = ctypes.windll.user32.GetForegroundWindow()
-        if not handle:
-            return "", ""
-        length = ctypes.windll.user32.GetWindowTextLengthW(handle)
-        buffer = ctypes.create_unicode_buffer(max(length + 1, 1))
-        ctypes.windll.user32.GetWindowTextW(handle, buffer, len(buffer))
-        process_id = ctypes.c_ulong()
-        ctypes.windll.user32.GetWindowThreadProcessId(
-            handle, ctypes.byref(process_id)
-        )
-        process_name = ""
-        try:
-            import psutil
-
-            process_name = psutil.Process(process_id.value).name()
-        except Exception:
-            process_name = f"pid:{process_id.value}"
-        return buffer.value, process_name
-
-    return read_active_window

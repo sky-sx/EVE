@@ -55,6 +55,7 @@ def test_formal_runtime_file_structure_and_removed_modules():
         "eve/output/speak.py",
         "eve/memory/memorizer.py",
         "eve/core/loop.py",
+        "eve/core/qnn.py",
         "eve/core/safegate.py",
         "eve/dock/trainer.py",
         "eve/dock/tinynn.py",
@@ -83,6 +84,29 @@ def _imports(path):
 def test_capture_access_is_only_through_buffer():
     assert "eve.input.capture" not in _imports(ROOT / "eve" / "main.py")
     assert "eve.input.capture" not in _imports(ROOT / "eve" / "core" / "loop.py")
+    assert "eve.input.capture" not in _imports(ROOT / "eve" / "core" / "qnn.py")
     assert "eve.input.capture" not in _imports(ROOT / "eve" / "core" / "safegate.py")
     assert "eve.input.buffer" not in _imports(ROOT / "eve" / "input" / "capture.py")
     assert "eve.input.capture" in _imports(ROOT / "eve" / "input" / "buffer.py")
+
+
+def test_foreground_window_metadata_is_not_an_eve_perception_source():
+    active = [
+        ROOT / "eve" / "input" / "capture.py",
+        ROOT / "eve" / "input" / "buffer.py",
+        ROOT / "eve" / "core" / "loop.py",
+    ]
+    forbidden = (
+        "GetForegroundWindow",
+        "GetWindowText",
+        "active_window",
+        "window_mode",
+        "process_name",
+    )
+    violations = [
+        f"{path.relative_to(ROOT)}: {token}"
+        for path in active
+        for token in forbidden
+        if token in path.read_text(encoding="utf-8")
+    ]
+    assert violations == []

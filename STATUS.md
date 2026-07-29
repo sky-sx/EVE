@@ -1,6 +1,45 @@
 # EVE 当前实现状态
 
-更新时间：2026-07-28 CST
+更新时间：2026-07-29 CST
+
+## 2026-07-29 红蓝圆三角两阶段实现
+
+两阶段成长闭环已进入正式代码：
+
+- 阶段一具备结构化 VLM 教师标签、完整 Experience、按条件检索、
+  TrainingOrder、样本不足等待、Dock 自动训练、独立留出评价、TNN
+  artifact 保存、自动加载和环境反馈。
+- 阶段二具备红圆/蓝三角独立 TNN、多个 TNN 同时调度、SourceRef
+  上下游、独立回归数据集和候选拒绝门槛。旧模型在候选未通过时不会被
+  替换。
+- QNN 已实现为真实可训练 TinyNN critic：从屏幕状态、鼠标动作和环境
+  reward 学习 `q_value`，使用独立留出集评价并保存完整 artifact。
+- Core 会在 Safegate 前用 QNN 比较同轮鼠标候选，只保留最高且过阈值的
+  动作；选择、拒绝、预测奖励和真实反馈均写入 Blackboard/Memory。
+- Dock 支持 `fitness_data`、`minimum_qnn_fitness` 和
+  `minimum_qnn_margin`，可用已加载 QNN 比较候选 TNN 与旧版本。
+- QNN 有独立加载状态，不占五个动作 TNN 槽位；GUI 可观察模型、版本、
+  设备、阈值、评价次数及最近决定，并可随停机快照恢复。
+- LLM-based self update loop 可输出受限的结构化 TrainingOrder；模型
+  结构只能选择系统提供的安全模板，不能让 LLM 注入任意 Python。
+- Memory 已验证真实 `STM -> MTM -> LTM` 晋升并可列出 LTM ID。
+- 正常停机保存可读的 `world.md` 和 `self.md`，TNN 的输入、动作模板及
+  active 状态可在下次启动恢复。
+- 正式实验环境位于 `experiments/red_blue_shapes.py`，支持
+  `red_only`、`red_and_blue`、`instruction_driven` 三种模式。
+- Input 感知只包含屏幕、光标、键盘活动和用户文本，不读取活动窗口
+  标题或进程名。
+
+自动回归：
+
+```text
+python -m pytest -q
+49 passed in 7.65s
+```
+
+尚未由自动测试替代的证据：物理 Esc、真实鼠标授权、真实桌面 VLM
+识别质量、两阶段实机命中率、QNN 实机奖励校准及一次人工观察的
+停机/恢复过程。
 
 ## 2026-07-28 GUI 与正式交互运行时状态（当前权威摘要）
 
@@ -9,7 +48,7 @@
 - `python -m eve.main --profile control` 已启用 PySide6 GUI，不再返回占位退出码 2。
 - GUI 共八页：实时视觉、文本与认知、资源与节点、冷启动与急停、Memory/Blackboard、权限与倾向、设置/激素/反馈、TNN。
 - 程序启动只打开 GUI；用户点击冷启动后才启动 Capture、Core、Memory writer、LLM、YOLO、VLM 教师 worker 和 TNN 调度。
-- Capture 仍由 Buffer 独占管理并运行在独立进程；进程内现有屏幕、光标、键盘活动和活动窗口四个采集线程。没有麦克风、录音或语音识别输入。
+- Capture 仍由 Buffer 独占管理并运行在独立进程；进程内现有屏幕、光标和键盘活动采集线程。没有活动窗口标题/进程名、麦克风、录音或语音识别输入。
 - Core 现有普通 LLM 对话、内部结构化 LLM 决策、YOLO/TNN 运行时视觉、按需 VLM 教师复核、OpenAI-compatible 云端请求和 TNN 生命周期队列。模型推理与 TNN 加载不在 GUI 主线程执行。
 - 本地 LLM 默认使用 `eve/core/deepseek-7b` 并强制 CUDA 4-bit NF4；VLM 教师默认使用 `eve/core/qwen`，只在显式教师复核请求时按需加载；YOLO 默认使用 `eve/core/yolo26/weights/yolo26n.pt`。
 - 本地 LLM 已真实完成普通文本对话，保持 `cuda:0`、`4bit-nf4`、`ready`，测试回复耗时约 1.485 秒。YOLO 已在 RTX 5080 上真实加载、预热和推理，合成帧推理约 8.27 ms。
@@ -22,7 +61,7 @@
 - Memory 已支持 Event、STM/MTM/LTM 真实计数、按 ID/关键词/时间检索、强制整理的真实进度与动态 ETA。
 - `MAX_LOADED_TNN = 5`；第六个加载请求被明确拒绝且原五个保持不变。TNN 加载前检查文件、设备、RAM 和 VRAM。TNN 页现显示模型路径、最近运行、输入/输出摘要、输出时间、真实 SourceRef 上下游、参数与 buffer 总内存及加载/卸载结果。
 - GUI 不再直接调用 Memorizer；Memory 页读取和强制整理均通过 `EVEApplication` 的窄接口。
-- 正常停机保存 world、myself、必要 Blackboard、active_tnn、loaded_tnn 描述和模型设置；权限和 API key 不进入恢复快照。
+- 正常停机保存 world、内部兼容键 `myself`、必要 Blackboard、active_tnn、loaded_tnn 描述和模型设置，并生成用户可读的 `world.md` 与 `self.md`；权限和 API key 不进入恢复快照。
 
 当前完整自动回归：
 
@@ -81,7 +120,7 @@ cleanup: Core、Memory writer 和全部 eve-* 线程已停止
 - 本地 LLM 普通对话、YOLO 实时推理和 Qwen VLM 合成帧教师复核均已验证；真实桌面内容上的 VLM 教师质量仍属于完整人工验收的一部分；
 - OpenAI-compatible 云端仅完成接口和错误状态，未配置 API key 做真实调用；
 - 物理 Esc、真实鼠标/键盘/TTS 与完整 24 步人工交互验收仍需用户在桌面会话中完成；
-- QNN、自动 TNN 生成/成长/拆分/合并/替换、影子部署和红蓝圆三角实验仍未实现；
+- TNN 自动拆分/合并和通用影子部署仍未实现；QNN 与红蓝圆三角成长闭环已实现，但尚待实机验收；
 - 复杂 Memory Graph、图压缩和自动睡眠策略仍未实现。
 
 本文只记录当前工作区已经实现并实际验证的事实。
@@ -104,6 +143,7 @@ eve/
 │   └── memorizer.py
 ├── core/
 │   ├── loop.py
+│   ├── qnn.py
 │   └── safegate.py
 └── dock/
     ├── trainer.py

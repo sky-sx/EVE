@@ -497,28 +497,23 @@ def _json_dump(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=repr)
 
 
-def test_keyboard_activity_active_window_and_memory_review(tmp_path):
+def test_keyboard_activity_excludes_window_metadata_and_memory_review(tmp_path):
     buffer = InputBuffer(
         profile="control",
         capture_options={
             "screen_mode": "synthetic",
             "cursor_mode": "synthetic",
             "keyboard_mode": "synthetic",
-            "window_mode": "synthetic",
             "synthetic_active_key_count": 1,
-            "synthetic_window_title": "EVE Test Window",
-            "synthetic_window_process": "eve-test.exe",
         },
     )
     try:
         buffer.start_capture()
         wait_until(lambda: buffer.latest("keyboard_activity") is not None)
-        wait_until(lambda: buffer.latest("active_window") is not None)
         keyboard = buffer.latest("keyboard_activity").value
-        window = buffer.latest("active_window").value
         assert keyboard["active"] and keyboard["active_key_count"] == 1
-        assert window["title"] == "EVE Test Window"
-        assert window["process"] == "eve-test.exe"
+        assert buffer.latest("active_window") is None
+        assert "active_window" not in buffer.get_state()
         assert buffer.human_takeover_until_ns > time.monotonic_ns()
     finally:
         buffer.close()
@@ -533,3 +528,7 @@ def test_keyboard_activity_active_window_and_memory_review(tmp_path):
     assert review["remaining"] == 0
     assert review["eta_s"] == 0.0
     assert memory.counts()["mtm"] == 12
+    assert memory.counts()["ltm"] == 0
+    assert memory.force_review()
+    wait_until(lambda: memory.review_status()["state"] == "completed")
+    assert memory.counts()["ltm"] == 12

@@ -69,6 +69,7 @@ class Memorizer:
         self.catalog: dict[str, MemoryUnit] = {}
         self.stm: list[str] = []
         self.mtm: set[str] = set()
+        self.ltm: set[str] = set()
         self.events: dict[str, Event] = {}
         self._lock = threading.RLock()
         self._condition = threading.Condition(threading.Lock())
@@ -262,6 +263,7 @@ class Memorizer:
             self.catalog.pop(memory_id)
             self.stm = [item for item in self.stm if item != memory_id]
             self.mtm.discard(memory_id)
+            self.ltm.discard(memory_id)
             self._append_catalog({"op": "delete", "memory_id": memory_id})
             return True
 
@@ -271,17 +273,41 @@ class Memorizer:
         self.mtm.add(memory_id)
         self._append_catalog({"op": "promote", "memory_id": memory_id})
 
+    def promote_to_ltm(self, memory_id: str) -> None:
+        if memory_id not in self.catalog:
+            raise KeyError(memory_id)
+        if memory_id not in self.mtm:
+            raise ValueError("memory must pass through MTM before LTM")
+        self.ltm.add(memory_id)
+        self._append_catalog({"op": "promote_ltm", "memory_id": memory_id})
+
     @property
     def ltm_count(self) -> int:
-        return len(self.catalog)
+        return len(self.ltm)
 
     def counts(self) -> dict[str, int]:
-        return {
-            "stm": len(self.stm),
-            "mtm": len(self.mtm),
-            "ltm": self.ltm_count,
-            "events": len(self.events),
-        }
+        with self._lock:
+            return {
+                "stm": len(self.stm),
+                "mtm": len(self.mtm),
+                "ltm": len(self.ltm),
+                "events": len(self.events),
+            }
+
+    def tier_ids(self, tier: str) -> list[str]:
+        with self._lock:
+            if tier == "stm":
+                values = list(self.stm)
+            elif tier == "mtm":
+                values = list(self.mtm)
+            elif tier == "ltm":
+                values = list(self.ltm)
+            else:
+                raise ValueError("tier must be stm, mtm, or ltm")
+            return sorted(
+                values,
+                key=lambda memory_id: self.catalog[memory_id].created_at_ns,
+            )
 
     def create_event(
         self,
@@ -316,6 +342,58 @@ class Memorizer:
                 )
                 handle.flush()
         return event
+
+    def record_experience(
+        self,
+        experience: dict[str, Any],
+        *,
+        related_memory_ids: list[str] | tuple[str, ...] = (),
+    ) -> str:
+        required = {
+            "experience_version",
+            "task",
+            "state",
+            "teacher",
+            "action",
+            "output",
+            "environment",
+            "timestamps",
+        }
+        missing = required - set(experience)
+        if missing:
+            raise ValueError(f"incomplete experience: {sorted(missing)}")
+        memory_id = self.enqueue(
+            experience, "experience", priority="critical"
+        )
+        if memory_id is None:
+            raise RuntimeError("experience write was rejected")
+        related = [
+            item
+            for item in (*related_memory_ids, memory_id)
+            if item
+        ]
+        self.create_event(
+            related,
+            summary=str(
+                experience.get("task", {}).get("instruction", "experience")
+            ),
+            tags=[
+                "experience",
+                str(experience.get("task", {}).get("task_id", "")),
+                str(experience.get("status", "")),
+            ],
+            started_at_ns=int(
+                experience.get("timestamps", {}).get(
+                    "started_at_ns", time.time_ns()
+                )
+            ),
+            ended_at_ns=int(
+                experience.get("timestamps", {}).get(
+                    "finished_at_ns", time.time_ns()
+                )
+            ),
+        )
+        return memory_id
 
     def read_event(self, event_id: str) -> Event | None:
         return self.events.get(event_id)
@@ -356,8 +434,16 @@ class Memorizer:
 
     def _review_loop(self) -> None:
         started = time.monotonic()
-        candidates = [
+        to_ltm = [
+            memory_id
+            for memory_id in list(self.stm)
+            if memory_id in self.mtm and memory_id not in self.ltm
+        ]
+        to_mtm = [
             memory_id for memory_id in list(self.stm) if memory_id not in self.mtm
+        ]
+        candidates = [("ltm", item) for item in to_ltm] + [
+            ("mtm", item) for item in to_mtm
         ]
         total = len(candidates)
         self._review_status.update(
@@ -371,11 +457,18 @@ class Memorizer:
             }
         )
         try:
-            for index, memory_id in enumerate(candidates, start=1):
+            promoted_mtm = 0
+            promoted_ltm = 0
+            for index, (target, memory_id) in enumerate(candidates, start=1):
                 if self._review_stop.is_set():
                     self._review_status["state"] = "cancelled"
                     return
-                self.promote_to_mtm(memory_id)
+                if target == "ltm":
+                    self.promote_to_ltm(memory_id)
+                    promoted_ltm += 1
+                else:
+                    self.promote_to_mtm(memory_id)
+                    promoted_mtm += 1
                 elapsed = max(time.monotonic() - started, 1e-9)
                 rate = index / elapsed
                 remaining = total - index
@@ -392,6 +485,8 @@ class Memorizer:
                     "eta_s": 0.0,
                     "last_result": {
                         "processed": total,
+                        "promoted_mtm": promoted_mtm,
+                        "promoted_ltm": promoted_ltm,
                         "finished_at_ns": time.time_ns(),
                     },
                 }
@@ -413,7 +508,9 @@ class Memorizer:
         end_ns: int | None = None,
     ) -> list[str]:
         results: list[str] = []
-        for unit in sorted(self.catalog.values(), key=lambda item: item.created_at_ns):
+        with self._lock:
+            units = list(self.catalog.values())
+        for unit in sorted(units, key=lambda item: item.created_at_ns):
             if payload_type is not None and unit.payload_type != payload_type:
                 continue
             if start_ns is not None and unit.created_at_ns < start_ns:
@@ -481,10 +578,12 @@ class Memorizer:
     ) -> dict[str, str]:
         matches: list[tuple[MemoryUnit, dict[str, Any]]] = []
         direct = self.get_unit(tnn_id)
+        with self._lock:
+            catalog_values = list(self.catalog.values())
         candidates = (
             [direct]
             if direct is not None and direct.payload_type == "tnn_artifact"
-            else self.catalog.values()
+            else catalog_values
         )
         for unit in candidates:
             if unit is None or unit.payload_type != "tnn_artifact":
@@ -521,7 +620,9 @@ class Memorizer:
 
     def list_tnn_artifacts(self) -> list[dict[str, str]]:
         artifacts = []
-        for unit in self.catalog.values():
+        with self._lock:
+            units = list(self.catalog.values())
+        for unit in units:
             if unit.payload_type != "tnn_artifact":
                 continue
             descriptor = self.read(unit.memory_id)
@@ -554,6 +655,9 @@ class Memorizer:
             self.mtm = {
                 item for item in data.get("mtm", []) if item in self.catalog
             }
+            self.ltm = {
+                item for item in data.get("ltm", []) if item in self.catalog
+            }
         if not self.catalog_path.exists():
             return
         for line in self.catalog_path.read_text(encoding="utf-8").splitlines():
@@ -571,8 +675,15 @@ class Memorizer:
                 self.catalog.pop(memory_id, None)
                 self.stm = [item for item in self.stm if item != memory_id]
                 self.mtm.discard(memory_id)
+                self.ltm.discard(memory_id)
             elif operation == "promote" and record["memory_id"] in self.catalog:
                 self.mtm.add(record["memory_id"])
+            elif (
+                operation == "promote_ltm"
+                and record["memory_id"] in self.catalog
+            ):
+                self.mtm.add(record["memory_id"])
+                self.ltm.add(record["memory_id"])
 
     def _load_events(self) -> None:
         if not self.event_catalog_path.exists():

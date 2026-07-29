@@ -311,7 +311,42 @@ Teacher 可以是本地 LLM、云端 LLM、VLM、人类、环境反馈或已有 
 
 Dock 不拥有独立硬编码训练触发器。Core 只提供空闲资源等客观状态；本地 LLM 在有具体价值时提出训练、补训、继续采集、请求教师或暂不训练。
 
-## 13. 开发顺序
+## 13. QNN 动作评价
+
+QNN 是一个由 Dock 训练、由 Core 加载的 TinyNN critic，不是固定规则、
+Safegate 或普通分类器的别名。v1 输入为当前屏幕状态和一个候选鼠标动作，
+输出范围 `[-1, 1]` 的 `q_value`，表达该状态下执行该动作的期望环境奖励。
+
+训练数据来自完整 Experience：
+
+```text
+screen state + action + environment reward
+```
+
+命中通常产生正奖励，未命中产生负奖励；训练集和独立留出集不得混用。
+QNN artifact 与动作 TNN artifact 一样保存模型、权重、结构、数据来源和
+评价指标。
+
+运行时顺序为：
+
+```text
+多个 TNN 动作候选
+→ QNN 对同轮候选逐一评分
+→ 选择最高且超过最低分数的候选
+→ Safegate
+→ Output
+→ 环境反馈写回 Experience
+```
+
+QNN 不得绕过 Safegate；QNN 不可用或评价出错时，已启用 QNN 的鼠标候选
+应停止执行并留下错误记录。非鼠标动作不由 QNN v1 评分，仍走原有
+Safegate。
+
+Dock 可以使用已加载 QNN 对候选动作 TNN 计算独立 `fitness_data` 上的
+平均 fitness，并要求绝对最低值或相对已加载旧版本的最小提升 margin。
+未通过 QNN fitness 的候选只登记为拒绝结果，不替换当前模型。
+
+## 14. 开发顺序
 
 1. 主入口、Input、Output、30fps 目标、最近约 1 秒 state、统一输出和 Esc 急停。
 2. world、myself、Blackboard 与停机快照，运行时不高频写文档。
@@ -326,7 +361,7 @@ Dock 不拥有独立硬编码训练触发器。Core 只提供空闲资源等客�
 
 每阶段同步准备 Prompt、最小任务、输入构造、输出捕获和日志分析。不得在后续模块先写成“完整”后，再用 Mock 或静态结构倒推能力成立。
 
-## 14. 明确不采用的架构
+## 15. 明确不采用的架构
 
 在没有实验需求前，不新增：
 

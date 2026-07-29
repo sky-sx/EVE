@@ -117,6 +117,25 @@ def create_runtime_state(
         "cloud_result": None,
         "cuda_status": {},
         "last_feedback": None,
+        "pending_experiences": {},
+        "training_orders": {},
+        "qnn_status": {
+            "state": "not_loaded",
+            "tnn_id": None,
+            "version": None,
+            "device": None,
+            "minimum_action_score": 0.0,
+            "evaluation_count": 0,
+            "last_decision": None,
+            "last_feedback": None,
+            "last_error": None,
+        },
+        "_qnn_runtime": None,
+        "dock_status": {
+            "state": "idle",
+            "current_order": None,
+            "last_result": None,
+        },
         "_state_lock": threading.RLock(),
     }
 
@@ -131,6 +150,7 @@ def register_runtime_tnn(
     run_frequency_hz: float = 1.0,
     output_ttl_ns: int = 1_000_000_000,
     action_output: str | None = None,
+    action_template: dict[str, Any] | None = None,
     model: Any = None,
     activate: bool = True,
 ) -> dict[str, Any]:
@@ -151,6 +171,7 @@ def register_runtime_tnn(
         "run_frequency_hz": float(run_frequency_hz),
         "output_ttl_ns": int(output_ttl_ns),
         "action_output": action_output,
+        "action_template": dict(action_template or {}),
         "model": model,
         "status": "active" if activate else "paused",
         "last_run_ns": 0,
@@ -352,16 +373,63 @@ def _run_tnn(
             )
     action_output = node["action_output"]
     if action_output and action_output in outputs:
-        if not isinstance(outputs[action_output], dict):
-            raise TypeError("action output must be a dict")
+        action_value = _action_from_output(
+            input_buffer,
+            node,
+            outputs[action_output],
+            now_ns,
+        )
         _enqueue_action(
             state,
             node,
-            outputs[action_output],
+            action_value,
             now_ns,
             max(observed_times, default=now_ns),
         )
     return outputs
+
+
+def _action_from_output(
+    input_buffer: Any,
+    node: dict[str, Any],
+    value: Any,
+    now_ns: int,
+) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    template = node.get("action_template") or {}
+    if template.get("coordinates") != "normalized_xy":
+        raise TypeError("non-dict action output requires a known action template")
+    if hasattr(value, "detach"):
+        values = value.detach().cpu().reshape(-1).tolist()
+    elif isinstance(value, (list, tuple)):
+        values = list(value)
+        while values and isinstance(values[0], (list, tuple)):
+            values = list(values[0])
+    else:
+        raise TypeError("normalized action output must be tensor or sequence")
+    if len(values) < 2:
+        raise ValueError("normalized action output requires x and y")
+    sample = input_buffer.get_latest_screen()
+    if sample is None:
+        raise RuntimeError("screen is unavailable for normalized action")
+    image = sample.value.image
+    height, width = image.shape[:2]
+    x = int(min(1.0, max(0.0, float(values[0]))) * max(0, width - 1))
+    y = int(min(1.0, max(0.0, float(values[1]))) * max(0, height - 1))
+    payload = {
+        "action": str(template.get("action", "moveTo")),
+        "x": x,
+        "y": y,
+    }
+    if "button" in template:
+        payload["button"] = str(template["button"])
+    return {
+        "candidate_id": f"{node['tnn_id']}:{now_ns}",
+        "action_type": str(template.get("action_type", "mouse")),
+        "payload": payload,
+        "horizon_ns": int(node["output_ttl_ns"]),
+    }
 
 
 def _value_summary(value: Any) -> Any:
@@ -535,6 +603,7 @@ class CoreLoop:
         vlm_backend: Callable[[dict[str, Any]], Any] | None = None,
         runtime_visual_backend: Callable[[Any], Any] | None = None,
         cloud_backend: Callable[[dict[str, Any]], Any] | None = None,
+        trainer: Any | None = None,
     ) -> None:
         if interval_s <= 0:
             raise ValueError("interval_s must be positive")
@@ -550,6 +619,15 @@ class CoreLoop:
         self.vlm_backend = vlm_backend
         self.runtime_visual_backend = runtime_visual_backend
         self.cloud_backend = cloud_backend
+        if trainer is None:
+            from eve.dock.trainer import Trainer
+
+            trainer = Trainer(
+                memorizer,
+                workspace_root=self.log_dir / "dock_workspace",
+                training_device=runtime_device,
+            )
+        self.trainer = trainer
         self._stop_event = threading.Event()
         self._failed_event = threading.Event()
         self._model_stop = threading.Event()
@@ -577,6 +655,8 @@ class CoreLoop:
         self._thread: threading.Thread | None = None
         self._started_at_ns = 0
         self._last_input_snapshot_ns = time.monotonic_ns()
+        self._waiting_training_orders: dict[str, Any] = {}
+        self._submitted_training_orders: dict[str, Any] = {}
 
     @property
     def running(self) -> bool:
@@ -883,6 +963,382 @@ class CoreLoop:
         )
         return record
 
+    def submit_training_order(self, value: Any) -> str:
+        from eve.dock.trainer import TrainingOrder
+
+        if isinstance(value, TrainingOrder):
+            order = value
+        elif isinstance(value, dict):
+            payload = dict(value)
+            query = payload.get("experience_query")
+            template = payload.pop("definition_template", None)
+            if template is not None:
+                if template not in {"shape_locator", "qnn_critic"}:
+                    raise ValueError(
+                        f"unknown training definition template: {template}"
+                    )
+                from eve.dock.trainer import (
+                    qnn_critic_definition,
+                    shape_locator_definition,
+                )
+
+                payload["definition"] = (
+                    shape_locator_definition()
+                    if template == "shape_locator"
+                    else qnn_critic_definition()
+                )
+            payload.setdefault("order_id", f"train_{time.time_ns()}")
+            payload.setdefault(
+                "task_id", self.state["myself"].get("current_task", "")
+            )
+            if not payload.get("training_data") and isinstance(query, dict):
+                payload["training_data"] = self._experience_ids_for_query(query)
+            allowed = set(TrainingOrder.__dataclass_fields__)
+            unknown = set(payload) - allowed
+            if unknown:
+                raise ValueError(
+                    f"unknown TrainingOrder fields: {sorted(unknown)}"
+                )
+            order = TrainingOrder(**payload)
+        else:
+            raise TypeError("training order must be a mapping or TrainingOrder")
+        if not order.order_id or not order.target_tnn_id:
+            raise ValueError("training order requires order_id and target_tnn_id")
+        if not order.definition:
+            raise ValueError("training order requires a model definition")
+        existing = self.state["training_orders"].get(order.order_id)
+        if existing and existing.get("state") in {
+            "waiting_for_data",
+            "queued",
+            "training",
+        }:
+            raise ValueError(f"training order already active: {order.order_id}")
+        record = {
+            "order_id": order.order_id,
+            "task_id": order.task_id,
+            "target_tnn_id": order.target_tnn_id,
+            "state": (
+                "queued"
+                if len(order.training_data) >= order.minimum_samples
+                else "waiting_for_data"
+            ),
+            "sample_ids": list(order.training_data),
+            "queued_at_ns": time.monotonic_ns(),
+        }
+        self.state["training_orders"][order.order_id] = record
+        self._submitted_training_orders[order.order_id] = order
+        self.state["blackboard"]["latest_training_order"] = _timed(
+            record, record["queued_at_ns"], producer="llm_based_self_update"
+        )
+        self.memorizer.enqueue(
+            {
+                **record,
+                "definition": order.definition,
+                "teacher_mode": order.teacher_mode,
+            },
+            "training_order",
+            priority="critical",
+        )
+        if len(order.training_data) < order.minimum_samples:
+            self._waiting_training_orders[order.order_id] = order
+            return order.order_id
+        self.trainer.enqueue(order)
+        return order.order_id
+
+    def _experience_ids_for_query(self, query: dict[str, Any]) -> list[str]:
+        task_id = str(query.get("task_id", ""))
+        teacher_class = str(query.get("teacher_class", ""))
+        outcome = query.get("hit")
+        results: list[str] = []
+        for memory_id in self.memorizer.search(payload_type="experience"):
+            experience = self.memorizer.read(memory_id)
+            if not isinstance(experience, dict):
+                continue
+            if task_id and experience.get("task", {}).get("task_id") != task_id:
+                continue
+            if teacher_class and not any(
+                isinstance(item, dict)
+                and item.get("class") == teacher_class
+                for item in experience.get("teacher", {}).get("objects", [])
+            ):
+                continue
+            if (
+                outcome is not None
+                and experience.get("environment", {}).get("hit") is not bool(outcome)
+            ):
+                continue
+            if experience.get("status") not in {"complete", "teacher_labeled"}:
+                continue
+            results.append(memory_id)
+        return results
+
+    def _refresh_waiting_training_orders(self) -> None:
+        for order_id, order in list(self._waiting_training_orders.items()):
+            if order.experience_query:
+                order.training_data = self._experience_ids_for_query(
+                    order.experience_query
+                )
+            if len(order.training_data) < order.minimum_samples:
+                continue
+            self.trainer.enqueue(order)
+            self._waiting_training_orders.pop(order_id, None)
+            record = self.state["training_orders"][order_id]
+            record["state"] = "queued"
+            record["sample_ids"] = list(order.training_data)
+            record["queued_at_ns"] = time.monotonic_ns()
+
+    def submit_environment_feedback(
+        self,
+        candidate_id: str,
+        feedback: dict[str, Any],
+    ) -> str:
+        pending = self.state["pending_experiences"].pop(candidate_id, None)
+        if pending is None:
+            raise KeyError(f"unknown pending action: {candidate_id}")
+        now_ns = time.monotonic_ns()
+        teacher = pending.get("teacher") or {}
+        task = {
+            "task_id": str(
+                feedback.get(
+                    "task_id",
+                    self.state["myself"].get("current_task", ""),
+                )
+            ),
+            "instruction": str(
+                feedback.get(
+                    "instruction",
+                    self.state["myself"].get("current_task", ""),
+                )
+            ),
+            "target_classes": list(feedback.get("target_classes", ())),
+        }
+        experience = {
+            "experience_version": 1,
+            "status": "complete",
+            "task": task,
+            "state": pending["state"],
+            "teacher": teacher,
+            "action": pending["action"],
+            "output": pending["output"],
+            "environment": {
+                "hit": bool(feedback.get("hit", False)),
+                "target_id": feedback.get("target_id"),
+                "score_delta": float(feedback.get("score_delta", 0.0)),
+                "score_total": float(feedback.get("score_total", 0.0)),
+                "reward": float(
+                    feedback.get(
+                        "reward",
+                        1.0 if feedback.get("hit", False) else -1.0,
+                    )
+                ),
+            },
+            "timestamps": {
+                "started_at_ns": int(pending["started_at_ns"]),
+                "finished_at_ns": int(feedback.get("timestamp_ns", now_ns)),
+            },
+        }
+        related = list(pending.get("related_memory_ids", ()))
+        for key in ("screen_memory_id", "result_memory_id"):
+            value = teacher.get(key)
+            if value:
+                related.append(str(value))
+        memory_id = self.memorizer.record_experience(
+            experience,
+            related_memory_ids=related,
+        )
+        self.state["blackboard"]["latest_experience"] = _timed(
+            {"memory_id": memory_id, **experience},
+            now_ns,
+            producer="environment",
+        )
+        predicted = pending["action"].get("qnn_score")
+        if predicted is not None:
+            actual = float(experience["environment"]["reward"])
+            qnn_feedback = {
+                "candidate_id": candidate_id,
+                "predicted_reward": float(predicted),
+                "actual_reward": actual,
+                "absolute_error": abs(actual - float(predicted)),
+                "experience_memory_id": memory_id,
+                "timestamp_ns": now_ns,
+            }
+            self.state["qnn_status"]["last_feedback"] = qnn_feedback
+            self.state["blackboard"]["latest_qnn_feedback"] = _timed(
+                qnn_feedback, now_ns, producer="environment"
+            )
+            self.memorizer.enqueue(
+                qnn_feedback, "qnn_feedback", priority="critical"
+            )
+        self._refresh_waiting_training_orders()
+        return memory_id
+
+    def record_teacher_demonstration(
+        self,
+        feedback: dict[str, Any],
+    ) -> str:
+        teacher = self.state.get("last_teacher_visual_result")
+        if not isinstance(teacher, dict) or teacher.get("label_status") != "valid":
+            raise RuntimeError("a current valid VLM teacher result is required")
+        now_ns = int(feedback.get("timestamp_ns", time.monotonic_ns()))
+        cursor = self.input_buffer.get_latest_cursor()
+        cursor_value = cursor.value if cursor is not None else None
+        task_id = str(
+            feedback.get(
+                "task_id", self.state["myself"].get("current_task", "")
+            )
+        )
+        target_classes = list(feedback.get("target_classes", ()))
+        experience = {
+            "experience_version": 1,
+            "status": "teacher_labeled",
+            "task": {
+                "task_id": task_id,
+                "instruction": str(
+                    feedback.get(
+                        "instruction",
+                        self.state["myself"].get("current_task", ""),
+                    )
+                ),
+                "target_classes": target_classes,
+            },
+            "state": {
+                "screen_memory_id": teacher.get("screen_memory_id"),
+                "frame_id": teacher.get("reference_frame_id"),
+                "frame_timestamp_ns": teacher.get(
+                    "reference_frame_timestamp_ns"
+                ),
+                "cursor": {
+                    "x": getattr(cursor_value, "x", feedback.get("x")),
+                    "y": getattr(cursor_value, "y", feedback.get("y")),
+                },
+            },
+            "teacher": {
+                "type": "vlm",
+                "result_memory_id": teacher.get("result_memory_id"),
+                "screen_memory_id": teacher.get("screen_memory_id"),
+                "objects": list(teacher.get("objects", ())),
+                "status": teacher.get("status"),
+            },
+            "action": {
+                "candidate_id": str(
+                    feedback.get("candidate_id", f"demo_{time.time_ns()}")
+                ),
+                "source": "human_demonstration",
+                "action_type": "mouse",
+                "payload": {
+                    "action": "click",
+                    "x": feedback.get("x"),
+                    "y": feedback.get("y"),
+                    "button": "left",
+                },
+            },
+            "output": {
+                "executed": True,
+                "simulated": False,
+                "blocked": False,
+                "reason": "human_demonstration",
+            },
+            "environment": {
+                "hit": bool(feedback.get("hit", False)),
+                "target_id": feedback.get("target_id"),
+                "score_delta": float(feedback.get("score_delta", 0.0)),
+                "score_total": float(feedback.get("score_total", 0.0)),
+                "reward": float(
+                    feedback.get(
+                        "reward",
+                        1.0 if feedback.get("hit", False) else -1.0,
+                    )
+                ),
+            },
+            "timestamps": {
+                "started_at_ns": int(
+                    teacher.get("reference_frame_timestamp_ns", now_ns)
+                ),
+                "finished_at_ns": now_ns,
+            },
+        }
+        related = [
+            str(value)
+            for value in (
+                teacher.get("screen_memory_id"),
+                teacher.get("result_memory_id"),
+            )
+            if value
+        ]
+        memory_id = self.memorizer.record_experience(
+            experience, related_memory_ids=related
+        )
+        self.state["blackboard"]["latest_experience"] = _timed(
+            {"memory_id": memory_id, **experience},
+            now_ns,
+            producer="human_demonstration",
+        )
+        self._refresh_waiting_training_orders()
+        return memory_id
+
+    def request_shape_training(
+        self,
+        *,
+        task_id: str,
+        target_class: str,
+        target_tnn_id: str,
+        minimum_samples: int = 20,
+        regression_data: list[str] | None = None,
+        acceptance: dict[str, float] | None = None,
+    ) -> str:
+        return self.submit_training_order(
+            {
+                "order_id": f"{target_tnn_id}_{time.time_ns()}",
+                "task_id": task_id,
+                "target_tnn_id": target_tnn_id,
+                "experience_query": {
+                    "task_id": task_id,
+                    "teacher_class": target_class,
+                    "hit": True,
+                },
+                "definition_template": "shape_locator",
+                "teacher_mode": "vlm",
+                "purpose": f"locate {target_class}",
+                "minimum_samples": int(minimum_samples),
+                "regression_data": list(regression_data or ()),
+                "acceptance": dict(acceptance or {}),
+                "epochs": 5,
+            }
+        )
+
+    def request_qnn_training(
+        self,
+        *,
+        task_id: str,
+        target_tnn_id: str = "action_value_qnn",
+        minimum_samples: int = 40,
+        maximum_evaluation_loss: float = 0.5,
+        minimum_action_score: float = 0.0,
+    ) -> str:
+        definition = None
+        from eve.dock.trainer import qnn_critic_definition
+
+        definition = qnn_critic_definition()
+        definition["structure"]["runtime"]["minimum_action_score"] = float(
+            minimum_action_score
+        )
+        return self.submit_training_order(
+            {
+                "order_id": f"{target_tnn_id}_{time.time_ns()}",
+                "task_id": task_id,
+                "target_tnn_id": target_tnn_id,
+                "experience_query": {"task_id": task_id},
+                "definition": definition,
+                "teacher_mode": "environment_reward",
+                "purpose": "estimate state-action reward before Safegate",
+                "minimum_samples": int(minimum_samples),
+                "acceptance": {
+                    "max_evaluation_loss": float(maximum_evaluation_loss)
+                },
+                "epochs": 8,
+            }
+        )
+
     def start(self) -> None:
         if self.running:
             return
@@ -905,8 +1361,49 @@ class CoreLoop:
             if self.tnn_id:
                 self.state["active_tnn"].add(self.tnn_id)
                 self.load_tnn_runtime(self.tnn_id)
+            elif self.state.get("restored_tnn_descriptions"):
+                requested = set(self.state.get("requested_tnn_on_restore", ()))
+                for description in self.state["restored_tnn_descriptions"][
+                    :MAX_LOADED_TNN
+                ]:
+                    restored_id = str(description.get("tnn_id", "")).strip()
+                    if not restored_id:
+                        continue
+                    try:
+                        self.load_tnn_runtime(
+                            restored_id,
+                            description.get("version"),
+                            input_refs=description.get("inputs"),
+                            run_frequency_hz=float(
+                                description.get("run_frequency_hz", 1.0)
+                            ),
+                            output_ttl_ns=int(
+                                description.get(
+                                    "output_ttl_ns", 1_000_000_000
+                                )
+                            ),
+                            action_output=description.get("action_output"),
+                            action_template=description.get("action_template"),
+                            activate=restored_id in requested,
+                        )
+                    except Exception as exc:
+                        self._record_error(
+                            f"tnn_restore:{restored_id}", exc, critical=False
+                        )
             elif self.smoke_node:
                 self._load_smoke_rule()
+            restored_qnn = self.state.get("restored_qnn_description")
+            if isinstance(restored_qnn, dict) and restored_qnn.get("tnn_id"):
+                try:
+                    self.load_qnn_runtime(
+                        str(restored_qnn["tnn_id"]),
+                        restored_qnn.get("version"),
+                        minimum_action_score=restored_qnn.get(
+                            "minimum_action_score"
+                        ),
+                    )
+                except Exception as exc:
+                    self._record_error("qnn_restore", exc, critical=False)
         except Exception as exc:
             self._record_error("tnn_load", exc, critical=True)
             self.state["loop_status"]["core"] = "failed"
@@ -935,6 +1432,7 @@ class CoreLoop:
         self._thread = None
         for tnn_id in list(self.state["loaded_tnn"]):
             self.unload_tnn_runtime(tnn_id)
+        self.unload_qnn_runtime()
         self.state["cold_started"] = False
         self.state["paused"] = False
         self.state["loop_status"]["core"] = "failed" if self.failed else "stopped"
@@ -998,6 +1496,7 @@ class CoreLoop:
             ("eve-yolo", self._yolo_worker),
             ("eve-cloud-llm", self._cloud_worker),
             ("eve-tnn-lifecycle", self._tnn_lifecycle_worker),
+            ("eve-dock", self._dock_worker),
         )
         self._model_threads = [
             threading.Thread(target=target, name=name)
@@ -1330,6 +1829,103 @@ class CoreLoop:
                 }
                 self._record_error(f"tnn_lifecycle:{tnn_id}", exc, critical=False)
 
+    def _dock_worker(self) -> None:
+        dock_status = self.state["dock_status"]
+        while not self._model_stop.is_set():
+            if not self.trainer.has_pending():
+                self._refresh_waiting_training_orders()
+            if not self.trainer.has_pending():
+                dock_status["state"] = "idle"
+                self._model_stop.wait(0.1)
+                continue
+            dock_status["state"] = "training"
+            result = self.trainer.process_one(
+                {"fitness_evaluator": self._evaluate_qnn_fitness}
+            )
+            finished_ns = time.monotonic_ns()
+            record = {
+                "order_id": result.order_id,
+                "tnn_id": result.tnn_id,
+                "version": result.version,
+                "state": "completed" if result.success else "failed",
+                "success": result.success,
+                "error": result.error,
+                "metrics": result.metrics,
+                "artifact_path": result.artifact_path,
+                "memory_id": result.report_memory_id,
+                "sample_count": result.sample_count,
+                "accepted": result.accepted,
+                "rejection_reason": result.rejection_reason,
+                "finished_at_ns": finished_ns,
+            }
+            if result.order_id:
+                record = {
+                    **self.state["training_orders"].get(
+                        result.order_id, {}
+                    ),
+                    **record,
+                }
+            dock_status.update(
+                {
+                    "state": record["state"],
+                    "current_order": None,
+                    "last_result": record,
+                }
+            )
+            if result.order_id:
+                self.state["training_orders"][result.order_id] = record
+            self.state["blackboard"]["latest_training_result"] = _timed(
+                record, finished_ns, producer="dock"
+            )
+            self.memorizer.enqueue(
+                record, "training_result", priority="critical"
+            )
+            if not result.success:
+                continue
+            if not result.accepted:
+                record["state"] = "candidate_rejected"
+                continue
+            try:
+                artifact = self.memorizer.resolve_tnn_artifact(
+                    result.tnn_id, result.version
+                )
+                structure = json.loads(
+                    Path(artifact["structure_path"]).read_text(encoding="utf-8")
+                )
+                runtime = structure.get("runtime", {})
+                if runtime.get("role") == "qnn":
+                    self.load_qnn_runtime(
+                        result.tnn_id,
+                        result.version,
+                        minimum_action_score=float(
+                            runtime.get("minimum_action_score", 0.0)
+                        ),
+                    )
+                    record["state"] = "qnn_loaded"
+                    continue
+                if result.tnn_id in self.state["loaded_tnn"]:
+                    self.request_tnn_unload(result.tnn_id)
+                self.request_tnn_load(
+                    result.tnn_id,
+                    result.version,
+                    input_refs=runtime.get("input_refs"),
+                    run_frequency_hz=float(
+                        runtime.get("run_frequency_hz", 1.0)
+                    ),
+                    output_ttl_ns=int(
+                        runtime.get("output_ttl_ns", 1_000_000_000)
+                    ),
+                    action_output=runtime.get("action_output"),
+                    action_template=runtime.get("action_template"),
+                )
+                record["state"] = "load_queued"
+            except Exception as exc:
+                record["state"] = "load_failed"
+                record["error"] = f"{type(exc).__name__}: {exc}"
+                self._record_error(
+                    f"dock_load:{result.tnn_id}", exc, critical=False
+                )
+
     def _local_llm_worker(self) -> None:
         status = self.state["model_status"]["local_llm"]
         try:
@@ -1459,8 +2055,8 @@ class CoreLoop:
             self._llm_requests.put_nowait(
                 {
                     "request_id": f"thought_{time.time_ns()}",
-                    "kind": "autonomous",
-                    "message": "进行一次低频自主状态整理。",
+                    "kind": "self_update",
+                    "message": "进行一次低频 self 状态更新。",
                     "requested_at_ns": now_ns,
                     "memory_id": None,
                 }
@@ -1593,8 +2189,10 @@ class CoreLoop:
             "available_tnn": self.memorizer.list_tnn_artifacts(),
             "loaded_tnn": sorted(self.state["loaded_tnn"]),
             "active_tnn": sorted(self.state["active_tnn"]),
+            "qnn": self.state["qnn_status"],
             "hormones": self.state["myself"]["hormones"],
             "tendencies": self.state["myself"]["tendencies"],
+            "recent_conversation": self.state["conversation"][-8:],
         }
 
     def _generate_local_llm(self, context: dict[str, Any]) -> str:
@@ -1602,6 +2200,8 @@ class CoreLoop:
             "你是 EVE 的本地运行模型。只输出一个 JSON 对象，不输出隐藏推理。"
             "字段必须为 reply, thinking_summary, world_update, myself_update, "
             "blackboard_updates, active_tnn, memory_candidates。"
+            "可选字段 training_order 只能是 null 或受限训练订单对象；"
+            "definition_template 只允许 shape_locator 或 qnn_critic。"
         )
         user = json.dumps(context, ensure_ascii=False, default=_value_summary)
         return self._generate_from_messages(
@@ -1732,6 +2332,23 @@ class CoreLoop:
                 summary="LLM user conversation",
                 tags=["llm", "chat"],
             )
+        if self.local_llm_backend is None:
+            try:
+                self._llm_requests.put_nowait(
+                    {
+                        "request_id": f"self_update_{time.time_ns()}",
+                        "kind": "self_update",
+                        "message": request["message"],
+                        "requested_at_ns": now_ns,
+                        "memory_id": reply_id,
+                    }
+                )
+            except queue.Full:
+                self.state["blackboard"]["self_update_queue_warning"] = _timed(
+                    {"message": "self update request queue is full"},
+                    now_ns,
+                    producer="core",
+                )
 
     @staticmethod
     def _parse_model_json(raw: str) -> dict[str, Any]:
@@ -1751,6 +2368,70 @@ class CoreLoop:
             r"<think>.*?</think>", "[hidden reasoning removed]", raw, flags=re.S
         )
         return redacted[:500]
+
+    @classmethod
+    def _parse_teacher_objects(
+        cls,
+        raw: Any,
+        *,
+        width: int,
+        height: int,
+    ) -> list[dict[str, Any]]:
+        value = raw if isinstance(raw, dict) else cls._parse_model_json(str(raw))
+        candidates = value.get(
+            "objects", value.get("verified_detections", ())
+        )
+        if not isinstance(candidates, list):
+            raise TypeError("teacher objects must be an array")
+        aliases = {
+            "red circle": "red_circle",
+            "red_circle": "red_circle",
+            "blue triangle": "blue_triangle",
+            "blue_triangle": "blue_triangle",
+        }
+        objects: list[dict[str, Any]] = []
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            raw_class = str(
+                item.get("class", item.get("class_name", item.get("object", "")))
+            ).strip().casefold()
+            class_name = aliases.get(raw_class)
+            bbox = item.get("bbox")
+            if class_name is None or not isinstance(bbox, (list, tuple)):
+                continue
+            if len(bbox) != 4 or not all(
+                isinstance(number, (int, float)) for number in bbox
+            ):
+                continue
+            x1, y1, x2, y2 = (float(number) for number in bbox)
+            if not (
+                0 <= x1 < x2 <= width
+                and 0 <= y1 < y2 <= height
+            ):
+                continue
+            center = item.get("center")
+            if not (
+                isinstance(center, (list, tuple))
+                and len(center) == 2
+                and all(isinstance(number, (int, float)) for number in center)
+            ):
+                center = [(x1 + x2) / 2, (y1 + y2) / 2]
+            center_x, center_y = (float(number) for number in center)
+            if not (0 <= center_x < width and 0 <= center_y < height):
+                continue
+            objects.append(
+                {
+                    "class": class_name,
+                    "class_index": 0 if class_name == "red_circle" else 1,
+                    "bbox": [x1, y1, x2, y2],
+                    "center": [center_x, center_y],
+                    "confidence": float(item.get("confidence", 1.0)),
+                }
+            )
+        if not objects:
+            raise ValueError("teacher result contains no valid shape labels")
+        return objects
 
     def _apply_llm_result(
         self, request: dict[str, Any], result: dict[str, Any]
@@ -1772,6 +2453,9 @@ class CoreLoop:
             raise TypeError("active_tnn must be an array")
         if not isinstance(result["memory_candidates"], list):
             raise TypeError("memory_candidates must be an array")
+        training_order = result.get("training_order")
+        if training_order is not None and not isinstance(training_order, dict):
+            raise TypeError("training_order must be null or an object")
         desired = {str(item) for item in result["active_tnn"]}
         if len(desired) > MAX_LOADED_TNN:
             raise ValueError(f"active_tnn exceeds {MAX_LOADED_TNN}")
@@ -1843,6 +2527,8 @@ class CoreLoop:
                 summary=f"LLM {request['kind']} exchange",
                 tags=["llm", request["kind"]],
             )
+        if training_order is not None:
+            self.submit_training_order(training_order)
 
     def _vlm_worker(self) -> None:
         status = self.state["model_status"]["vlm"]
@@ -1995,6 +2681,17 @@ class CoreLoop:
             latest.value.frame_id if latest is not None else None
         )
         stale = latest_frame_id != request["frame_id"]
+        height, width = request["image"].shape[:2]
+        try:
+            objects = self._parse_teacher_objects(
+                analysis, width=width, height=height
+            )
+            label_status = "valid"
+            validation_error = None
+        except Exception as exc:
+            objects = []
+            label_status = "invalid"
+            validation_error = f"{type(exc).__name__}: {exc}"
         result = {
             "request_id": request["request_id"],
             "model": status.get("model", "injected"),
@@ -2004,26 +2701,35 @@ class CoreLoop:
             "requested_at_ns": request["requested_at_ns"],
             "completed_at_ns": finished_ns,
             "analysis": str(analysis),
+            "objects": objects,
+            "label_status": label_status,
+            "validation_error": validation_error,
             "reviewed_runtime_visual": request.get(
                 "runtime_visual_result"
             ),
-            "status": "stale" if stale else "current",
+            "status": (
+                "stale"
+                if stale
+                else ("current" if label_status == "valid" else "invalid")
+            ),
             "error": None,
         }
-        self.state["last_teacher_visual_result"] = result
-        if not stale:
-            self.state["teacher_visual_result"] = result
-            self.state["blackboard"]["latest_teacher_review"] = _timed(
-                result, finished_ns, producer="vlm_teacher"
-            )
-        self.state["blackboard"]["latest_vlm_teacher_result"] = _timed(
-            result, finished_ns, producer="vlm_teacher"
-        )
         image_id = self.memorizer.enqueue(
             request["image"], "screen_image", priority="normal"
         )
+        result["screen_memory_id"] = image_id
         result_id = self.memorizer.enqueue(
             result, "vlm_teacher_result", priority="critical"
+        )
+        published_result = {**result, "result_memory_id": result_id}
+        self.state["last_teacher_visual_result"] = published_result
+        if not stale and label_status == "valid":
+            self.state["teacher_visual_result"] = published_result
+            self.state["blackboard"]["latest_teacher_review"] = _timed(
+                published_result, finished_ns, producer="vlm_teacher"
+            )
+        self.state["blackboard"]["latest_vlm_teacher_result"] = _timed(
+            published_result, finished_ns, producer="vlm_teacher"
         )
         if image_id and result_id:
             self.memorizer.create_event(
@@ -2214,7 +2920,9 @@ class CoreLoop:
         run_frequency_hz: float = 1.0,
         output_ttl_ns: int = 1_000_000_000,
         action_output: str | None = None,
+        action_template: dict[str, Any] | None = None,
         factory: str = "create_tnn",
+        activate: bool = True,
     ) -> dict[str, Any]:
         """Load a persisted TinyNN artifact into this Core lifecycle."""
         import torch
@@ -2271,8 +2979,31 @@ class CoreLoop:
         def infer(inputs: dict[str, Any]) -> dict[str, Any]:
             prepared: dict[str, Any] = {}
             for name, value in inputs.items():
-                dtype_name = schema.get(name, {}).get("dtype")
+                field_schema = schema.get(name, {})
+                dtype_name = field_schema.get("dtype")
                 dtype = getattr(torch, dtype_name, None) if dtype_name else None
+                if field_schema.get("preprocess") == "screen_rgb_64":
+                    if hasattr(value, "image"):
+                        value = value.image
+                    tensor = torch.as_tensor(value)
+                    if tensor.ndim != 3 or tensor.shape[-1] < 3:
+                        raise ValueError(
+                            "screen_rgb_64 requires an HWC screen image"
+                        )
+                    tensor = (
+                        tensor[..., :3]
+                        .flip(-1)
+                        .permute(2, 0, 1)
+                        .float()
+                        / 255.0
+                    )
+                    prepared[name] = torch.nn.functional.interpolate(
+                        tensor.unsqueeze(0).to(device),
+                        size=(64, 64),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    continue
                 if hasattr(value, "image"):
                     value = value.image
                 if hasattr(value, "x") and hasattr(value, "y"):
@@ -2296,7 +3027,9 @@ class CoreLoop:
             run_frequency_hz=run_frequency_hz,
             output_ttl_ns=output_ttl_ns,
             action_output=action_output,
+            action_template=action_template,
             model=model,
+            activate=activate,
         )
         node["device"] = str(device)
         description = json.loads(
@@ -2341,6 +3074,128 @@ class CoreLoop:
             "timestamp_ns": time.monotonic_ns(),
         }
 
+    def load_qnn_runtime(
+        self,
+        tnn_id: str,
+        version: str | None = None,
+        *,
+        minimum_action_score: float | None = None,
+    ) -> dict[str, Any]:
+        """Load one trainable state-action critic outside the TNN slot limit."""
+        import torch
+
+        from eve.core.qnn import load_qnn_artifact
+
+        artifact = self.memorizer.resolve_tnn_artifact(tnn_id, version)
+        device = torch.device(
+            self.runtime_device
+            or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        if device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("target CUDA device is unavailable")
+        self._check_tnn_resources(Path(artifact["weights_path"]), device)
+        runtime = load_qnn_artifact(
+            self.memorizer,
+            tnn_id,
+            version,
+            device=device,
+            minimum_action_score=minimum_action_score,
+        )
+        previous = self.state.get("_qnn_runtime")
+        if previous is not None:
+            previous.close()
+        self.state["_qnn_runtime"] = runtime
+        now_ns = time.monotonic_ns()
+        status = self.state["qnn_status"]
+        status.update(
+            {
+                "state": "ready",
+                "tnn_id": runtime.tnn_id,
+                "version": runtime.version,
+                "device": str(runtime.device),
+                "minimum_action_score": runtime.minimum_action_score,
+                "model_path": runtime.artifact["model_path"],
+                "weights_path": runtime.artifact["weights_path"],
+                "memory_id": runtime.artifact["memory_id"],
+                "loaded_at_ns": now_ns,
+                "last_error": None,
+            }
+        )
+        self.state["blackboard"]["qnn_status"] = _timed(
+            dict(status), now_ns, producer="qnn"
+        )
+        return status
+
+    def unload_qnn_runtime(self) -> None:
+        runtime = self.state.get("_qnn_runtime")
+        if runtime is not None:
+            runtime.close()
+        self.state["_qnn_runtime"] = None
+        self.state["qnn_status"].update(
+            {
+                "state": "not_loaded",
+                "tnn_id": None,
+                "version": None,
+                "device": None,
+            }
+        )
+
+    def _evaluate_qnn_fitness(
+        self,
+        order: Any,
+        candidate_model: Any,
+        structure: dict[str, Any],
+    ) -> dict[str, Any]:
+        from eve.core.qnn import normalized_action_vector
+
+        qnn = self.state.get("_qnn_runtime")
+        if qnn is None:
+            raise RuntimeError("QNN fitness requested but no QNN is loaded")
+        samples = self.trainer._load_samples(order.fitness_data, structure)
+        if not samples:
+            raise ValueError("QNN fitness_data contains no valid samples")
+        runtime = structure.get("runtime", {})
+        output_name = runtime.get("action_output")
+        action_template = runtime.get("action_template", {})
+        if not output_name:
+            raise ValueError("candidate TNN has no action_output")
+
+        def average(model: Any, name: str, template: dict[str, Any]) -> float:
+            scores: list[float] = []
+            for sample in samples:
+                batch = next(
+                    iter(
+                        self.trainer._batches(
+                            [sample], 1, model, structure
+                        )
+                    )
+                )
+                outputs = model.infer(batch["inputs"])
+                if name not in outputs:
+                    raise KeyError(f"candidate did not produce {name}")
+                encoded = normalized_action_vector(outputs[name], template)
+                scores.append(
+                    qnn.score_prepared(batch["inputs"]["image"], encoded)
+                )
+            return sum(scores) / len(scores)
+
+        candidate = average(candidate_model, str(output_name), action_template)
+        baseline = None
+        existing = self.state["loaded_tnn"].get(order.target_tnn_id)
+        if existing is not None and existing.get("model") is not None:
+            baseline = average(
+                existing["model"],
+                str(existing.get("action_output") or output_name),
+                existing.get("action_template") or action_template,
+            )
+        return {
+            "candidate": candidate,
+            "baseline": baseline,
+            "sample_count": len(samples),
+            "qnn_id": qnn.tnn_id,
+            "qnn_version": qnn.version,
+        }
+
     def _check_tnn_resources(self, weights_path: Path, device: Any) -> None:
         import psutil
         import torch
@@ -2372,6 +3227,95 @@ class CoreLoop:
             record, now_ns, producer="core"
         )
 
+    def _select_action_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        now_ns: int,
+    ) -> list[dict[str, Any]]:
+        qnn = self.state.get("_qnn_runtime")
+        if qnn is None or not candidates:
+            return candidates
+        screen_sample = self.input_buffer.get_latest_screen()
+        if screen_sample is None:
+            raise RuntimeError("QNN cannot evaluate actions without a screen")
+        scored: list[tuple[float, dict[str, Any]]] = []
+        passthrough: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for action in candidates:
+            if action.get("action_type") != "mouse":
+                passthrough.append(action)
+                continue
+            try:
+                score = qnn.score(screen_sample.value, action)
+                action["qnn_score"] = score
+                scored.append((score, action))
+            except Exception as exc:
+                failures.append(
+                    {
+                        "candidate_id": action.get("candidate_id"),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                self.state["consumed_action_ids"].add(action["candidate_id"])
+        scored.sort(
+            key=lambda item: (
+                item[0],
+                str(item[1].get("candidate_id", "")),
+            ),
+            reverse=True,
+        )
+        selected: dict[str, Any] | None = None
+        if scored and scored[0][0] >= qnn.minimum_action_score:
+            selected = scored[0][1]
+        rejected = [
+            {
+                "candidate_id": action["candidate_id"],
+                "source": action.get("source"),
+                "score": score,
+                "reason": (
+                    "lower_than_selected"
+                    if selected is not None
+                    else "below_minimum_action_score"
+                ),
+            }
+            for score, action in scored
+            if action is not selected
+        ]
+        for item in rejected:
+            self.state["consumed_action_ids"].add(item["candidate_id"])
+        decision = {
+            "qnn_id": qnn.tnn_id,
+            "qnn_version": qnn.version,
+            "evaluated_at_ns": now_ns,
+            "minimum_action_score": qnn.minimum_action_score,
+            "scores": [
+                {
+                    "candidate_id": action["candidate_id"],
+                    "source": action.get("source"),
+                    "score": score,
+                }
+                for score, action in scored
+            ],
+            "selected_candidate_id": (
+                selected.get("candidate_id") if selected is not None else None
+            ),
+            "rejected": rejected,
+            "failures": failures,
+            "passthrough_count": len(passthrough),
+        }
+        status = self.state["qnn_status"]
+        status["evaluation_count"] = int(
+            status.get("evaluation_count", 0)
+        ) + len(scored)
+        status["last_decision"] = decision
+        self.state["blackboard"]["latest_qnn_decision"] = _timed(
+            decision, now_ns, producer="qnn"
+        )
+        self.memorizer.enqueue(
+            decision, "qnn_decision", priority="critical"
+        )
+        return passthrough + ([selected] if selected is not None else [])
+
     def step(self, now_ns: int | None = None) -> list[dict[str, Any]]:
         if (
             not self.state["cold_started"]
@@ -2389,10 +3333,6 @@ class CoreLoop:
             self.state[name] = input_state[name]
         self.state["resource_status"]["capture"] = input_state["capture"]
         summary = self._input_summary(input_state)
-        active_window = summary.get("active_window")
-        if active_window:
-            self.state["world"]["active_window"] = active_window
-            self.state["world"]["updated_at_ns"] = now_ns
         self.state["blackboard"]["latest_input_summary"] = _timed(
             summary, now_ns, producer="input_buffer"
         )
@@ -2425,6 +3365,23 @@ class CoreLoop:
                 node["last_error"] = f"{type(exc).__name__}: {exc}"
                 self._record_error(f"tnn:{tnn_id}", exc, critical=False)
                 continue
+
+        queued_actions = list(self.state["action_queue"])
+        self.state["action_queue"].clear()
+        try:
+            selected_actions = self._select_action_candidates(
+                queued_actions, now_ns
+            )
+        except Exception as exc:
+            selected_actions = []
+            for action in queued_actions:
+                self.state["consumed_action_ids"].add(action["candidate_id"])
+            self.state["qnn_status"]["state"] = "error"
+            self.state["qnn_status"]["last_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            self._record_error("qnn_action_selection", exc, critical=False)
+        self.state["action_queue"].extend(selected_actions)
 
         results: list[dict[str, Any]] = []
         while self.state["action_queue"]:
@@ -2508,17 +3465,52 @@ class CoreLoop:
                     "tnn_id", "version", "description", "model_path",
                     "weights_path", "device", "precision", "run_frequency_hz",
                     "output_ttl_ns", "input_schema", "output_schema",
-                    "memory_id",
+                    "memory_id", "inputs", "action_output", "action_template",
                 )
             }
             for node in self.state["loaded_tnn"].values()
         ]
+        if self.state.get("_qnn_runtime") is not None:
+            snapshot["qnn"] = {
+                key: self.state["qnn_status"].get(key)
+                for key in (
+                    "tnn_id",
+                    "version",
+                    "minimum_action_score",
+                    "model_path",
+                    "weights_path",
+                    "memory_id",
+                )
+            }
         snapshot["blackboard"] = dict(
             list(self.state["blackboard"].items())[-50:]
         )
         destination.write_text(
             json.dumps(snapshot, ensure_ascii=False, indent=2, default=repr),
             encoding="utf-8",
+        )
+
+    def save_readable_snapshots(self, directory: str | Path) -> tuple[Path, Path]:
+        destination = Path(directory)
+        destination.mkdir(parents=True, exist_ok=True)
+        generated_at_ns = time.time_ns()
+
+        def write(name: str, title: str, value: dict[str, Any]) -> Path:
+            path = destination / name
+            body = json.dumps(value, ensure_ascii=False, indent=2, default=repr)
+            path.write_text(
+                f"# EVE {title}\n\n"
+                f"Generated at: `{generated_at_ns}`\n\n"
+                "```json\n"
+                f"{body}\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            return path
+
+        return (
+            write("world.md", "world", self.state["world"]),
+            write("self.md", "self", self.state["myself"]),
         )
 
     def load_snapshot(self, path: str | Path) -> bool:
@@ -2547,6 +3539,7 @@ class CoreLoop:
         self.state["requested_tnn_on_restore"] = [
             str(item) for item in snapshot.get("active_tnn", [])
         ][:MAX_LOADED_TNN]
+        self.state["restored_qnn_description"] = snapshot.get("qnn")
         self.state["emergency_stop"] = False
         self.state["permissions"] = safegate.default_permissions(False)
         return True
@@ -2817,9 +3810,36 @@ class CoreLoop:
                 / max((now_ns - self._started_at_ns) / 1_000_000_000, 1e-9),
                 "last_error": model.get("error"),
             }
+        trainer_stats = self.trainer.stats()
+        self.state["node_status"]["dock"] = {
+            "state": self.state["dock_status"].get("state", "idle"),
+            "last_run_ns": (
+                self.state["dock_status"].get("last_result") or {}
+            ).get("finished_at_ns", 0),
+            "last_duration_ms": 0.0,
+            "average_duration_ms": 0.0,
+            "actual_hz": float(trainer_stats.get("total_completed", 0))
+            / max((now_ns - self._started_at_ns) / 1_000_000_000, 1e-9),
+            "queue_size": trainer_stats.get("queue_size", 0),
+            "last_error": (
+                self.state["dock_status"].get("last_result") or {}
+            ).get("error"),
+        }
+        qnn = self.state["qnn_status"]
+        self.state["node_status"]["qnn"] = {
+            "state": qnn.get("state", "not_loaded"),
+            "last_run_ns": (
+                (qnn.get("last_decision") or {}).get("evaluated_at_ns", 0)
+            ),
+            "last_duration_ms": 0.0,
+            "average_duration_ms": 0.0,
+            "actual_hz": float(qnn.get("evaluation_count", 0))
+            / max((now_ns - self._started_at_ns) / 1_000_000_000, 1e-9),
+            "last_error": qnn.get("last_error"),
+        }
         for name in (
             "safegate", "mouse_output", "keyboard_output",
-            "speak_output", "dock",
+            "speak_output",
         ):
             self.state["node_status"].setdefault(
                 name,
@@ -2836,7 +3856,6 @@ class CoreLoop:
         screen = input_state["latest"]["screen"]
         cursor = input_state["latest"]["cursor"]
         keyboard_activity = input_state["latest"]["keyboard_activity"]
-        active_window = input_state["latest"]["active_window"]
         screen_value = screen.value if screen is not None else None
         cursor_value = cursor.value if cursor is not None else None
         return {
@@ -2868,11 +3887,6 @@ class CoreLoop:
                 if keyboard_activity is not None
                 else None
             ),
-            "active_window": (
-                dict(active_window.value)
-                if active_window is not None
-                else None
-            ),
             "dropped_screen_frames": input_state["dropped_screen_frames"],
         }
 
@@ -2890,7 +3904,8 @@ class CoreLoop:
 
     def _remember_chain(
         self, action: dict[str, Any], result: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, str]:
+        memory_ids: dict[str, str] = {}
         try:
             decision = self.state["blackboard"].get(
                 "latest_safegate_result", {}
@@ -2905,8 +3920,45 @@ class CoreLoop:
                 )
                 if memory_id is not None:
                     self.state["memory_ids"].append(memory_id)
+                    memory_ids[payload_type] = memory_id
+            input_summary = (
+                self.state["blackboard"]
+                .get("latest_input_summary", {})
+                .get("value", {})
+            )
+            teacher = self.state.get("teacher_visual_result") or {}
+            screen = input_summary.get("screen") or {}
+            cursor = input_summary.get("cursor") or {}
+            self.state["pending_experiences"][action["candidate_id"]] = {
+                "state": {
+                    "screen_memory_id": teacher.get("screen_memory_id"),
+                    "frame_id": screen.get("frame_id"),
+                    "frame_timestamp_ns": screen.get("timestamp_ns"),
+                    "cursor": {
+                        "x": cursor.get("x"),
+                        "y": cursor.get("y"),
+                    },
+                },
+                "teacher": {
+                    "type": "vlm" if teacher else "none",
+                    "result_memory_id": teacher.get("result_memory_id"),
+                    "screen_memory_id": teacher.get("screen_memory_id"),
+                    "objects": list(teacher.get("objects", ())),
+                    "status": teacher.get("status"),
+                },
+                "action": action,
+                "output": result,
+                "started_at_ns": action.get(
+                    "observed_at_ns", action.get("generated_at_ns", 0)
+                ),
+                "related_memory_ids": list(memory_ids.values()),
+            }
+            while len(self.state["pending_experiences"]) > 100:
+                oldest = next(iter(self.state["pending_experiences"]))
+                self.state["pending_experiences"].pop(oldest, None)
         except Exception as exc:
             self._record_error("memory", exc, critical=True)
+        return memory_ids
 
     def _record_error(
         self, loop_node: str, exc: Exception, *, critical: bool = False

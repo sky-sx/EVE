@@ -88,7 +88,6 @@ class InputBuffer:
         self._screen_count = 0
         self._cursor_count = 0
         self._keyboard_count = 0
-        self._window_count = 0
         self._dropped_screen_frames = 0
         self._last_screen_frame_id = 0
         self._last_cursor_position: tuple[int, int] | None = None
@@ -118,7 +117,6 @@ class InputBuffer:
             "screen_mode": "synthetic" if self.profile == "smoke" else "real",
             "cursor_mode": "synthetic" if self.profile == "smoke" else "real",
             "keyboard_mode": "synthetic" if self.profile == "smoke" else "real",
-            "window_mode": "synthetic" if self.profile == "smoke" else "real",
             "startup_timeout_s": startup_timeout_s,
             **self.capture_options,
         }
@@ -226,9 +224,6 @@ class InputBuffer:
             "keyboard_samples": int(
                 final.get("keyboard_samples", self._keyboard_count)
             ),
-            "window_samples": int(
-                final.get("window_samples", self._window_count)
-            ),
             "dropped_screen_frames": self._dropped_screen_frames,
             "screen_fps": screen_count / duration_s,
             "cursor_hz": cursor_count / duration_s,
@@ -308,17 +303,14 @@ class InputBuffer:
         screen = window.get("screen", [])
         cursor = window.get("cursor", [])
         keyboard = window.get("keyboard_activity", [])
-        active_window = window.get("active_window", [])
         return {
             "screen": screen,
             "cursor": cursor,
             "keyboard_activity": keyboard,
-            "active_window": active_window,
             "latest": {
                 "screen": screen[-1] if screen else None,
                 "cursor": cursor[-1] if cursor else None,
                 "keyboard_activity": keyboard[-1] if keyboard else None,
-                "active_window": active_window[-1] if active_window else None,
             },
             "capture": self.capture_health(),
             "human_activity_detected_at_ns": self.human_activity_detected_at_ns,
@@ -411,8 +403,6 @@ class InputBuffer:
                     self._receive_cursor(message)
                 elif message_type == "keyboard_activity":
                     self._receive_keyboard_activity(message)
-                elif message_type == "active_window":
-                    self._receive_active_window(message)
                 elif message_type == "health":
                     self._capture_health = dict(message)
                     if message.get("state") == "running":
@@ -518,19 +508,6 @@ class InputBuffer:
             self.human_takeover_until_ns = timestamp_ns + 5_000_000_000
         self.store("keyboard_activity", value, timestamp_ns=timestamp_ns)
         self._keyboard_count += 1
-
-    def _receive_active_window(self, message: dict[str, Any]) -> None:
-        timestamp_ns = int(message["timestamp_ns"])
-        self.store(
-            "active_window",
-            {
-                "title": str(message.get("title", "")),
-                "process": str(message.get("process", "")),
-                "updated_at_ns": timestamp_ns,
-            },
-            timestamp_ns=timestamp_ns,
-        )
-        self._window_count += 1
 
     def _check_capture_process(self) -> None:
         process = self._process
