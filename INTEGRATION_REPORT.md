@@ -6,14 +6,20 @@
 
 - `main.py`：移除 control 占位阻断，加入八页 PySide6 GUI、冷启动/暂停/恢复/正常停机/急停/显式解除、权限变更、设置、快照恢复和状态刷新。
 - `input/capture.py`、`input/buffer.py`：增加键盘活动与活动窗口小数据；仍由 Buffer 独占 Capture 进程和共享内存，并区分 EVE 输出与用户接管。
-- `core/loop.py`：普通 LLM 对话与内部结构化决策分流；YOLO/视觉 TNN 负责运行时屏幕感知；VLM 只作为按需教师复核；保留有界队列、帧绑定、CUDA 实测、节点/资源状态、五 TNN 上限和快照。
+- `core/loop.py`：普通 LLM 对话与内部结构化决策分流；YOLO/视觉 TNN 负责运行时屏幕感知；显式 YOLO 请求冻结并绑定目标帧、写入 Memory；VLM 只作为按需教师复核并携带同帧运行时候选；迟到结果与当前 Blackboard 隔离。TNN 节点新增输入/输出摘要、输出时间、参数与 buffer 总内存统计和生命周期失败结果。
 - `core/safegate.py`：改为鼠标与逐键原子授权，组合键必须全部满足，Unicode/粘贴同时检查 `send_text`、CTRL 和 V。
 - `output/*.py`：完成真实鼠标/键盘边界、按键释放、Unicode 粘贴和可停止的异步 TTS。
 - `memory/memorizer.py`：恢复最小 Event，补充真实计数、检索、TNN artifact 列表和强制整理进度/ETA。
 - `pyproject.toml`：声明 GUI、模型、量化、资源、真实输出和 TTS 所需依赖。
-- `tests/test_control_runtime.py`：覆盖八页 GUI、冷启动前静止、生命周期、LLM 普通对话与原子更新、YOLO Blackboard 写入、VLM 教师迟到隔离、权限和 TNN 五槽上限。
+- `tests/test_control_runtime.py`：覆盖八页 GUI、冷启动前静止、生命周期、LLM 普通对话与原子更新、显式 YOLO 请求及 Memory 写入、VLM 教师候选复核与迟到隔离、视觉 TNN 帧绑定与输入输出摘要、权限和 TNN 五槽上限。
 
-RTX 5080 Tensor 同步测试通过，现有螺旋三分类 TNN 的参数和输出均为 `cuda:0`。本地 LLM 已以 4-bit NF4 在 `cuda:0` 完成真实普通对话，回复耗时约 1.485 秒。YOLO 已从 `eve/core/yolo26/weights/yolo26n.pt` 在 RTX 5080 上加载、预热并完成约 8.27 ms 的合成帧推理。Qwen VLM 改为显式请求时按需加载的教师，不再占用实时屏幕分析入口。完整自动测试为 `36 passed in 5.94s`。真实键鼠/TTS、物理 Esc 以及 VLM 教师输出质量仍等待用户人工授权验收。
+RTX 5080 Tensor 同步测试通过，现有螺旋三分类 TNN 的参数和输出均为 `cuda:0`。本地 LLM 已以 4-bit NF4 在 `cuda:0` 完成真实普通对话，回复耗时约 1.485 秒。YOLO 已从 `eve/core/yolo26/weights/yolo26n.pt` 在 RTX 5080 上加载、预热并完成约 8.27 ms 的合成帧推理。Qwen VLM 改为显式请求时按需加载的教师，不再占用实时屏幕分析入口。
+
+本轮最终完整自动测试为 `37 passed in 5.52s`。
+
+真实 Qwen 教师验证产物位于 `runs/vlm_teacher_json_check_20260728_163031`：模型实际运行于 `cuda:0`，量化状态为 `4bit-nf4` 且 `is_loaded_in_4bit=true`；请求绑定帧 5081，并携带 `synthetic-candidate` 运行时视觉候选。模型返回可解析的紧凑 JSON，确认红色矩形候选且无修正项；`vlm_teacher_result` 和 `screen_image` 各写入一条 Memory。冻结帧在约 4.281 秒生成期间超过 Buffer 一秒实时窗口，因此结果被正确标为 `stale`，没有覆盖当前 Blackboard。停止后 Core、Memory writer 和全部 `eve-*` 线程均已清理。
+
+真实键鼠/TTS、物理 Esc、真实桌面内容上的 VLM 质量以及完整 24 步桌面验收仍等待用户人工授权验收。
 
 本阶段另完成 `runs/control_stage_observe_10m_20260728` 的真实输入十分钟长跑：601.797 秒，屏幕 28.7913 FPS，光标 59.7749 Hz，Core 32.1579 Hz，TNN 调用 9,460 次，Memory 写入/丢弃/失败为 601/0/0，runtime error 为 0，退出后 Core、Memory、Capture 和项目线程均已停止。observe 未开放真实 Output。
 

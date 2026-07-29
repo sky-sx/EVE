@@ -108,6 +108,7 @@ def test_control_gui_has_eight_pages_and_does_not_cold_start(
     assert window.screen_view.pixmap() is not None
     assert not window.screen_view.pixmap().isNull()
     assert window.tnn_table.rowCount() == MAX_LOADED_TNN
+    assert window.tnn_table.columnCount() == 16
     assert not runtime.buffer.capture_running
     assert not runtime.core.running
     assert not runtime.memory.writer_running
@@ -263,8 +264,10 @@ def test_real_llm_user_request_accepts_plain_text_reply(tmp_path, monkeypatch):
 def test_vlm_stale_result_is_bound_but_not_current(tmp_path):
     started = threading.Event()
     release = threading.Event()
+    captured_request = {}
 
-    def backend(_request):
+    def backend(request):
+        captured_request.update(request)
         started.set()
         release.wait(2.0)
         return "frame analysis"
@@ -290,8 +293,18 @@ def test_vlm_stale_result_is_bound_but_not_current(tmp_path):
             image=np.zeros((8, 8, 4), dtype=np.uint8),
         )
         buffer.store("screen", first, timestamp_ns=first.captured_at_ns)
+        state["visual_result"] = {
+            "source": "yolo",
+            "model": "test-yolo",
+            "reference_frame_id": 1,
+            "reference_frame_timestamp_ns": first.captured_at_ns,
+            "completed_at_ns": time.monotonic_ns(),
+            "detections": [{"class_name": "object"}],
+            "detection_count": 1,
+        }
         core.submit_visual_request()
         assert started.wait(2.0)
+        assert captured_request["runtime_visual_result"]["model"] == "test-yolo"
         second = ScreenFrame(
             frame_id=2,
             captured_at_ns=time.monotonic_ns(),
@@ -306,8 +319,14 @@ def test_vlm_stale_result_is_bound_but_not_current(tmp_path):
 
         assert state["last_teacher_visual_result"]["reference_frame_id"] == 1
         assert state["last_teacher_visual_result"]["status"] == "stale"
+        assert (
+            state["last_teacher_visual_result"]["reviewed_runtime_visual"][
+                "detection_count"
+            ]
+            == 1
+        )
         assert state["teacher_visual_result"] is None
-        assert state["visual_result"] is None
+        assert state["visual_result"]["source"] == "yolo"
     finally:
         release.set()
         core.stop()
@@ -358,9 +377,67 @@ def test_yolo_runtime_visual_writes_blackboard_without_vlm(tmp_path):
         assert result["detection_count"] == 1
         assert state["blackboard"]["current_visual_result"]["producer"] == "yolo"
         assert state["teacher_visual_result"] is None
+
+        request_id = core.submit_runtime_visual_analysis()
+        wait_until(
+            lambda: state["visual_result"].get("request_id") == request_id
+        )
+        requested = state["visual_result"]
+        assert requested["reference_frame_id"] == 7
+        assert requested["requested_at_ns"] <= requested["completed_at_ns"]
+        memory.flush()
+        result_ids = memory.search(payload_type="runtime_visual_result")
+        assert result_ids
+        assert memory.read(result_ids[-1])["request_id"] == request_id
     finally:
         core.stop()
         memory.stop_writer()
+
+
+def test_visual_tnn_result_has_frame_binding_and_io_summaries(tmp_path):
+    import torch
+
+    state = create_runtime_state()
+    state["cold_started"] = True
+    buffer = InputBuffer()
+    frame = ScreenFrame(
+        frame_id=17,
+        captured_at_ns=time.monotonic_ns(),
+        slot=0,
+        image=np.zeros((4, 6, 4), dtype=np.uint8),
+    )
+    buffer.store("screen", frame, timestamp_ns=frame.captured_at_ns)
+    model = torch.nn.Linear(2, 3)
+    register_runtime_tnn(
+        state,
+        "visual_tnn",
+        lambda _inputs: {"detections": [{"class_name": "shape"}]},
+        inputs={"screen": "state:screen"},
+        outputs=("detections",),
+        run_frequency_hz=10.0,
+        model=model,
+    )
+    core = CoreLoop(buffer, Memorizer(tmp_path / "memory"), state=state)
+
+    core.step(now_ns=time.monotonic_ns())
+
+    result = state["visual_result"]
+    node = state["loaded_tnn"]["visual_tnn"]
+    assert result["model"] == "visual_tnn"
+    assert result["reference_frame_id"] == 17
+    assert result["reference_frame_timestamp_ns"] == frame.captured_at_ns
+    assert result["requested_at_ns"] <= result["completed_at_ns"]
+    assert node["last_input_summary"]["screen"]["shape"] == [4, 6, 4]
+    assert node["last_output_summary"]["detections"]["length"] == 1
+    assert node["last_output_at_ns"] == result["completed_at_ns"]
+    core._update_resources(time.monotonic_ns())
+    expected_bytes = sum(
+        value.nelement() * value.element_size()
+        for value in (*tuple(model.parameters()), *tuple(model.buffers()))
+    )
+    assert state["resource_status"]["tnn_summary"]["total_memory"] == (
+        expected_bytes
+    )
 
 
 def test_atomic_permissions_and_tnn_five_slot_limit():

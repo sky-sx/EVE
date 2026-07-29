@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from eve.core import safegate
+from eve.input.buffer import ScreenFrame
 from eve.output import keyboard, mouse, speak
 
 MAX_LOADED_TNN = 5
@@ -111,6 +112,7 @@ def create_runtime_state(
         "memory_ids": [],
         "conversation": [],
         "visual_result": None,
+        "last_runtime_visual_result": None,
         "teacher_visual_result": None,
         "cloud_result": None,
         "cuda_status": {},
@@ -155,7 +157,9 @@ def register_runtime_tnn(
         "last_duration_ms": 0.0,
         "average_duration_ms": 0.0,
         "run_count": 0,
+        "last_input_summary": {},
         "last_output_summary": {},
+        "last_output_at_ns": 0,
         "last_error": None,
     }
     state["loaded_tnn"][tnn_id] = node
@@ -280,9 +284,13 @@ def _run_tnn(
     node["average_duration_ms"] += (
         duration_ms - node["average_duration_ms"]
     ) / node["run_count"]
+    node["last_input_summary"] = {
+        name: _value_summary(value) for name, value in inputs.items()
+    }
     node["last_output_summary"] = {
         name: _value_summary(value) for name, value in outputs.items()
     }
+    node["last_output_at_ns"] = now_ns
     state["tnn_outputs"][tnn_id] = {
         name: _timed(value, now_ns, node["output_ttl_ns"], tnn_id)
         for name, value in outputs.items()
@@ -300,21 +308,48 @@ def _run_tnn(
             for reference in node["inputs"].values()
         )
     ):
+        screen = next(
+            (
+                inputs[name]
+                for name, reference in node["inputs"].items()
+                if reference == "state:screen"
+            ),
+            None,
+        )
         visual_result = {
             "source": "tnn",
             "role": "runtime_visual",
             "tnn_id": tnn_id,
+            "model": tnn_id,
+            "reference_frame_id": getattr(screen, "frame_id", None),
+            "reference_frame_timestamp_ns": getattr(
+                screen, "captured_at_ns", 0
+            ),
+            "requested_at_ns": started_ns,
             "completed_at_ns": now_ns,
             "detections": outputs["detections"],
+            "detection_count": (
+                len(outputs["detections"])
+                if hasattr(outputs["detections"], "__len__")
+                else None
+            ),
             "status": "current",
         }
-        state["visual_result"] = visual_result
-        state["blackboard"]["current_visual_result"] = _timed(
-            visual_result,
-            now_ns,
-            node["output_ttl_ns"],
-            tnn_id,
+        latest_screen = input_buffer.get_latest_screen()
+        latest_frame_id = (
+            latest_screen.value.frame_id if latest_screen is not None else None
         )
+        if latest_frame_id != visual_result["reference_frame_id"]:
+            visual_result["status"] = "stale"
+        state["last_runtime_visual_result"] = visual_result
+        if visual_result["status"] == "current":
+            state["visual_result"] = visual_result
+            state["blackboard"]["current_visual_result"] = _timed(
+                visual_result,
+                now_ns,
+                node["output_ttl_ns"],
+                tnn_id,
+            )
     action_output = node["action_output"]
     if action_output and action_output in outputs:
         if not isinstance(outputs[action_output], dict):
@@ -330,6 +365,16 @@ def _run_tnn(
 
 
 def _value_summary(value: Any) -> Any:
+    if hasattr(value, "image") and hasattr(value, "frame_id"):
+        summary = _value_summary(value.image)
+        if isinstance(summary, dict):
+            summary.update(
+                {
+                    "frame_id": int(value.frame_id),
+                    "captured_at_ns": int(value.captured_at_ns),
+                }
+            )
+        return summary
     if hasattr(value, "shape"):
         summary = {
             "shape": list(value.shape),
@@ -353,6 +398,17 @@ def _value_summary(value: Any) -> Any:
         return {"type": type(value).__name__, "length": len(value)}
     text = str(value)
     return text[:240] + ("…" if len(text) > 240 else "")
+
+
+def _model_storage_bytes(model: Any, *, cuda_only: bool = False) -> int:
+    if model is None:
+        return 0
+    total = 0
+    for value in (*tuple(model.parameters()), *tuple(model.buffers())):
+        if cuda_only and not bool(getattr(value, "is_cuda", False)):
+            continue
+        total += int(value.nelement() * value.element_size())
+    return total
 
 
 def _dispatch(action: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -502,6 +558,9 @@ class CoreLoop:
         self._cancel_cloud = threading.Event()
         self._llm_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=4)
         self._vlm_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2)
+        self._runtime_visual_requests: queue.Queue[dict[str, Any]] = (
+            queue.Queue(maxsize=2)
+        )
         self._cloud_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2)
         self._tnn_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=8)
         self._model_threads: list[threading.Thread] = []
@@ -612,6 +671,9 @@ class CoreLoop:
             "frame_timestamp_ns": frame.captured_at_ns,
             "requested_at_ns": time.monotonic_ns(),
             "image": image,
+            "runtime_visual_result": self._visual_result_for_frame(
+                frame.frame_id
+            ),
         }
         try:
             self._vlm_requests.put_nowait(request)
@@ -646,15 +708,52 @@ class CoreLoop:
         sample = self.input_buffer.get_latest_screen()
         if sample is None:
             raise RuntimeError("no screen frame is available")
+        import numpy as np
+
+        frame = sample.value
         request_id = f"visual_{time.time_ns()}"
+        request = {
+            "request_id": request_id,
+            "frame_id": int(frame.frame_id),
+            "frame_timestamp_ns": int(frame.captured_at_ns),
+            "requested_at_ns": time.monotonic_ns(),
+            "image": np.array(frame.image, copy=True),
+        }
+        try:
+            self._runtime_visual_requests.put_nowait(request)
+        except queue.Full as exc:
+            raise RuntimeError("runtime visual request queue is full") from exc
         self._yolo_force_event.set()
         log_event(
             self.log_dir,
             "runtime_visual_requested",
             request_id=request_id,
-            reference_frame_id=sample.value.frame_id,
+            reference_frame_id=frame.frame_id,
         )
         return request_id
+
+    def _visual_result_for_frame(
+        self, frame_id: int
+    ) -> dict[str, Any] | None:
+        result = self.state.get("visual_result")
+        if not isinstance(result, dict):
+            return None
+        if result.get("reference_frame_id") != frame_id:
+            return None
+        return {
+            key: result.get(key)
+            for key in (
+                "source",
+                "model",
+                "tnn_id",
+                "reference_frame_id",
+                "reference_frame_timestamp_ns",
+                "completed_at_ns",
+                "detections",
+                "detection_count",
+            )
+            if key in result
+        }
 
     def submit_cloud_request(self, message: str) -> str:
         if not self.state["cold_started"]:
@@ -1011,6 +1110,23 @@ class CoreLoop:
         )
         last_frame_id = -1
         while not self._model_stop.is_set():
+            try:
+                request = self._runtime_visual_requests.get_nowait()
+            except queue.Empty:
+                request = None
+            if request is not None:
+                requested_frame = ScreenFrame(
+                    frame_id=request["frame_id"],
+                    captured_at_ns=request["frame_timestamp_ns"],
+                    slot=-1,
+                    image=request["image"],
+                )
+                self._run_yolo_frame(
+                    requested_frame,
+                    detector,
+                    request=request,
+                )
+                last_frame_id = int(requested_frame.frame_id)
             sample = self.input_buffer.get_latest_screen()
             if sample is not None:
                 frame = sample.value
@@ -1020,7 +1136,13 @@ class CoreLoop:
             self._yolo_force_event.wait(0.1)
             self._yolo_force_event.clear()
 
-    def _run_yolo_frame(self, frame: Any, detector: Any) -> None:
+    def _run_yolo_frame(
+        self,
+        frame: Any,
+        detector: Any,
+        *,
+        request: dict[str, Any] | None = None,
+    ) -> None:
         status = self.state["model_status"]["yolo"]
         started_ns = time.monotonic_ns()
         try:
@@ -1029,16 +1151,29 @@ class CoreLoop:
                 if self.runtime_visual_backend is not None
                 else detector.detect(frame.image)
             )
-            result = self._normalize_yolo_result(frame, raw, started_ns)
+            result = self._normalize_yolo_result(
+                frame,
+                raw,
+                started_ns,
+                request=request,
+            )
             finished_ns = int(result["completed_at_ns"])
+            latest = self.input_buffer.get_latest_screen()
+            latest_frame_id = (
+                latest.value.frame_id if latest is not None else None
+            )
+            if latest_frame_id != result["reference_frame_id"]:
+                result["status"] = "stale"
             with self.state["_state_lock"]:
-                self.state["visual_result"] = result
-                self.state["blackboard"]["current_visual_result"] = _timed(
-                    result,
-                    finished_ns,
-                    ttl_ns=1_000_000_000,
-                    producer="yolo",
-                )
+                self.state["last_runtime_visual_result"] = result
+                if result["status"] == "current":
+                    self.state["visual_result"] = result
+                    self.state["blackboard"]["current_visual_result"] = _timed(
+                        result,
+                        finished_ns,
+                        ttl_ns=1_000_000_000,
+                        producer="yolo",
+                    )
             stats = self.state["runtime_stats"]
             stats["yolo_calls"] = stats.get("yolo_calls", 0) + 1
             status.update(
@@ -1050,6 +1185,11 @@ class CoreLoop:
                     "error": None,
                 }
             )
+            if request is not None:
+                self._remember_runtime_visual_request(
+                    request,
+                    result,
+                )
         except Exception as exc:
             status.update(
                 {
@@ -1066,7 +1206,12 @@ class CoreLoop:
             )
 
     def _normalize_yolo_result(
-        self, frame: Any, raw: Any, started_ns: int
+        self,
+        frame: Any,
+        raw: Any,
+        started_ns: int,
+        *,
+        request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         detections, inference_ms = self._yolo_detection_payload(
             raw, started_ns
@@ -1075,14 +1220,48 @@ class CoreLoop:
             "source": "yolo",
             "role": "runtime_visual",
             "model": self.state["model_status"]["yolo"].get("model"),
+            "request_id": request.get("request_id") if request else None,
             "reference_frame_id": int(frame.frame_id),
             "reference_frame_timestamp_ns": int(frame.captured_at_ns),
+            "requested_at_ns": (
+                int(request["requested_at_ns"]) if request else started_ns
+            ),
             "completed_at_ns": time.monotonic_ns(),
             "duration_ms": inference_ms,
             "detections": detections,
             "detection_count": len(detections),
             "status": "current",
         }
+
+    def _remember_runtime_visual_request(
+        self,
+        request: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        image_id = self.memorizer.enqueue(
+            request["image"],
+            "screen_image",
+            priority="normal",
+        )
+        result_id = self.memorizer.enqueue(
+            result,
+            "runtime_visual_result",
+            priority="critical",
+        )
+        if image_id and result_id:
+            self.memorizer.create_event(
+                [image_id, result_id],
+                summary="Requested runtime visual analysis",
+                tags=["runtime_visual", "yolo"],
+            )
+        log_event(
+            self.log_dir,
+            "runtime_visual_completed",
+            request_id=request["request_id"],
+            reference_frame_id=request["frame_id"],
+            duration_ms=result["duration_ms"],
+            detection_count=result["detection_count"],
+        )
 
     @staticmethod
     def _yolo_detection_payload(
@@ -1138,6 +1317,17 @@ class CoreLoop:
                     raise ValueError(f"unknown TNN operation: {operation}")
             except Exception as exc:
                 self.state["tnn_status"][tnn_id] = "error"
+                result_key = (
+                    "last_tnn_load"
+                    if operation == "load"
+                    else "last_tnn_unload"
+                )
+                self.state["resource_status"][result_key] = {
+                    "tnn_id": tnn_id,
+                    "success": False,
+                    "timestamp_ns": time.monotonic_ns(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
                 self._record_error(f"tnn_lifecycle:{tnn_id}", exc, critical=False)
 
     def _local_llm_worker(self) -> None:
@@ -1814,6 +2004,9 @@ class CoreLoop:
             "requested_at_ns": request["requested_at_ns"],
             "completed_at_ns": finished_ns,
             "analysis": str(analysis),
+            "reviewed_runtime_visual": request.get(
+                "runtime_visual_result"
+            ),
             "status": "stale" if stale else "current",
             "error": None,
         }
@@ -1880,6 +2073,25 @@ class CoreLoop:
         processor = self._vlm_processor
         model = self._vlm_model
         pil_image = Image.fromarray(image)
+        height, width = image.shape[:2]
+        prompt = (
+            request["prompt"]
+            + f"\n\n实际帧尺寸是 {width}x{height} 像素；bbox 坐标格式为"
+            "[x1, y1, x2, y2] 绝对像素。不得假设其他图像尺寸。"
+            "只输出一个紧凑 JSON 对象，不要输出分析过程。JSON 字段为："
+            'summary、verified_detections、corrections。'
+        )
+        runtime_visual = request.get("runtime_visual_result")
+        if runtime_visual is not None:
+            prompt += (
+                "\n\n以下是运行时 YOLO/TNN 对同一帧给出的候选结果。"
+                "请核对并明确指出漏检、误检或标签修正：\n"
+                + json.dumps(
+                    runtime_visual,
+                    ensure_ascii=False,
+                    default=repr,
+                )
+            )
         if hasattr(processor, "apply_chat_template"):
             inputs = processor.apply_chat_template(
                 [
@@ -1887,19 +2099,20 @@ class CoreLoop:
                         "role": "user",
                         "content": [
                             {"type": "image", "image": pil_image},
-                            {"type": "text", "text": request["prompt"]},
+                            {"type": "text", "text": prompt},
                         ],
                     }
                 ],
                 tokenize=True,
                 add_generation_prompt=True,
+                enable_thinking=False,
                 return_dict=True,
                 return_tensors="pt",
             )
         else:
             inputs = processor(
                 images=pil_image,
-                text=request["prompt"],
+                text=prompt,
                 return_tensors="pt",
             )
         device = next(model.parameters()).device
@@ -2548,13 +2761,12 @@ class CoreLoop:
                 for node in self.state["loaded_tnn"].values()
             ),
             "gpu_memory": sum(
-                sum(
-                    parameter.nelement() * parameter.element_size()
-                    for parameter in node["model"].parameters()
-                )
+                _model_storage_bytes(node.get("model"), cuda_only=True)
                 for node in self.state["loaded_tnn"].values()
-                if node.get("model") is not None
-                and any(p.is_cuda for p in node["model"].parameters())
+            ),
+            "total_memory": sum(
+                _model_storage_bytes(node.get("model"))
+                for node in self.state["loaded_tnn"].values()
             ),
         }
         self.state["node_status"]["capture"] = {

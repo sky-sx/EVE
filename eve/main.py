@@ -371,6 +371,27 @@ class EVEApplication:
         self.exit_reason = "memory_error"
         self._stop_requested.set()
 
+    def has_active_runtime(self) -> bool:
+        return bool(
+            self.core.running
+            or self.buffer.capture_running
+            or self.memory.writer_running
+        )
+
+    def force_memory_review(self) -> bool:
+        return self.memory.force_review()
+
+    def memory_view_snapshot(self) -> dict[str, Any]:
+        latest_id = self.memory.stm[-1] if self.memory.stm else None
+        latest_unit = self.memory.get_unit(latest_id) if latest_id else None
+        latest_event = self.memory.latest_event()
+        return {
+            "counts": self.memory.counts(),
+            "review": self.memory.review_status(),
+            "latest_memory": latest_unit.__dict__ if latest_unit else None,
+            "latest_event": latest_event.__dict__ if latest_event else None,
+        }
+
 
 def _global_escape_pressed() -> bool:
     try:
@@ -749,7 +770,7 @@ class EVEControlWindow:
                 load.clicked.connect(self._load_tnn)
                 unload = qt["QPushButton"]("卸载")
                 unload.clicked.connect(self._unload_tnn)
-                activate = qt["QPushButton"]("激活")
+                activate = qt["QPushButton"]("激活 / 恢复")
                 activate.clicked.connect(self._activate_tnn)
                 pause = qt["QPushButton"]("暂停")
                 pause.clicked.connect(self._pause_tnn)
@@ -757,11 +778,12 @@ class EVEControlWindow:
                 for button in (load, unload, activate, pause):
                     row.addWidget(button)
                 layout.addLayout(row)
-                self.tnn_table = qt["QTableWidget"](5, 12)
+                self.tnn_table = qt["QTableWidget"](5, 16)
                 self.tnn_table.setHorizontalHeaderLabels(
                     [
-                        "Slot", "tnn_id", "版本", "用途", "状态", "设备",
-                        "精度", "频率", "TTL", "最近耗时", "平均耗时", "错误",
+                        "Slot", "tnn_id", "版本", "用途", "状态", "模型路径",
+                        "设备", "精度", "频率", "TTL", "最近运行",
+                        "最近耗时", "平均耗时", "最近输出", "输出时间", "错误",
                     ]
                 )
                 layout.addWidget(self.tnn_table)
@@ -800,11 +822,7 @@ class EVEControlWindow:
                 )
 
             def _normal_stop(self) -> None:
-                if not (
-                    self.application.core.running
-                    or self.application.buffer.capture_running
-                    or self.application.memory.writer_running
-                ):
+                if not self.application.has_active_runtime():
                     return
                 self.application.exit_reason = "gui_normal_stop"
                 self._run_operation(self.application.stop)
@@ -885,7 +903,7 @@ class EVEControlWindow:
                 if not self.application.state["cold_started"]:
                     self._background_error = "冷启动后才能执行 Memory 整理"
                     return
-                if not self.application.memory.force_review():
+                if not self.application.force_memory_review():
                     self._background_error = "Memory 整理已在运行"
 
             def _load_tnn(self) -> None:
@@ -983,11 +1001,15 @@ class EVEControlWindow:
                     f"dropped {stats.get('dropped_screen_frames', 0)}\n"
                     f"frame_id {frame_id}\nframe_time {frame_time}"
                 )
-                result = state.get("visual_result")
+                result = state.get("last_runtime_visual_result")
+                if result is None:
+                    result = state.get("visual_result")
                 self.visual_result.setPlainText(
                     _json_text(result) if result else "暂无 YOLO/TNN 结果"
                 )
-                teacher_result = state.get("teacher_visual_result")
+                teacher_result = state.get("last_teacher_visual_result")
+                if teacher_result is None:
+                    teacher_result = state.get("teacher_visual_result")
                 self.teacher_visual_result.setPlainText(
                     _json_text(teacher_result)
                     if teacher_result
@@ -1060,13 +1082,13 @@ class EVEControlWindow:
                 )
 
             def _refresh_memory(self, state: dict[str, Any]) -> None:
-                memory = self.application.memory
-                counts = memory.counts()
+                snapshot = self.application.memory_view_snapshot()
+                counts = snapshot["counts"]
                 self.memory_counts.setText(
                     f"STM {counts['stm']} | MTM {counts['mtm']} | "
                     f"LTM {counts['ltm']} | Event {counts['events']}"
                 )
-                review = memory.review_status()
+                review = snapshot["review"]
                 total = int(review.get("total", 0))
                 processed = int(review.get("processed", 0))
                 self.review_progress.setMaximum(max(1, total))
@@ -1077,19 +1099,11 @@ class EVEControlWindow:
                     f"{review.get('state')} | {processed}/{total} | ETA {eta_text} | "
                     f"结果 {review.get('last_result')} | 错误 {review.get('last_error')}"
                 )
-                latest_id = memory.stm[-1] if memory.stm else None
-                latest_unit = memory.get_unit(latest_id) if latest_id else None
                 self.memory_view.setPlainText(
                     _json_text(
                         {
-                            "latest_memory": (
-                                latest_unit.__dict__ if latest_unit else None
-                            ),
-                            "latest_event": (
-                                memory.latest_event().__dict__
-                                if memory.latest_event()
-                                else None
-                            ),
+                            "latest_memory": snapshot["latest_memory"],
+                            "latest_event": snapshot["latest_event"],
                         }
                     )
                 )
@@ -1141,7 +1155,10 @@ class EVEControlWindow:
                     f"最大加载数 5 | loaded {len(nodes)} | "
                     f"active {len(state['active_tnn'])} | 剩余 {5-len(nodes)} | "
                     f"显存 {summary.get('gpu_memory', 0)} | "
+                    f"总内存 {summary.get('total_memory', '未采样')} | "
                     f"总推理耗时 {summary.get('total_inference_ms', 0)} ms | "
+                    f"最近加载 {state['resource_status'].get('last_tnn_load')} | "
+                    f"最近卸载 {state['resource_status'].get('last_tnn_unload')} | "
                     f"最近错误 {state['resource_status'].get('last_tnn_error')}"
                 )
                 qt = _load_qt()
@@ -1153,12 +1170,16 @@ class EVEControlWindow:
                         node.get("version", ""),
                         node.get("description", ""),
                         node.get("status", "empty"),
+                        node.get("model_path", ""),
                         node.get("device", ""),
                         node.get("precision", ""),
                         node.get("run_frequency_hz", ""),
                         node.get("output_ttl_ns", ""),
+                        _format_ns(node.get("last_run_ns")),
                         node.get("last_duration_ms", ""),
                         node.get("average_duration_ms", ""),
+                        _json_text(node.get("last_output_summary", {})),
+                        _format_ns(node.get("last_output_at_ns")),
                         node.get("last_error", ""),
                     )
                     for column, value in enumerate(values):
@@ -1168,11 +1189,40 @@ class EVEControlWindow:
                 connections = []
                 for node in nodes:
                     for input_name, source in node.get("inputs", {}).items():
+                        upstream_tnn = None
+                        output_name = None
+                        transfer = None
+                        if source.startswith("tnn:"):
+                            upstream_ref = source[4:]
+                            upstream_tnn, _, output_name = upstream_ref.rpartition(
+                                "."
+                            )
+                            transfer = (
+                                state["tnn_outputs"]
+                                .get(upstream_tnn, {})
+                                .get(output_name)
+                            )
                         connections.append(
                             {
+                                "upstream_tnn": upstream_tnn,
+                                "output_field": output_name,
                                 "downstream": node.get("tnn_id"),
                                 "input": input_name,
                                 "source_ref": source,
+                                "connection_state": (
+                                    transfer.get("status")
+                                    if transfer
+                                    else (
+                                        "waiting"
+                                        if upstream_tnn
+                                        else "direct_source"
+                                    )
+                                ),
+                                "last_transfer_at_ns": (
+                                    transfer.get("produced_at_ns")
+                                    if transfer
+                                    else 0
+                                ),
                             }
                         )
                 self.tnn_detail.setPlainText(
@@ -1184,9 +1234,30 @@ class EVEControlWindow:
                                     "tnn_id": node.get("tnn_id"),
                                     "input_schema": node.get("input_schema"),
                                     "output_schema": node.get("output_schema"),
+                                    "source_refs": node.get("inputs"),
+                                    "last_input_summary": node.get(
+                                        "last_input_summary"
+                                    ),
                                     "last_output_summary": node.get(
                                         "last_output_summary"
                                     ),
+                                    "last_output_at_ns": node.get(
+                                        "last_output_at_ns"
+                                    ),
+                                    "downstream_consumers": [
+                                        {
+                                            "tnn_id": consumer.get("tnn_id"),
+                                            "input": input_name,
+                                            "source_ref": source,
+                                        }
+                                        for consumer in nodes
+                                        for input_name, source in consumer.get(
+                                            "inputs", {}
+                                        ).items()
+                                        if source.startswith(
+                                            f"tnn:{node.get('tnn_id')}."
+                                        )
+                                    ],
                                 }
                                 for node in nodes
                             ],
@@ -1202,11 +1273,7 @@ class EVEControlWindow:
                     thread.join(10.0)
                 try:
                     with self._operation_lock:
-                        if (
-                            self.application.core.running
-                            or self.application.buffer.capture_running
-                            or self.application.memory.writer_running
-                        ):
+                        if self.application.has_active_runtime():
                             self.application.exit_reason = "gui_closed"
                             self.application.stop()
                 except Exception as exc:

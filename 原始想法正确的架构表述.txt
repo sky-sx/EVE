@@ -1,0 +1,55 @@
+我觉得你说的不对，我设想的架构如下：
+除主入口main.py外
+分5大部分：input，output，memory，core，dock；
+main.py要求启动后生成监视加控制窗口，通过切换页面该窗口内要包含如下功能：
+1.实时图像显示及其分析，目光聚焦注意点位置，鼠标光标位置
+2.目前所用的麦克风设备及对应的音量显示
+3.文本输入交互区，自主思想的实时想法显示，认知中世界状态信息实时显示
+4.目前的内存，显存消耗，每个节点的运行状态，每个环路的实时循环频率
+5.冷启动键和急停键（急停快捷键Esc）
+6.目前的STM，MTM，LTM条数，blackboard上的信息，强制睡眠整理信息键，信息整理进度及预计时间
+7.控制鼠标和键盘的权限是否授权，及当前的倾向状态（包括鼠标，键盘，发文字，语音，思考，暂停，睡眠等）
+8.api key设置，激素状态监控，快捷表扬与批评键
+功能描述结束
+input部分分为capture.py和buffer.py两个模块：
+capture.py 负责最纯粹的实时循环的屏幕捕捉，麦克风音频捕捉，光标位置捕捉；
+buffer.py负责基础的缓冲，latest的1s内的所有捕捉都要可以调取，（调取的数据应命名为state，包含1s内的所有捕获的信息），input部分唯一向其他部分有输出的模块，。
+input部分表述结束
+output部分分为keybroad.py,mouse.py,speak.py:
+keybroad.py负责将json格式的按键指令转化为实际direct input的案件；
+mouse.py负责将json格式的鼠标移动指令转化为实际鼠标光标的移动；
+speak.py负责将json格式的语音文本指令转化为实际语音输出；
+output部分表述结束
+memory部分分为memorizer.py，LTM文件夹，TNNweights文件夹：
+memorizer.py负责向LTM文件夹中写入和读取长期记忆文件，并维护LTM的遗忘删除，合并记忆，分离记忆；
+LTM文件夹用于储存长期记忆；
+TNNweights文件夹用于存放训练的TNN的权重文件和每个TNN的描述json（包含信息来源，循环频率，下游模块及其传输条件（达到条件传输），用途描述，使用场景描述）；
+memory部分表述结束
+core部分包含models文件夹，world.md,self.md,blackbroad.md,loop.py,safegate.py：
+models文件夹包含deepseek-7b文件夹，yolo26文件夹，qwen文件夹，deepseek-api文件夹：
+deepseek-7b文件夹包含deepseek-7b的权重文件；
+yolo26文件夹包含yolo26的权重文件；
+qwen文件夹包含qwen3.5的权重文件；
+deepseek-api文件夹包含deepseek的apikey文件；
+models文件夹表述结束
+world.md用于读写当前循环认知下的外部环境状态，包含所处大场景，细分小场景，场景详细信息；
+self.md用于读写当前循环认知下的内部状态，包含视线聚焦位置，当前加载的TNN的描述，可加载（未加载)的TNN描述，6大情感激素的浓度值，自定任务描述、进度和流图邻接表，想法（what im thinking自主思想），自画像描述；
+blackbroad.md用于进行反复思考时临时将输出写入然后读取的暂存站；
+loop.py负责维护控制所有循环包括:
+实时捕获循环（capture.py）频率2Hz，
+缓冲更新循环buffer.py的state，频率2Hz,
+多个直接反应循环：已加载的TNN获取其描述所需模块中的特定信息，频率基于TNN的描述，TNN生成的信息传向其描述的指定下游；
+场景详细信息更新循环：state中图像最新帧输入YOLO26n图像识别并输出识别结果更新world.md的场景详细信息部分，频率1Hz；
+慢速空闲思维循环：world.md,self.md和STM输入LLM（deepseek-7b 4位量化）不断更新world.md,self.md的状态，决定加载或卸载哪些TNN，更新浓度值，频率0.25Hz；
+记忆循环：（此处要补充）
+睡眠复盘循环：（此处要补充）
+...补充其他循环；
+loop.py描述结束
+safegate.py负责检测是否有人类主动接管鼠标或键盘，若是则禁止5秒的EVE键盘鼠标使用权；
+core部分表述结束
+dock部分分为trainer.py，TinyNN.py:
+trainer.py负责按照输入的json文件，配置对应的teacher（LLM，VLM，人）和对应的student（已有TNN或新建TNN（按照json指示进行）），并训练TNN，初始数据来源由json中对LTM的文件进行指定，对应临时训练标签由teacher生成；
+TinyNN.py是TNN类标准模板，TNN要有可变的输入形式，可变层数和可变宽度（反正就是一个高自由度的小NN，你重新描述下这句话)；
+
+
+

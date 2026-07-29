@@ -14,19 +14,21 @@
 - 本地 LLM 默认使用 `eve/core/deepseek-7b` 并强制 CUDA 4-bit NF4；VLM 教师默认使用 `eve/core/qwen`，只在显式教师复核请求时按需加载；YOLO 默认使用 `eve/core/yolo26/weights/yolo26n.pt`。
 - 本地 LLM 已真实完成普通文本对话，保持 `cuda:0`、`4bit-nf4`、`ready`，测试回复耗时约 1.485 秒。YOLO 已在 RTX 5080 上真实加载、预热和推理，合成帧推理约 8.27 ms。
 - Core 的结构化 LLM 结果采用整批预校验和原子更新；无效结果不会部分覆盖 world、myself、Blackboard 或 active_tnn。
-- YOLO 持续把检测框、类别、置信度和帧时间写入 `current_visual_result`；视觉 TNN 若消费 `state:screen` 并输出 `detections`，可成为当前运行时视觉结果。VLM 教师结果写入独立的 `latest_teacher_review`，迟到结果记为 `stale`，不会覆盖运行时视觉。
+- YOLO 持续把检测框、类别、置信度和帧时间写入 `current_visual_result`；视觉 TNN 若消费 `state:screen` 并输出 `detections`，可成为当前运行时视觉结果。两者都绑定参考帧、模型、请求/完成时间，迟到结果只进入 `last_runtime_visual_result`，不会冒充当前结果。
+- GUI 的显式 YOLO 分析请求使用有界队列冻结目标帧，并把图像、请求 ID 和结果关联写入 Memory。VLM 教师会携带同一帧的 YOLO/TNN 候选进行复核；教师结果写入独立的 `latest_teacher_review`，迟到结果记为 `stale`，不会覆盖运行时视觉。
 - 真实鼠标、键盘、Unicode 文本和异步 TTS 执行路径已接入，但每次启动所有原子权限均重新为 `false`。本轮未代替用户授权并执行真实键鼠/TTS。
 - Safegate 分别检查鼠标移动/点击/双击/滚轮/拖拽、逐键权限、组合键全部按键、`send_text` 和 `speak`；急停会清空待执行动作并停止输出。
 - 六个最小激素值、自然恢复、表扬/批评反馈和行为倾向已接入；它们不能绕过权限或 Safegate。
 - Memory 已支持 Event、STM/MTM/LTM 真实计数、按 ID/关键词/时间检索、强制整理的真实进度与动态 ETA。
-- `MAX_LOADED_TNN = 5`；第六个加载请求被明确拒绝且原五个保持不变。TNN 加载前检查文件、设备、RAM 和 VRAM。
+- `MAX_LOADED_TNN = 5`；第六个加载请求被明确拒绝且原五个保持不变。TNN 加载前检查文件、设备、RAM 和 VRAM。TNN 页现显示模型路径、最近运行、输入/输出摘要、输出时间、真实 SourceRef 上下游、参数与 buffer 总内存及加载/卸载结果。
+- GUI 不再直接调用 Memorizer；Memory 页读取和强制整理均通过 `EVEApplication` 的窄接口。
 - 正常停机保存 world、myself、必要 Blackboard、active_tnn、loaded_tnn 描述和模型设置；权限和 API key 不进入恢复快照。
 
-当前自动回归：
+当前完整自动回归：
 
 ```text
 python -m pytest -q
-36 passed in 5.94s
+37 passed in 5.52s
 ```
 
 本阶段真实 `observe` 十分钟长跑：
@@ -58,9 +60,25 @@ spiral_three_class parameter device: cuda:0
 spiral_three_class output device: cuda:0
 ```
 
+真实 Qwen VLM 教师验证：
+
+```text
+run: runs/vlm_teacher_json_check_20260728_163031
+device: cuda:0
+quantization: 4bit-nf4
+is_loaded_in_4bit: true
+reference_frame_id: 5081
+reviewed candidate: synthetic-candidate
+result: 可解析的紧凑 JSON，确认红色矩形候选且 corrections 为空
+Memory: vlm_teacher_result 1 / screen_image 1
+cleanup: Core、Memory writer 和全部 eve-* 线程已停止
+```
+
+冻结帧在约 4.281 秒生成期间超过 Buffer 一秒实时窗口，因此结果按设计标为 `stale`，只作为绑定帧的教师记录保存，未覆盖当前实时视觉。
+
 当前仍未完成或无证据：
 
-- 本地 LLM 普通对话和 YOLO 实时推理已验证；VLM 教师输出质量仍需人工验收；
+- 本地 LLM 普通对话、YOLO 实时推理和 Qwen VLM 合成帧教师复核均已验证；真实桌面内容上的 VLM 教师质量仍属于完整人工验收的一部分；
 - OpenAI-compatible 云端仅完成接口和错误状态，未配置 API key 做真实调用；
 - 物理 Esc、真实鼠标/键盘/TTS 与完整 24 步人工交互验收仍需用户在桌面会话中完成；
 - QNN、自动 TNN 生成/成长/拆分/合并/替换、影子部署和红蓝圆三角实验仍未实现；
