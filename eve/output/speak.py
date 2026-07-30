@@ -101,6 +101,7 @@ def execute(
 ) -> dict[str, Any]:
     started_ns = time.monotonic_ns()
     common = {
+        "candidate_id": action_id,
         "action_id": action_id,
         "kind": "speak",
         "mode": mode,

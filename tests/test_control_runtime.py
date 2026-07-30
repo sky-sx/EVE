@@ -12,10 +12,11 @@ from eve.core.loop import (
     DEFAULT_YOLO_PATH,
     MAX_LOADED_TNN,
     CoreLoop,
+    check_action_permission,
     create_runtime_state,
+    default_permissions,
     register_runtime_tnn,
 )
-from eve.core.safegate import check, default_permissions
 from eve.input.buffer import InputBuffer, ScreenFrame
 from eve.main import EVEApplication, EVEControlWindow, _load_qt
 from eve.memory.memorizer import Memorizer
@@ -57,6 +58,7 @@ def test_local_models_have_repo_defaults_and_legacy_empty_snapshot_is_migrated(
     assert runtime.state["model_config"]["vlm_path"] == DEFAULT_VLM_PATH
     assert runtime.state["model_config"]["yolo_model_path"] == DEFAULT_YOLO_PATH
     assert runtime.state["model_status"]["local_llm"]["state"] == "configured"
+    assert runtime.state["model_status"]["yolo"]["auto_start"] is True
     assert runtime.state["model_status"]["vlm"]["state"] == "configured"
 
     snapshot = tmp_path / "legacy_snapshot.json"
@@ -109,6 +111,29 @@ def test_control_gui_has_eight_pages_and_does_not_cold_start(
     assert not window.screen_view.pixmap().isNull()
     assert window.tnn_table.rowCount() == MAX_LOADED_TNN
     assert window.tnn_table.columnCount() == 16
+    assert window.loop_graph_view is not None
+    assert "debug.jsonl" in window.debug_log_path.text()
+    window._set_stable_text(
+        window.world_view, "\n".join(f"line {index}" for index in range(200))
+    )
+    scrollbar = window.world_view.verticalScrollBar()
+    scrollbar.setValue(max(1, scrollbar.maximum() // 2))
+    previous_scroll = scrollbar.value()
+    window._set_stable_text(
+        window.world_view,
+        "\n".join(f"updated {index}" for index in range(220)),
+    )
+    assert scrollbar.value() == previous_scroll
+    node = register_runtime_tnn(
+        runtime.state,
+        "frequency-probe",
+        lambda _inputs: {},
+        outputs=(),
+        activate=False,
+    )
+    node["actual_frequency_hz"] = 12.5
+    window.refresh()
+    assert window.tnn_table.item(0, 8).text() == "12.5"
     assert not runtime.buffer.capture_running
     assert not runtime.core.running
     assert not runtime.memory.writer_running
@@ -229,6 +254,66 @@ def test_llm_queue_valid_json_updates_and_invalid_result_is_atomic(tmp_path):
         assert state["model_status"]["local_llm"]["state"] == "ready"
         assert state["world"] == before_world
         assert "must_not_apply" not in state["world"]
+    finally:
+        core.stop()
+        memory.stop_writer()
+
+
+def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypatch):
+    calls = []
+
+    def backend(context):
+        calls.append(context)
+        count = len(calls)
+        return {
+            "reply": "",
+            "thinking_summary": f"visible self update {count}",
+            "world_update": {"update_count": count},
+            "myself_update": {"last_self_tick": count},
+            "blackboard_updates": [],
+            "active_tnn": [],
+            "memory_candidates": [],
+        }
+
+    state = create_runtime_state()
+    memory = Memorizer(tmp_path / "memory")
+    core = CoreLoop(
+        InputBuffer(),
+        memory,
+        state=state,
+        log_dir=tmp_path,
+        local_llm_backend=backend,
+    )
+    monkeypatch.setattr(core, "_autonomous_interval_s", lambda: 0.05)
+    memory.start_writer()
+    try:
+        core.start()
+        wait_until(
+            lambda: state["model_status"]["local_llm"]["self_update_count"] >= 3
+        )
+        assert state["world"]["update_count"] >= 3
+        assert state["myself"]["last_self_tick"] >= 3
+        assert state["model_status"]["local_llm"]["self_update_failures"] == 0
+        assert state["conversation"] == []
+        wait_until(
+            lambda: state["node_status"]
+            .get("self_update_loop", {})
+            .get("actual_hz", 0)
+            > 0
+        )
+        assert state["node_status"]["self_update_loop"]["actual_hz"] > 0
+        assert state["loop_graph"]["edges"]
+        wait_until(
+            lambda: '"channel": "self_update_output"'
+            in (tmp_path / "debug.jsonl").read_text(encoding="utf-8")
+        )
+        channels = {
+            json.loads(line)["channel"]
+            for line in (tmp_path / "debug.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+        }
+        assert {"self_update_output", "loop_snapshot"} <= channels
     finally:
         core.stop()
         memory.stop_writer()
@@ -420,6 +505,8 @@ def test_visual_tnn_result_has_frame_binding_and_io_summaries(tmp_path):
     core = CoreLoop(buffer, Memorizer(tmp_path / "memory"), state=state)
 
     core.step(now_ns=time.monotonic_ns())
+    wait_until(lambda: core._tnn_futures["visual_tnn"].done())
+    core.step(now_ns=time.monotonic_ns())
 
     result = state["visual_result"]
     node = state["loaded_tnn"]["visual_tnn"]
@@ -438,6 +525,7 @@ def test_visual_tnn_result_has_frame_binding_and_io_summaries(tmp_path):
     assert state["resource_status"]["tnn_summary"]["total_memory"] == (
         expected_bytes
     )
+    core.stop()
 
 
 def test_atomic_permissions_and_tnn_five_slot_limit():
@@ -449,7 +537,7 @@ def test_atomic_permissions_and_tnn_five_slot_limit():
         "payload": {"action": "click", "x": 10, "y": 20, "button": "left"},
     }
     state["permissions"]["mouse"]["move"] = True
-    decision = check(state, move_click)
+    decision = check_action_permission(state, move_click)
     assert not decision["allowed"]
     assert decision["blocked_atoms"] == ["mouse.left_click"]
 
@@ -459,19 +547,19 @@ def test_atomic_permissions_and_tnn_five_slot_limit():
     }
     state["permissions"]["keyboard"]["CTRL"] = True
     state["permissions"]["keyboard"]["SHIFT"] = True
-    assert not check(state, hotkey)["allowed"]
+    assert not check_action_permission(state, hotkey)["allowed"]
     state["permissions"]["keyboard"]["S"] = True
-    assert check(state, hotkey)["allowed"]
+    assert check_action_permission(state, hotkey)["allowed"]
 
     unicode_text = {
         "action_type": "keyboard",
         "payload": {"action": "write", "method": "unicode", "text": "你好"},
     }
-    assert not check(state, unicode_text)["allowed"]
+    assert not check_action_permission(state, unicode_text)["allowed"]
     for atom in ("CTRL", "V"):
         state["permissions"]["keyboard"][atom] = True
     state["permissions"]["send_text"] = True
-    assert check(state, unicode_text)["allowed"]
+    assert check_action_permission(state, unicode_text)["allowed"]
 
     tnn_state = create_runtime_state()
     for index in range(MAX_LOADED_TNN):
@@ -497,7 +585,7 @@ def _json_dump(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=repr)
 
 
-def test_keyboard_activity_excludes_window_metadata_and_memory_review(tmp_path):
+def test_keyboard_activity_excludes_window_metadata_and_memory_promotion(tmp_path):
     buffer = InputBuffer(
         profile="control",
         capture_options={
@@ -518,17 +606,17 @@ def test_keyboard_activity_excludes_window_metadata_and_memory_review(tmp_path):
     finally:
         buffer.close()
 
-    memory = Memorizer(tmp_path / "review-memory")
+    memory = Memorizer(tmp_path / "promotion-memory")
     for index in range(12):
-        memory.create({"index": index}, "review-item")
-    assert memory.force_review()
-    wait_until(lambda: memory.review_status()["state"] == "completed")
-    review = memory.review_status()
-    assert review["processed"] == 12
-    assert review["remaining"] == 0
-    assert review["eta_s"] == 0.0
+        memory.create({"index": index}, "promotion-item")
+    assert memory.force_promotion()
+    wait_until(lambda: memory.promotion_status()["state"] == "completed")
+    promotion = memory.promotion_status()
+    assert promotion["processed"] == 12
+    assert promotion["remaining"] == 0
+    assert promotion["eta_s"] == 0.0
     assert memory.counts()["mtm"] == 12
     assert memory.counts()["ltm"] == 0
-    assert memory.force_review()
-    wait_until(lambda: memory.review_status()["state"] == "completed")
+    assert memory.force_promotion()
+    wait_until(lambda: memory.promotion_status()["state"] == "completed")
     assert memory.counts()["ltm"] == 12

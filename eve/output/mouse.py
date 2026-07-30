@@ -11,6 +11,13 @@ _STOP = threading.Event()
 def stop_all() -> None:
     """Prevent new mouse actions after an emergency stop."""
     _STOP.set()
+    try:
+        import pyautogui
+
+        for button in ("left", "right", "middle"):
+            pyautogui.mouseUp(button=button)
+    except Exception:
+        pass
 
 
 def reset_stop() -> None:
@@ -30,6 +37,7 @@ def _result(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
+        "candidate_id": action_id,
         "action_id": action_id,
         "kind": "mouse",
         "mode": mode,
@@ -83,17 +91,28 @@ def _execute_real(
                 payload=payload,
             )
         if action == "moveTo":
-            pyautogui.moveTo(
-                payload.get("x", 0),
-                payload.get("y", 0),
-                duration=payload.get("duration", 0.0),
-            )
+            if not _move_interruptibly(
+                pyautogui,
+                float(payload.get("x", 0)),
+                float(payload.get("y", 0)),
+                float(payload.get("duration", 0.0)),
+            ):
+                return _result(
+                    action_id, "real", started_ns, blocked=True,
+                    reason="emergency_stopped", payload=payload,
+                )
         elif action == "moveRel":
-            pyautogui.moveRel(
-                payload.get("dx", 0),
-                payload.get("dy", 0),
-                duration=payload.get("duration", 0.0),
-            )
+            current_x, current_y = pyautogui.position()
+            if not _move_interruptibly(
+                pyautogui,
+                float(current_x) + float(payload.get("dx", 0)),
+                float(current_y) + float(payload.get("dy", 0)),
+                float(payload.get("duration", 0.0)),
+            ):
+                return _result(
+                    action_id, "real", started_ns, blocked=True,
+                    reason="emergency_stopped", payload=payload,
+                )
         elif action in {"click", "doubleClick", "rightClick", "middleClick"}:
             function = getattr(pyautogui, action)
             kwargs = {
@@ -104,12 +123,22 @@ def _execute_real(
             function(**kwargs)
         elif action == "drag":
             pyautogui.moveTo(payload.get("x1", 0), payload.get("y1", 0))
-            pyautogui.drag(
-                payload.get("x2", 0) - payload.get("x1", 0),
-                payload.get("y2", 0) - payload.get("y1", 0),
-                duration=payload.get("duration", 0.5),
-                button=payload.get("button", "left"),
-            )
+            button = str(payload.get("button", "left"))
+            pyautogui.mouseDown(button=button)
+            try:
+                completed = _move_interruptibly(
+                    pyautogui,
+                    float(payload.get("x2", 0)),
+                    float(payload.get("y2", 0)),
+                    float(payload.get("duration", 0.5)),
+                )
+            finally:
+                pyautogui.mouseUp(button=button)
+            if not completed:
+                return _result(
+                    action_id, "real", started_ns, blocked=True,
+                    reason="emergency_stopped", payload=payload,
+                )
         elif action == "scroll":
             pyautogui.scroll(payload.get("clicks", 1))
         else:
@@ -136,3 +165,29 @@ def _execute_real(
             blocked=True,
             reason=f"real_error_{exc}",
         )
+
+
+def _move_interruptibly(
+    pyautogui: Any,
+    target_x: float,
+    target_y: float,
+    duration_s: float,
+) -> bool:
+    if duration_s <= 0:
+        if _STOP.is_set():
+            return False
+        pyautogui.moveTo(target_x, target_y)
+        return True
+    start_x, start_y = pyautogui.position()
+    steps = max(1, int(duration_s / 0.05) + 1)
+    step_duration = duration_s / steps
+    for index in range(1, steps + 1):
+        if _STOP.is_set():
+            return False
+        progress = index / steps
+        pyautogui.moveTo(
+            start_x + (target_x - start_x) * progress,
+            start_y + (target_y - start_y) * progress,
+            duration=step_duration,
+        )
+    return True

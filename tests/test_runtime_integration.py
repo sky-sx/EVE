@@ -136,14 +136,14 @@ def test_profiles_are_mock_and_observe_completes_full_chain(tmp_path, monkeypatc
 
     assert summary["profile"] == "observe"
     assert summary["real_output_calls"] == 0
-    assert summary["safegate_blocked"] == 1
+    assert summary["actions_blocked"] == 1
     assert summary["threads_stopped"] and summary["capture_process_stopped"]
     assert application.state["latest_output"]["blocked"]
     assert {
         "latest_input_summary",
         "latest_tnn_output",
         "latest_action_candidate",
-        "latest_safegate_result",
+        "latest_permission_result",
         "latest_output_feedback",
     } <= blackboard
     assert active_while_running == {"smoke_rule"}

@@ -1,8 +1,7 @@
 import time
 
 import eve.core.loop as loop_module
-from eve.core.loop import create_runtime_state, run_once
-from eve.core.safegate import check, emergency_stop
+from eve.core.loop import check_action_permission, create_runtime_state, run_once
 
 
 def action(action_type="mouse", valid_until_ns=0):
@@ -56,23 +55,23 @@ def test_authorized_real_result_has_executed_only(monkeypatch, tmp_path):
 
 def test_emergency_cold_start_permission_expiry_and_human_takeover():
     state = ready()
-    emergency_stop(state)
-    assert check(state, action())["reason"] == "emergency_stopped"
+    state["emergency_stop"] = True
+    assert check_action_permission(state, action())["reason"] == "emergency_stopped"
 
     state = ready()
     state["cold_started"] = False
-    assert check(state, action())["reason"] == "not_cold_started"
+    assert check_action_permission(state, action())["reason"] == "not_cold_started"
 
     state = ready()
     state["permissions"]["mouse"] = False
-    assert check(state, action())["reason"] == "mouse_not_allowed"
+    assert check_action_permission(state, action())["reason"] == "mouse_not_allowed"
 
     state = ready()
-    assert check(
+    assert check_action_permission(
         state, action(valid_until_ns=time.monotonic_ns() - 1)
     )["reason"] == "action_expired"
 
     state = ready()
     state["human_takeover_until_ns"] = time.monotonic_ns() + 5_000_000_000
-    assert check(state, action())["reason"] == "human_takeover"
-    assert check(state, action("speak"))["allowed"]
+    assert check_action_permission(state, action())["reason"] == "human_takeover"
+    assert check_action_permission(state, action("speak"))["allowed"]

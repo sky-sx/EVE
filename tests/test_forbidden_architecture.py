@@ -45,27 +45,9 @@ def test_no_silent_core_exception_handlers():
     assert violations == []
 
 
-def test_formal_runtime_file_structure_and_removed_modules():
-    expected = {
-        "eve/main.py",
-        "eve/input/capture.py",
-        "eve/input/buffer.py",
-        "eve/output/keyboard.py",
-        "eve/output/mouse.py",
-        "eve/output/speak.py",
-        "eve/memory/memorizer.py",
-        "eve/core/loop.py",
-        "eve/core/qnn.py",
-        "eve/core/safegate.py",
-        "eve/dock/trainer.py",
-        "eve/dock/tinynn.py",
-    }
-    actual = {"eve/main.py"}
-    for directory in ("input", "output", "memory", "core", "dock"):
-        for path in (ROOT / "eve" / directory).glob("*.py"):
-            if path.name != "__init__.py":
-                actual.add(path.relative_to(ROOT).as_posix())
-    assert actual == expected
+def test_removed_runtime_modules_stay_removed():
+    assert not (ROOT / "eve" / "core" / "qnn.py").exists()
+    assert not (ROOT / "eve" / "core" / "safegate.py").exists()
     assert not (ROOT / "eve" / "state.py").exists()
     assert not (ROOT / "eve" / "core" / "tnn.py").exists()
 
@@ -84,10 +66,32 @@ def _imports(path):
 def test_capture_access_is_only_through_buffer():
     assert "eve.input.capture" not in _imports(ROOT / "eve" / "main.py")
     assert "eve.input.capture" not in _imports(ROOT / "eve" / "core" / "loop.py")
-    assert "eve.input.capture" not in _imports(ROOT / "eve" / "core" / "qnn.py")
-    assert "eve.input.capture" not in _imports(ROOT / "eve" / "core" / "safegate.py")
     assert "eve.input.buffer" not in _imports(ROOT / "eve" / "input" / "capture.py")
     assert "eve.input.capture" in _imports(ROOT / "eve" / "input" / "buffer.py")
+
+
+def test_behavior_boundaries_are_kept_generic():
+    core_imports = _imports(ROOT / "eve" / "core" / "loop.py")
+    dock_imports = _imports(ROOT / "eve" / "dock" / "trainer.py")
+    memory_text = (ROOT / "eve" / "memory" / "memorizer.py").read_text(
+        encoding="utf-8"
+    )
+    formal_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in active_python_files()
+    ).casefold()
+
+    assert "eve.core.qnn" not in core_imports
+    assert not any(name.startswith("eve.output") for name in dock_imports)
+    assert "register_runtime_tnn" not in memory_text
+    assert "load_tnn_runtime" not in memory_text
+    forbidden_experiment_tokens = (
+        "red_" + "circle",
+        "blue_" + "triangle",
+        "red_" + "blue",
+        "shape_" + "locator",
+        "red_" + "ball",
+    )
+    assert [token for token in forbidden_experiment_tokens if token in formal_text] == []
 
 
 def test_foreground_window_metadata_is_not_an_eve_perception_source():

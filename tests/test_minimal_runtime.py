@@ -42,20 +42,21 @@ def test_tnn_reference_to_action_is_consumed_once(tmp_path):
         action_output="action_candidate",
     )
     loop = CoreLoop(buffer, memory, state=state, log_dir=tmp_path)
-    now = time.monotonic_ns()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and state["latest_output"] is None:
+        loop.step()
+        time.sleep(0.01)
 
-    first = loop.step(now)
-    second = loop.step(now + 200_000_000)
-
-    assert len(first) == 1
-    assert first[0]["simulated"] and not first[0]["executed"]
-    assert second == []
+    assert state["latest_output"]["candidate_id"] == "only-once"
+    assert state["latest_output"]["simulated"]
+    assert not state["latest_output"]["executed"]
     assert state["consumed_action_ids"] == {"only-once"}
     assert len(state["memory_ids"]) == 3
     memory.flush()
     assert {
         memory.get_unit(item).payload_type for item in state["memory_ids"]
-    } == {"action_candidate", "safegate_result", "output_result"}
+    } == {"action_candidate", "permission_result", "output_result"}
+    loop.stop()
     memory.stop_writer()
 
 
@@ -79,7 +80,11 @@ def test_tnn_exception_is_structured_and_visible(tmp_path):
     )
     loop = CoreLoop(buffer, memory, state=state, log_dir=tmp_path)
 
-    assert loop.step(time.monotonic_ns()) == []
+    loop.step(time.monotonic_ns())
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and state["tnn_status"]["broken"] != "failed":
+        loop.step()
+        time.sleep(0.01)
     assert state["latest_error"]["loop_node"] == "tnn:broken"
     assert state["latest_error"]["exception_type"] == "RuntimeError"
     assert state["tnn_status"]["broken"] == "failed"
@@ -88,6 +93,7 @@ def test_tnn_exception_is_structured_and_visible(tmp_path):
         for line in (tmp_path / "eve.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert any(item["event"] == "runtime_error" for item in records)
+    loop.stop()
     memory.stop_writer()
 
 

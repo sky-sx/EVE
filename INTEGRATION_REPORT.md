@@ -1,163 +1,33 @@
-# EVE 文件结构与数据关系收拢报告
+# EVE 架构收拢报告
 
-## 2026-07-28 GUI 与正式交互运行时增量
+更新时间：2026-07-30。
 
-本节是对 2026-07-27 结构收拢报告的增量，不改变既定顶层文件结构。
+## 本轮收拢
 
-- `main.py`：移除 control 占位阻断，加入八页 PySide6 GUI、冷启动/暂停/恢复/正常停机/急停/显式解除、权限变更、设置、快照恢复和状态刷新。
-- `input/capture.py`、`input/buffer.py`：增加键盘活动与活动窗口小数据；仍由 Buffer 独占 Capture 进程和共享内存，并区分 EVE 输出与用户接管。
-- `core/loop.py`：普通 LLM 对话与内部结构化决策分流；YOLO/视觉 TNN 负责运行时屏幕感知；显式 YOLO 请求冻结并绑定目标帧、写入 Memory；VLM 只作为按需教师复核并携带同帧运行时候选；迟到结果与当前 Blackboard 隔离。TNN 节点新增输入/输出摘要、输出时间、参数与 buffer 总内存统计和生命周期失败结果。
-- `core/safegate.py`：改为鼠标与逐键原子授权，组合键必须全部满足，Unicode/粘贴同时检查 `send_text`、CTRL 和 V。
-- `output/*.py`：完成真实鼠标/键盘边界、按键释放、Unicode 粘贴和可停止的异步 TTS。
-- `memory/memorizer.py`：恢复最小 Event，补充真实计数、检索、TNN artifact 列表和强制整理进度/ETA。
-- `pyproject.toml`：声明 GUI、模型、量化、资源、真实输出和 TTS 所需依赖。
-- `tests/test_control_runtime.py`：覆盖八页 GUI、冷启动前静止、生命周期、LLM 普通对话与原子更新、显式 YOLO 请求及 Memory 写入、VLM 教师候选复核与迟到隔离、视觉 TNN 帧绑定与输入输出摘要、权限和 TNN 五槽上限。
+- 移除实验程序、实验数据和正式运行时中的实验专用入口。
+- 移除 Core 运行期 QNN 及其恢复、评分、排序、反馈和状态展示路径。
+- 将权限与急停检查收回 Core 动作出队边界，不再保留独立安全模块文件。
+- Dock 仅保留通用 JSON TNN 与显式 Python TNN 两种来源。
+- 将 TNN 串行同步调用改为共享执行池上的独立到期调度。
+- 将真实 Output 从 Core 主循环移到有界 worker 队列。
+- 将环境反馈改为 `candidate_id`、`action_id`、执行时间和环境事件四项精确
+  绑定。
+- 修复 STM 截断导致 Catalog 中对象失去层级的问题，并校正晋升命名。
 
-RTX 5080 Tensor 同步测试通过，现有螺旋三分类 TNN 的参数和输出均为 `cuda:0`。本地 LLM 已以 4-bit NF4 在 `cuda:0` 完成真实普通对话，回复耗时约 1.485 秒。YOLO 已从 `eve/core/yolo26/weights/yolo26n.pt` 在 RTX 5080 上加载、预热并完成约 8.27 ms 的合成帧推理。Qwen VLM 改为显式请求时按需加载的教师，不再占用实时屏幕分析入口。
-
-本轮最终完整自动测试为 `37 passed in 5.52s`。
-
-真实 Qwen 教师验证产物位于 `runs/vlm_teacher_json_check_20260728_163031`：模型实际运行于 `cuda:0`，量化状态为 `4bit-nf4` 且 `is_loaded_in_4bit=true`；请求绑定帧 5081，并携带 `synthetic-candidate` 运行时视觉候选。模型返回可解析的紧凑 JSON，确认红色矩形候选且无修正项；`vlm_teacher_result` 和 `screen_image` 各写入一条 Memory。冻结帧在约 4.281 秒生成期间超过 Buffer 一秒实时窗口，因此结果被正确标为 `stale`，没有覆盖当前 Blackboard。停止后 Core、Memory writer 和全部 `eve-*` 线程均已清理。
-
-真实键鼠/TTS、物理 Esc、真实桌面内容上的 VLM 质量以及完整 24 步桌面验收仍等待用户人工授权验收。
-
-本阶段另完成 `runs/control_stage_observe_10m_20260728` 的真实输入十分钟长跑：601.797 秒，屏幕 28.7913 FPS，光标 59.7749 Hz，Core 32.1579 Hz，TNN 调用 9,460 次，Memory 写入/丢弃/失败为 601/0/0，runtime error 为 0，退出后 Core、Memory、Capture 和项目线程均已停止。observe 未开放真实 Output。
-
-日期：2026-07-27 CST
-
-## 1. 收拢结果
-
-本轮只调整结构、控制关系和数据流，没有新增 EVE 能力。
-
-删除：
-
-- `eve/state.py`
-- `eve/core/tnn.py`
-- `eve/config.py`（未使用且不属于最终正式结构）
-- Memory 中未使用的 Event 与 `related_ids` 预留接口
-
-职责合并：
-
-- `eve/state.py` 的必要运行状态并入 `eve/core/loop.py`；
-- `eve/core/tnn.py` 的 artifact 加载、卸载、调度、输入解析、推理、输出、动作候选与异常处理并入 `eve/core/loop.py`；
-- 未复制 SourceRef、Descriptor、Protocol、Smoke 正式类和重复 load/attach 层；
-- Main 原有的 Capture 生命周期和 TNN 装配职责分别下沉到 Buffer 与 Core。
-
-## 2. 最终数据流
+## 当前数据流
 
 ```text
-main.py
-  ↓
-InputBuffer
-  ↔ capture.py 独立进程
-  ↓
-core/loop.py
-  ↔ memorizer.py
-  ↓
-safegate.py
-  ↓
-output
-  ↓ feedback
-core/loop.py
+Capture -> Buffer -> Core
+                   |- 到期 TNN -> 原子发布输出缓存
+                   |- 动作候选 -> 格式/时效检查 -> 权限与急停检查
+                   `- 有界 Output 队列 -> 执行前复检 -> Output
+
+TrainingOrder -> Dock workspace -> 验收
+                              |- 通过 -> Memory TNN artifact -> Core 加载
+                              `- 拒绝 -> training report，不注册正式 TNN
 ```
 
-不存在 Main/Core/Safegate/TNN/Output 越过 Buffer 读取或控制 Capture 的路径，Main 也不装配 TNN 内部运行节点。
+## 验收口径
 
-## 3. Capture 进程结构
-
-`InputBuffer.start_capture()` 使用 `multiprocessing.get_context("spawn")` 创建 `eve-capture` 子进程。
-
-子进程内部使用屏幕和光标两个线程。屏幕帧写入共享内存 Ring Buffer，Pipe 只发送 frame ID、时间戳、slot、shape、dtype；光标、health、error 和 stop 控制也走 Pipe。任一采集线程异常都会发送结构化 error 并停止子进程。
-
-父进程 Buffer 附加共享内存、维护最近一秒窗口、形成 human activity/takeover 状态并监控进程。停止时 join Capture、关闭 Pipe、释放并 unlink 共享内存。
-
-Main 的关闭顺序为 Core Loop → Memory Writer → InputBuffer/Capture。
-
-## 4. Core、TNN 与状态
-
-`core/loop.py` 用简单结构保存：
-
-```text
-world / myself / blackboard
-active_tnn / loaded_tnn / tnn_status
-loop_status / permissions / resource_status
-emergency_stop / latest_error
-```
-
-`active_tnn` 与 `loaded_tnn` 没有合并。具体 TNN 仍继承 `dock/tinynn.py` 的 `TinyNN`；Core 从 Memorizer 解析 artifact，导入具体 `model.py`、加载权重、调用 `infer()` 并负责卸载。
-
-Safegate 仅做权限、急停、冷启动、接管截止时间、有效期、动作类型与最低范围检查。人类活动判断在 Buffer 完成。
-
-Memory 仍异步写入并增量追加 Catalog；数组使用 NPY 而非 repr；支持 ID、类型、关键词和时间条件的最小检索；TNN artifact 仍在同一文件保存与读取。
-
-训练与推理设备均采用 CUDA 优先策略：RTX 5080 可用时 Trainer 默认选择 `cuda`，Core artifact 加载也默认选择 `cuda`；没有 CUDA 时回退 CPU，并保留显式 CPU 覆盖。实际加载现有螺旋三分类 artifact 得到：
-
-```text
-trainer_default: cuda
-core_node_device: cuda
-parameter_device: cuda:0
-gpu: NVIDIA GeForce RTX 5080
-```
-
-## 5. 测试与运行证据
-
-收拢前基线：
-
-```text
-23 passed
-```
-
-收拢后最终回归：
-
-```text
-python -m pytest -q
-..........................
-27 passed in 4.40s
-```
-
-验收覆盖文件集合和导入边界、Capture 独立 PID、Buffer 生命周期/健康/窗口、Capture 异常到 Main 非零退出、active/loaded 分离、TinyNN artifact 重载、Mock-only observe、Esc、Core/Memory 错误和资源清理。
-
-Smoke：
-
-| 指标 | 结果 |
-|---|---:|
-| 退出码 / 时长 | 0 / 3.187 s |
-| 屏幕 / 光标 | 29.58 FPS / 60.13 Hz |
-| Core | 32.17 Hz |
-| Safegate allow / block | 0 / 1 |
-| 真实 Output | 0 |
-| Memory written / dropped / failed | 5 / 0 / 0 |
-| Capture/线程残留 | 无 |
-
-十分钟真实 observe：
-
-| 指标 | 结果 |
-|---|---:|
-| 退出码 / 时长 | 0 / 600.313 s |
-| 屏幕平均 FPS | 28.7817 |
-| 光标平均 Hz | 59.7612 |
-| 屏幕平均采集延迟 | 20.0439 ms |
-| 光标平均采集延迟 | 0.0017 ms |
-| Core | 32.2633 Hz |
-| TNN 调用 | 9,446 |
-| Safegate allow / block | 0 / 1 |
-| Mock / 真实 Output | 0 / 0 |
-| Memory written / dropped / failed | 600 / 0 / 0 |
-| runtime error / shutdown | 0 / 1 |
-| EVE/Capture/resource tracker 残留 | 无 |
-
-产物位于 `runs/structure_observe_10m_final/`。
-
-此前 30 分钟数据来自收拢前的线程式 Capture 版本，不作为本轮独立进程架构的验收证据。
-
-## 6. 未实现内容
-
-- real Output 与真实受控闭环；
-- 音频、键盘状态和活动窗口采集；
-- 本地/云端 LLM；
-- 六大激素；
-- 复杂 Memory Graph、睡眠整理、图压缩；
-- 自动训练、自动替换和影子部署；
-- GUI 与长期资源管理。
-
-物理 Esc 没有由 Codex 代替用户按下；Windows 全局 Esc 检测与清理路径由自动化测试覆盖。
+实际测试、smoke、GUI 生命周期、词项检索和频率记录以本轮最终命令输出为准；
+本文件不预先声称尚未运行的结果。

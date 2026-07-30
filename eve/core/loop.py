@@ -6,20 +6,24 @@ import json
 import os
 import queue
 import re
+import string
 import sys
 import threading
 import time
 import traceback
 import uuid
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
-from eve.core import safegate
 from eve.input.buffer import ScreenFrame
 from eve.output import keyboard, mouse, speak
 
 MAX_LOADED_TNN = 5
+OUTPUT_QUEUE_CAPACITY = 16
+SELF_UPDATE_MIN_IDLE_S = 1.0
+SELF_UPDATE_MAX_IDLE_S = 3.0
 CORE_MODEL_DIR = Path(__file__).resolve().parent
 DEFAULT_LOCAL_LLM_PATH = str(CORE_MODEL_DIR / "deepseek-7b")
 DEFAULT_VLM_PATH = str(CORE_MODEL_DIR / "qwen")
@@ -32,6 +36,202 @@ DEFAULT_HORMONES = {
     "cortisol": 0.5,
     "acetylcholine": 0.5,
 }
+
+MOUSE_ATOMS = (
+    "move", "left_click", "left_double_click", "right_click",
+    "middle_click", "scroll_up", "scroll_down", "left_drag",
+    "right_drag", "middle_drag",
+)
+_NAMED_KEYS = {
+    "ENTER", "SPACE", "TAB", "BACKSPACE", "DELETE", "HOME", "END",
+    "PAGEUP", "PAGEDOWN", "UP", "DOWN", "LEFT", "RIGHT", "SHIFT",
+    "CTRL", "ALT", "WIN", "ESC",
+    *(f"F{index}" for index in range(1, 13)),
+    *(f"NUM{index}" for index in range(10)),
+    "NUMADD", "NUMSUBTRACT", "NUMMULTIPLY", "NUMDIVIDE", "NUMDECIMAL",
+    "MINUS", "EQUAL", "LBRACKET", "RBRACKET", "BACKSLASH",
+    "SEMICOLON", "APOSTROPHE", "COMMA", "PERIOD", "SLASH", "GRAVE",
+}
+SUPPORTED_KEYS = tuple(
+    sorted(set(string.ascii_uppercase + string.digits) | _NAMED_KEYS)
+)
+_KEY_ALIASES = {
+    "CONTROL": "CTRL", "COMMAND": "WIN", "WINDOWS": "WIN",
+    "RETURN": "ENTER", "PGUP": "PAGEUP", "PGDN": "PAGEDOWN",
+    " ": "SPACE", "-": "MINUS", "=": "EQUAL", "[": "LBRACKET",
+    "]": "RBRACKET", "\\": "BACKSLASH", ";": "SEMICOLON",
+    "'": "APOSTROPHE", ",": "COMMA", ".": "PERIOD", "/": "SLASH",
+    "`": "GRAVE",
+}
+_SHIFTED_KEYS = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5",
+    "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+    "_": "MINUS", "+": "EQUAL", "{": "LBRACKET", "}": "RBRACKET",
+    "|": "BACKSLASH", ":": "SEMICOLON", '"': "APOSTROPHE",
+    "<": "COMMA", ">": "PERIOD", "?": "SLASH", "~": "GRAVE",
+}
+
+
+def default_permissions(enabled: bool = False) -> dict[str, Any]:
+    return {
+        "mouse": {name: bool(enabled) for name in MOUSE_ATOMS},
+        "keyboard": {name: bool(enabled) for name in SUPPORTED_KEYS},
+        "send_text": bool(enabled),
+        "speak": bool(enabled),
+    }
+
+
+def _normalize_key(value: Any) -> str:
+    key = str(value).strip()
+    if len(key) == 1 and key.isalpha():
+        return key.upper()
+    if len(key) == 1 and key.isdigit():
+        return key
+    upper = key.upper()
+    return _KEY_ALIASES.get(upper, _KEY_ALIASES.get(key, upper))
+
+
+def _required_permissions(action: dict[str, Any]) -> list[str]:
+    action_type = action.get("action_type")
+    payload = action.get("payload", {})
+    if action_type == "speak":
+        return ["speak"]
+    if action_type == "mouse":
+        operation = str(payload.get("action", "moveTo"))
+        if operation in {"move", "moveTo", "moveRel"}:
+            return ["mouse.move"]
+        if operation == "doubleClick":
+            atoms = ["mouse.left_click", "mouse.left_double_click"]
+            if payload.get("x") is not None or payload.get("y") is not None:
+                atoms.insert(0, "mouse.move")
+            return atoms
+        if operation in {"rightClick", "middleClick"}:
+            button = "right" if operation == "rightClick" else "middle"
+            atoms = [f"mouse.{button}_click"]
+            if payload.get("x") is not None or payload.get("y") is not None:
+                atoms.insert(0, "mouse.move")
+            return atoms
+        if operation == "click":
+            button = str(payload.get("button", "left")).lower()
+            atoms = [f"mouse.{button}_click"]
+            if button == "left" and int(payload.get("clicks", 1)) >= 2:
+                atoms.append("mouse.left_double_click")
+            if payload.get("x") is not None or payload.get("y") is not None:
+                atoms.insert(0, "mouse.move")
+            return atoms
+        if operation == "drag":
+            button = str(payload.get("button", "left")).lower()
+            return ["mouse.move", f"mouse.{button}_click", f"mouse.{button}_drag"]
+        if operation == "scroll":
+            direction = "up" if float(payload.get("clicks", 1)) > 0 else "down"
+            return [f"mouse.scroll_{direction}"]
+        return [f"mouse.unknown:{operation}"]
+    if action_type == "keyboard":
+        operation = str(payload.get("action", "press"))
+        if operation in {"press", "hotkey"}:
+            keys = payload.get("keys", [])
+        elif operation in {"keyDown", "keyUp"}:
+            keys = [payload.get("key", "")]
+        elif operation == "write":
+            keys = list(str(payload.get("text", "")))
+        else:
+            return [f"keyboard.unknown:{operation}"]
+        if isinstance(keys, str):
+            keys = [keys]
+        if operation == "write" and (
+            payload.get("method", "write") in {"paste", "unicode"}
+            or not str(payload.get("text", "")).isascii()
+        ):
+            return ["send_text", "keyboard.CTRL", "keyboard.V"]
+        atoms: list[str] = []
+        for key in keys:
+            text = str(key)
+            if text in _SHIFTED_KEYS:
+                atoms.extend(["keyboard.SHIFT", f"keyboard.{_SHIFTED_KEYS[text]}"])
+            else:
+                atoms.append(f"keyboard.{_normalize_key(key)}")
+        return list(dict.fromkeys(atoms))
+    return [f"unknown:{action_type}"]
+
+
+def _permission_enabled(permissions: dict[str, Any], atom: str) -> bool:
+    group, separator, name = atom.partition(".")
+    if not separator:
+        return bool(permissions.get(group, False))
+    values = permissions.get(group, {})
+    return bool(values.get(name, False)) if isinstance(values, dict) else False
+
+
+def block_reason(
+    state: dict[str, Any],
+    action: dict[str, Any],
+    now_ns: int,
+    required: list[str],
+    blocked: list[str],
+) -> str:
+    if state.get("emergency_stop"):
+        return "emergency_stopped"
+    if not state.get("cold_started"):
+        return "not_cold_started"
+    if state.get("paused"):
+        return "runtime_paused"
+    if state.get("output_mode") == "disabled":
+        return "output_disabled"
+    if any("unknown:" in atom for atom in required):
+        return "invalid_action"
+    if blocked:
+        action_type = action.get("action_type")
+        return (
+            f"{action_type}_not_allowed"
+            if action_type in {"mouse", "keyboard", "speak"}
+            else "permission_denied"
+        )
+    action_type = action.get("action_type")
+    if action_type not in {"mouse", "keyboard", "speak"}:
+        return "invalid_action_type"
+    if int(action.get("valid_until_ns", 0)) not in {0} and now_ns > int(
+        action["valid_until_ns"]
+    ):
+        return "action_expired"
+    if action_type in {"mouse", "keyboard"} and now_ns < int(
+        state.get("human_takeover_until_ns", 0)
+    ):
+        return "human_takeover"
+    payload = action.get("payload")
+    if not isinstance(payload, dict):
+        return "invalid_payload"
+    if action_type == "mouse":
+        for key in ("x", "y", "x1", "y1", "x2", "y2"):
+            value = payload.get(key)
+            if key in payload and (
+                not isinstance(value, (int, float)) or not -100_000 <= value <= 100_000
+            ):
+                return "mouse_range_invalid"
+    elif action_type == "keyboard" and len(required) > 32:
+        return "keyboard_range_invalid"
+    elif action_type == "speak" and len(str(payload.get("text", ""))) > 2_000:
+        return "speak_range_invalid"
+    return "ok"
+
+
+def check_action_permission(
+    state: dict[str, Any], action: dict[str, Any]
+) -> dict[str, Any]:
+    now_ns = time.monotonic_ns()
+    required = _required_permissions(action)
+    checked = {
+        atom: _permission_enabled(state.get("permissions", {}), atom)
+        for atom in required
+    }
+    blocked = [atom for atom, enabled in checked.items() if not enabled]
+    reason = block_reason(state, action, now_ns, required, blocked)
+    return {
+        "allowed": reason == "ok",
+        "blocked_atoms": blocked,
+        "reason": reason,
+        "checked_permissions": checked,
+        "checked_at_ns": now_ns,
+    }
 
 
 def create_runtime_state(
@@ -65,9 +265,18 @@ def create_runtime_state(
         "loaded_tnn": {},
         "tnn_status": {},
         "loop_status": {"core": "not_started"},
+        "loop_graph": {"updated_at_ns": 0, "nodes": [], "edges": []},
         "node_status": {},
         "model_status": {
-            "local_llm": {"state": "not_configured", "device": None},
+            "local_llm": {
+                "state": "not_configured",
+                "device": None,
+                "self_update_count": 0,
+                "self_update_failures": 0,
+                "last_self_update_at_ns": 0,
+                "next_self_update_due_ns": 0,
+                "self_update_interval_s": 0.0,
+            },
             "vlm": {
                 "state": "not_configured",
                 "device": None,
@@ -89,7 +298,7 @@ def create_runtime_state(
             "cloud_timeout_s": 30.0,
             "cloud_enabled": False,
         },
-        "permissions": safegate.default_permissions(allow_mock_actions),
+        "permissions": default_permissions(allow_mock_actions),
         "resource_status": {},
         "emergency_stop": False,
         "paused": False,
@@ -119,18 +328,6 @@ def create_runtime_state(
         "last_feedback": None,
         "pending_experiences": {},
         "training_orders": {},
-        "qnn_status": {
-            "state": "not_loaded",
-            "tnn_id": None,
-            "version": None,
-            "device": None,
-            "minimum_action_score": 0.0,
-            "evaluation_count": 0,
-            "last_decision": None,
-            "last_feedback": None,
-            "last_error": None,
-        },
-        "_qnn_runtime": None,
         "dock_status": {
             "state": "idle",
             "current_order": None,
@@ -182,6 +379,14 @@ def register_runtime_tnn(
         "last_output_summary": {},
         "last_output_at_ns": 0,
         "last_error": None,
+        "target_frequency_hz": float(run_frequency_hz),
+        "actual_frequency_hz": 0.0,
+        "overdue": False,
+        "skipped": False,
+        "skipped_count": 0,
+        "running": False,
+        "next_due_ns": 0,
+        "first_started_ns": 0,
     }
     state["loaded_tnn"][tnn_id] = node
     state["tnn_status"][tnn_id] = "loaded"
@@ -276,10 +481,9 @@ def _enqueue_action(
     )
 
 
-def _run_tnn(
-    state: dict[str, Any], input_buffer: Any, tnn_id: str, now_ns: int
-) -> dict[str, Any] | None:
-    node = state["loaded_tnn"][tnn_id]
+def _prepare_tnn_inputs(
+    state: dict[str, Any], input_buffer: Any, node: dict[str, Any], now_ns: int
+) -> tuple[dict[str, Any], list[int]] | None:
     inputs: dict[str, Any] = {}
     observed_times: list[int] = []
     for name, reference in node["inputs"].items():
@@ -288,40 +492,84 @@ def _run_tnn(
             return None
         inputs[name] = value
         observed_times.append(observed_ns)
+    return inputs, observed_times
+
+
+def _execute_tnn(
+    node: dict[str, Any],
+    inputs: dict[str, Any],
+    observed_times: list[int],
+) -> dict[str, Any]:
     started_ns = time.monotonic_ns()
     outputs = node["run"](inputs)
-    duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
+    finished_ns = time.monotonic_ns()
     if not isinstance(outputs, dict):
-        raise TypeError(f"{tnn_id} must return a dict")
+        raise TypeError(f"{node['tnn_id']} must return a dict")
     unknown = set(outputs) - set(node["outputs"])
     if unknown:
-        raise ValueError(f"{tnn_id} produced undeclared outputs: {sorted(unknown)}")
-    stats = state["runtime_stats"]
-    stats["tnn_invocations"] = stats.get("tnn_invocations", 0) + 1
-    state["last_run_ns"][tnn_id] = now_ns
-    node["last_run_ns"] = now_ns
-    node["last_duration_ms"] = duration_ms
-    node["run_count"] += 1
-    node["average_duration_ms"] += (
-        duration_ms - node["average_duration_ms"]
-    ) / node["run_count"]
-    node["last_input_summary"] = {
-        name: _value_summary(value) for name, value in inputs.items()
+        raise ValueError(
+            f"{node['tnn_id']} produced undeclared outputs: {sorted(unknown)}"
+        )
+    return {
+        "inputs": inputs,
+        "observed_times": observed_times,
+        "outputs": outputs,
+        "started_at_ns": started_ns,
+        "finished_at_ns": finished_ns,
+        "duration_ms": (finished_ns - started_ns) / 1_000_000,
     }
-    node["last_output_summary"] = {
-        name: _value_summary(value) for name, value in outputs.items()
-    }
-    node["last_output_at_ns"] = now_ns
-    state["tnn_outputs"][tnn_id] = {
-        name: _timed(value, now_ns, node["output_ttl_ns"], tnn_id)
-        for name, value in outputs.items()
-    }
-    state["blackboard"]["latest_tnn_output"] = _timed(
-        {"tnn_id": tnn_id, "outputs": outputs},
-        now_ns,
-        node["output_ttl_ns"],
-        tnn_id,
-    )
+
+
+def _commit_tnn_result(
+    state: dict[str, Any],
+    input_buffer: Any,
+    node: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    tnn_id = node["tnn_id"]
+    inputs = result["inputs"]
+    outputs = result["outputs"]
+    observed_times = result["observed_times"]
+    started_ns = int(result["started_at_ns"])
+    finished_ns = int(result["finished_at_ns"])
+    duration_ms = float(result["duration_ms"])
+    interval_ns = int(1_000_000_000 / node["target_frequency_hz"])
+    with state["_state_lock"]:
+        first_started_ns = int(node.get("first_started_ns", 0)) or started_ns
+        node["first_started_ns"] = first_started_ns
+        node["running"] = False
+        node["last_run_ns"] = finished_ns
+        node["last_duration_ms"] = duration_ms
+        node["run_count"] += 1
+        node["average_duration_ms"] += (
+            duration_ms - node["average_duration_ms"]
+        ) / node["run_count"]
+        node["actual_frequency_hz"] = node["run_count"] / max(
+            (finished_ns - first_started_ns) / 1_000_000_000,
+            1.0 / node["target_frequency_hz"],
+        )
+        node["overdue"] = finished_ns - started_ns > interval_ns
+        node["last_input_summary"] = {
+            name: _value_summary(value) for name, value in inputs.items()
+        }
+        node["last_output_summary"] = {
+            name: _value_summary(value) for name, value in outputs.items()
+        }
+        node["last_output_at_ns"] = finished_ns
+        state["last_run_ns"][tnn_id] = finished_ns
+        state["runtime_stats"]["tnn_invocations"] = (
+            state["runtime_stats"].get("tnn_invocations", 0) + 1
+        )
+        state["tnn_outputs"][tnn_id] = {
+            name: _timed(value, finished_ns, node["output_ttl_ns"], tnn_id)
+            for name, value in outputs.items()
+        }
+        state["blackboard"]["latest_tnn_output"] = _timed(
+            {"tnn_id": tnn_id, "outputs": outputs},
+            finished_ns,
+            node["output_ttl_ns"],
+            tnn_id,
+        )
     if (
         "detections" in outputs
         and any(
@@ -347,7 +595,7 @@ def _run_tnn(
                 screen, "captured_at_ns", 0
             ),
             "requested_at_ns": started_ns,
-            "completed_at_ns": now_ns,
+            "completed_at_ns": finished_ns,
             "detections": outputs["detections"],
             "detection_count": (
                 len(outputs["detections"])
@@ -367,7 +615,7 @@ def _run_tnn(
             state["visual_result"] = visual_result
             state["blackboard"]["current_visual_result"] = _timed(
                 visual_result,
-                now_ns,
+                finished_ns,
                 node["output_ttl_ns"],
                 tnn_id,
             )
@@ -377,14 +625,14 @@ def _run_tnn(
             input_buffer,
             node,
             outputs[action_output],
-            now_ns,
+            finished_ns,
         )
         _enqueue_action(
             state,
             node,
             action_value,
-            now_ns,
-            max(observed_times, default=now_ns),
+            finished_ns,
+            max(observed_times, default=started_ns),
         )
     return outputs
 
@@ -493,15 +741,15 @@ def run_once(
     log_dir: str | Path = "runs",
     before_output: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run the non-bypassable Core -> Safegate -> Output chain."""
+    """Run the non-bypassable permission/stop check at the Output boundary."""
     started_ns = time.monotonic_ns()
-    decision = safegate.check(state, action)
+    decision = check_action_permission(state, action)
     checked_ns = time.monotonic_ns()
-    _record_state_node(state, "safegate", started_ns, checked_ns)
-    state["blackboard"]["latest_safegate_result"] = _timed(
-        decision, decision["checked_at_ns"], producer="safegate"
+    _record_state_node(state, "permission_check", started_ns, checked_ns)
+    state["blackboard"]["latest_permission_result"] = _timed(
+        decision, decision["checked_at_ns"], producer="core"
     )
-    stat = "safegate_allowed" if decision["allowed"] else "safegate_blocked"
+    stat = "actions_allowed" if decision["allowed"] else "actions_blocked"
     state["runtime_stats"][stat] = state["runtime_stats"].get(stat, 0) + 1
     if decision["allowed"]:
         if before_output is not None:
@@ -510,6 +758,7 @@ def run_once(
     else:
         now_ns = time.monotonic_ns()
         result = {
+            "candidate_id": action["candidate_id"],
             "action_id": action["candidate_id"],
             "kind": action["action_type"],
             "mode": state["output_mode"],
@@ -518,7 +767,7 @@ def run_once(
             "executed": False,
             "simulated": False,
             "blocked": True,
-            "reason": f"safegate_{decision['reason']}",
+            "reason": f"permission_{decision['reason']}",
             "payload": {},
         }
     state["latest_output"] = result
@@ -536,7 +785,20 @@ def run_once(
         state["runtime_stats"]["mock_outputs"] = (
             state["runtime_stats"].get("mock_outputs", 0) + 1
         )
-    log_event(log_dir, "action_result", action=action, safegate=decision, output=result)
+    log_event(
+        log_dir,
+        "action_result",
+        action=action,
+        permission_check=decision,
+        output=result,
+    )
+    debug_log(
+        log_dir,
+        "output_result",
+        result,
+        action=action,
+        permission_check=decision,
+    )
     return result
 
 
@@ -570,6 +832,35 @@ def _record_state_node(
     node["state"] = "error" if error else "running"
 
 
+_DEBUG_LOG_LOCK = threading.Lock()
+
+
+def debug_log(
+    log_dir: str | Path,
+    channel: str,
+    output: Any = None,
+    **fields: Any,
+) -> Path:
+    """Append inspectable runtime outputs without hidden model reasoning."""
+    path = Path(log_dir) / "debug.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp_ns": time.time_ns(),
+        "monotonic_ns": time.monotonic_ns(),
+        "thread": threading.current_thread().name,
+        "channel": channel,
+        "output": output,
+        **fields,
+    }
+    with _DEBUG_LOG_LOCK:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(record, ensure_ascii=False, default=_value_summary)
+                + "\n"
+            )
+    return path
+
+
 def log_event(log_dir: str | Path, event: str, **fields: Any) -> Path:
     path = Path(log_dir) / "eve.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -582,6 +873,7 @@ def log_event(log_dir: str | Path, event: str, **fields: Any) -> Path:
             )
             + "\n"
         )
+    debug_log(log_dir, "event", fields, event=event)
     return path
 
 
@@ -641,6 +933,16 @@ class CoreLoop:
         )
         self._cloud_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2)
         self._tnn_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=8)
+        self._output_requests: queue.Queue[dict[str, Any]] = queue.Queue(
+            maxsize=OUTPUT_QUEUE_CAPACITY
+        )
+        self._output_stop = threading.Event()
+        self._output_thread: threading.Thread | None = None
+        self._tnn_executor = ThreadPoolExecutor(
+            max_workers=MAX_LOADED_TNN,
+            thread_name_prefix="eve-tnn",
+        )
+        self._tnn_futures: dict[str, Future[dict[str, Any]]] = {}
         self._model_threads: list[threading.Thread] = []
         self._local_model: Any = None
         self._local_tokenizer: Any = None
@@ -648,13 +950,15 @@ class CoreLoop:
         self._vlm_processor: Any = None
         self._yolo_detector: Any = None
         self._yolo_force_event = threading.Event()
+        self._yolo_load_started = threading.Event()
         self._model_load_lock = threading.Lock()
         self._request_serial = 0
-        self._last_autonomous_ns = time.monotonic_ns()
+        self._last_autonomous_ns = 0
         self._last_hormone_ns = time.monotonic_ns()
         self._thread: threading.Thread | None = None
         self._started_at_ns = 0
         self._last_input_snapshot_ns = time.monotonic_ns()
+        self._last_debug_snapshot_ns = 0
         self._waiting_training_orders: dict[str, Any] = {}
         self._submitted_training_orders: dict[str, Any] = {}
 
@@ -971,22 +1275,6 @@ class CoreLoop:
         elif isinstance(value, dict):
             payload = dict(value)
             query = payload.get("experience_query")
-            template = payload.pop("definition_template", None)
-            if template is not None:
-                if template not in {"shape_locator", "qnn_critic"}:
-                    raise ValueError(
-                        f"unknown training definition template: {template}"
-                    )
-                from eve.dock.trainer import (
-                    qnn_critic_definition,
-                    shape_locator_definition,
-                )
-
-                payload["definition"] = (
-                    shape_locator_definition()
-                    if template == "shape_locator"
-                    else qnn_critic_definition()
-                )
             payload.setdefault("order_id", f"train_{time.time_ns()}")
             payload.setdefault(
                 "task_id", self.state["myself"].get("current_task", "")
@@ -1089,12 +1377,66 @@ class CoreLoop:
 
     def submit_environment_feedback(
         self,
-        candidate_id: str,
         feedback: dict[str, Any],
     ) -> str:
-        pending = self.state["pending_experiences"].pop(candidate_id, None)
+        required = {
+            "candidate_id", "action_id", "executed_at_ns",
+            "environment_event_id",
+        }
+        missing = required - set(feedback)
+        if missing:
+            raise ValueError(f"feedback is missing fields: {sorted(missing)}")
+        candidate_id = str(feedback["candidate_id"])
+        action_id = str(feedback["action_id"])
+        executed_at_ns = int(feedback["executed_at_ns"])
+        environment_event_id = str(feedback["environment_event_id"])
+        pending = self.state["pending_experiences"].get(candidate_id)
         if pending is None:
             raise KeyError(f"unknown pending action: {candidate_id}")
+        output = pending.get("output") or {}
+        action = pending.get("action") or {}
+        if output.get("blocked") or not (
+            output.get("executed") or output.get("simulated")
+        ):
+            raise ValueError("feedback cannot reward an unexecuted action")
+        if action_id != str(output.get("action_id", "")):
+            raise ValueError("feedback action_id does not match the executed action")
+        if executed_at_ns != int(output.get("finished_at_ns", 0)):
+            raise ValueError("feedback execution timestamp does not match Output")
+        generated_at_ns = int(action.get("generated_at_ns", 0))
+        valid_until_ns = int(action.get("valid_until_ns", 0))
+        if executed_at_ns < generated_at_ns or (
+            valid_until_ns and executed_at_ns > valid_until_ns
+        ):
+            raise ValueError("feedback is outside the candidate validity window")
+        event = self.memorizer.read_event(environment_event_id)
+        if event is None:
+            raise KeyError(f"unknown environment event: {environment_event_id}")
+        if event.ended_at_ns < executed_at_ns:
+            raise ValueError("environment event predates action completion")
+        event_payloads = [
+            self.memorizer.read(memory_id) for memory_id in event.memory_ids
+        ]
+        event_feedback = next(
+            (
+                item for item in event_payloads
+                if isinstance(item, dict)
+                and str(item.get("candidate_id", "")) == candidate_id
+                and str(item.get("action_id", "")) == action_id
+            ),
+            None,
+        )
+        if event_feedback is None:
+            raise ValueError("environment event is not bound to this candidate/action")
+        if event_feedback.get("action_type") != action.get("action_type"):
+            raise ValueError("environment event action type does not match")
+        event_payload = event_feedback.get("payload")
+        if not isinstance(event_payload, dict):
+            raise ValueError("environment event does not contain an action payload")
+        expected_payload = action.get("payload") or {}
+        for key in ("x", "y", "x1", "y1", "x2", "y2"):
+            if key in expected_payload and event_payload.get(key) != expected_payload[key]:
+                raise ValueError(f"environment event coordinate {key} does not match")
         now_ns = time.monotonic_ns()
         teacher = pending.get("teacher") or {}
         task = {
@@ -1121,6 +1463,7 @@ class CoreLoop:
             "action": pending["action"],
             "output": pending["output"],
             "environment": {
+                "environment_event_id": environment_event_id,
                 "hit": bool(feedback.get("hit", False)),
                 "target_id": feedback.get("target_id"),
                 "score_delta": float(feedback.get("score_delta", 0.0)),
@@ -1134,7 +1477,8 @@ class CoreLoop:
             },
             "timestamps": {
                 "started_at_ns": int(pending["started_at_ns"]),
-                "finished_at_ns": int(feedback.get("timestamp_ns", now_ns)),
+                "executed_at_ns": executed_at_ns,
+                "finished_at_ns": int(event.ended_at_ns),
             },
         }
         related = list(pending.get("related_memory_ids", ()))
@@ -1151,24 +1495,7 @@ class CoreLoop:
             now_ns,
             producer="environment",
         )
-        predicted = pending["action"].get("qnn_score")
-        if predicted is not None:
-            actual = float(experience["environment"]["reward"])
-            qnn_feedback = {
-                "candidate_id": candidate_id,
-                "predicted_reward": float(predicted),
-                "actual_reward": actual,
-                "absolute_error": abs(actual - float(predicted)),
-                "experience_memory_id": memory_id,
-                "timestamp_ns": now_ns,
-            }
-            self.state["qnn_status"]["last_feedback"] = qnn_feedback
-            self.state["blackboard"]["latest_qnn_feedback"] = _timed(
-                qnn_feedback, now_ns, producer="environment"
-            )
-            self.memorizer.enqueue(
-                qnn_feedback, "qnn_feedback", priority="critical"
-            )
+        self.state["pending_experiences"].pop(candidate_id, None)
         self._refresh_waiting_training_orders()
         return memory_id
 
@@ -1276,69 +1603,6 @@ class CoreLoop:
         self._refresh_waiting_training_orders()
         return memory_id
 
-    def request_shape_training(
-        self,
-        *,
-        task_id: str,
-        target_class: str,
-        target_tnn_id: str,
-        minimum_samples: int = 20,
-        regression_data: list[str] | None = None,
-        acceptance: dict[str, float] | None = None,
-    ) -> str:
-        return self.submit_training_order(
-            {
-                "order_id": f"{target_tnn_id}_{time.time_ns()}",
-                "task_id": task_id,
-                "target_tnn_id": target_tnn_id,
-                "experience_query": {
-                    "task_id": task_id,
-                    "teacher_class": target_class,
-                    "hit": True,
-                },
-                "definition_template": "shape_locator",
-                "teacher_mode": "vlm",
-                "purpose": f"locate {target_class}",
-                "minimum_samples": int(minimum_samples),
-                "regression_data": list(regression_data or ()),
-                "acceptance": dict(acceptance or {}),
-                "epochs": 5,
-            }
-        )
-
-    def request_qnn_training(
-        self,
-        *,
-        task_id: str,
-        target_tnn_id: str = "action_value_qnn",
-        minimum_samples: int = 40,
-        maximum_evaluation_loss: float = 0.5,
-        minimum_action_score: float = 0.0,
-    ) -> str:
-        definition = None
-        from eve.dock.trainer import qnn_critic_definition
-
-        definition = qnn_critic_definition()
-        definition["structure"]["runtime"]["minimum_action_score"] = float(
-            minimum_action_score
-        )
-        return self.submit_training_order(
-            {
-                "order_id": f"{target_tnn_id}_{time.time_ns()}",
-                "task_id": task_id,
-                "target_tnn_id": target_tnn_id,
-                "experience_query": {"task_id": task_id},
-                "definition": definition,
-                "teacher_mode": "environment_reward",
-                "purpose": "estimate state-action reward before Safegate",
-                "minimum_samples": int(minimum_samples),
-                "acceptance": {
-                    "max_evaluation_loss": float(maximum_evaluation_loss)
-                },
-                "epochs": 8,
-            }
-        )
-
     def start(self) -> None:
         if self.running:
             return
@@ -1392,23 +1656,12 @@ class CoreLoop:
                         )
             elif self.smoke_node:
                 self._load_smoke_rule()
-            restored_qnn = self.state.get("restored_qnn_description")
-            if isinstance(restored_qnn, dict) and restored_qnn.get("tnn_id"):
-                try:
-                    self.load_qnn_runtime(
-                        str(restored_qnn["tnn_id"]),
-                        restored_qnn.get("version"),
-                        minimum_action_score=restored_qnn.get(
-                            "minimum_action_score"
-                        ),
-                    )
-                except Exception as exc:
-                    self._record_error("qnn_restore", exc, critical=False)
         except Exception as exc:
             self._record_error("tnn_load", exc, critical=True)
             self.state["loop_status"]["core"] = "failed"
             raise
         self._start_model_workers()
+        self._start_output_worker()
         self._thread = threading.Thread(target=self._run, name="eve-core")
         self._thread.start()
         self.state["loop_status"]["core"] = "running"
@@ -1430,9 +1683,13 @@ class CoreLoop:
             if thread.is_alive():
                 raise RuntimeError("core thread did not stop")
         self._thread = None
+        self._stop_output_worker(timeout_s)
+        for future in self._tnn_futures.values():
+            future.cancel()
+        self._tnn_executor.shutdown(wait=True, cancel_futures=True)
+        self._tnn_futures.clear()
         for tnn_id in list(self.state["loaded_tnn"]):
             self.unload_tnn_runtime(tnn_id)
-        self.unload_qnn_runtime()
         self.state["cold_started"] = False
         self.state["paused"] = False
         self.state["loop_status"]["core"] = "failed" if self.failed else "stopped"
@@ -1490,19 +1747,24 @@ class CoreLoop:
         self._cancel_generation.clear()
         self._cancel_vlm.clear()
         self._cancel_cloud.clear()
+        self._yolo_load_started.clear()
+        self._last_autonomous_ns = 0
         workers = (
+            ("eve-yolo", self._yolo_worker),
             ("eve-local-llm", self._local_llm_worker),
             ("eve-vlm", self._vlm_worker),
-            ("eve-yolo", self._yolo_worker),
             ("eve-cloud-llm", self._cloud_worker),
             ("eve-tnn-lifecycle", self._tnn_lifecycle_worker),
             ("eve-dock", self._dock_worker),
         )
-        self._model_threads = [
+        threads = [
             threading.Thread(target=target, name=name)
             for name, target in workers
         ]
-        for thread in self._model_threads:
+        self._model_threads = threads
+        threads[0].start()
+        self._yolo_load_started.wait(1.0)
+        for thread in threads[1:]:
             thread.start()
 
     def _stop_model_workers(self, timeout_s: float) -> None:
@@ -1552,12 +1814,14 @@ class CoreLoop:
                             "error": "YOLO model path is empty",
                         }
                     )
+                    self._yolo_load_started.set()
                     return
-                from eve.core.yolo26.detector import YOLODetector
-
-                detector = YOLODetector(model_path=path)
                 status.update({"state": "loading", "path": path})
                 with self._model_load_lock:
+                    self._yolo_load_started.set()
+                    from eve.core.yolo26.detector import YOLODetector
+
+                    detector = YOLODetector(model_path=path)
                     if not detector.load():
                         raise RuntimeError("YOLO detector failed to load")
                 self._yolo_detector = detector
@@ -1571,6 +1835,7 @@ class CoreLoop:
                     }
                 )
             else:
+                self._yolo_load_started.set()
                 status.update(
                     {
                         "state": "ready",
@@ -1596,6 +1861,7 @@ class CoreLoop:
             )
             self._record_error("yolo", exc, critical=False)
         finally:
+            self._yolo_load_started.set()
             if detector is not None:
                 detector.unload()
 
@@ -1683,6 +1949,12 @@ class CoreLoop:
                     "last_request_error": None,
                     "error": None,
                 }
+            )
+            debug_log(
+                self.log_dir,
+                "yolo_output",
+                result,
+                reference_frame_id=result["reference_frame_id"],
             )
             if request is not None:
                 self._remember_runtime_visual_request(
@@ -1839,9 +2111,7 @@ class CoreLoop:
                 self._model_stop.wait(0.1)
                 continue
             dock_status["state"] = "training"
-            result = self.trainer.process_one(
-                {"fitness_evaluator": self._evaluate_qnn_fitness}
-            )
+            result = self.trainer.process_one()
             finished_ns = time.monotonic_ns()
             record = {
                 "order_id": result.order_id,
@@ -1893,16 +2163,6 @@ class CoreLoop:
                     Path(artifact["structure_path"]).read_text(encoding="utf-8")
                 )
                 runtime = structure.get("runtime", {})
-                if runtime.get("role") == "qnn":
-                    self.load_qnn_runtime(
-                        result.tnn_id,
-                        result.version,
-                        minimum_action_score=float(
-                            runtime.get("minimum_action_score", 0.0)
-                        ),
-                    )
-                    record["state"] = "qnn_loaded"
-                    continue
                 if result.tnn_id in self.state["loaded_tnn"]:
                     self.request_tnn_unload(result.tnn_id)
                 self.request_tnn_load(
@@ -1958,6 +2218,10 @@ class CoreLoop:
                 try:
                     self._process_llm_request(request)
                 except Exception as exc:
+                    if request.get("kind") == "self_update":
+                        status["self_update_failures"] = (
+                            int(status.get("self_update_failures", 0)) + 1
+                        )
                     status.update(
                         {
                             "state": "ready",
@@ -2048,21 +2312,41 @@ class CoreLoop:
             return
         now_ns = time.monotonic_ns()
         interval_s = self._autonomous_interval_s()
+        status["self_update_interval_s"] = interval_s
+        status["next_self_update_due_ns"] = int(
+            self._last_autonomous_ns + interval_s * 1_000_000_000
+        )
         if now_ns - self._last_autonomous_ns < interval_s * 1_000_000_000:
             return
         self._last_autonomous_ns = now_ns
+        request_id = f"self_update_{time.time_ns()}"
         try:
             self._llm_requests.put_nowait(
                 {
-                    "request_id": f"thought_{time.time_ns()}",
+                    "request_id": request_id,
                     "kind": "self_update",
                     "message": "进行一次低频 self 状态更新。",
                     "requested_at_ns": now_ns,
                     "memory_id": None,
                 }
             )
+            status["queued_request_id"] = request_id
+            status["next_self_update_due_ns"] = int(
+                now_ns + interval_s * 1_000_000_000
+            )
+            debug_log(
+                self.log_dir,
+                "self_update_scheduled",
+                {
+                    "request_id": request_id,
+                    "interval_s": interval_s,
+                    "queue_depth": self._llm_requests.qsize(),
+                },
+            )
         except queue.Full:
-            pass
+            status["self_update_queue_full"] = (
+                int(status.get("self_update_queue_full", 0)) + 1
+            )
 
     def _autonomous_interval_s(self) -> float:
         hormones = self.state["myself"]["hormones"]
@@ -2071,7 +2355,14 @@ class CoreLoop:
             + hormones["cortisol"]
             + hormones["acetylcholine"]
         ) / 3
-        return max(10.0, min(20.0, 20.0 - 10.0 * alert))
+        return max(
+            SELF_UPDATE_MIN_IDLE_S,
+            min(
+                SELF_UPDATE_MAX_IDLE_S,
+                SELF_UPDATE_MAX_IDLE_S
+                - (SELF_UPDATE_MAX_IDLE_S - SELF_UPDATE_MIN_IDLE_S) * alert,
+            ),
+        )
 
     def _process_llm_request(self, request: dict[str, Any]) -> None:
         status = self.state["model_status"]["local_llm"]
@@ -2082,6 +2373,7 @@ class CoreLoop:
             {
                 "state": "running",
                 "request_id": request["request_id"],
+                "request_kind": request["kind"],
                 "started_at_ns": started_ns,
             }
         )
@@ -2135,6 +2427,17 @@ class CoreLoop:
                 error, error["timestamp_ns"], producer="local_llm"
             )
             self.memorizer.enqueue(error, "local_llm_error", priority="critical")
+            if request.get("kind") == "self_update":
+                status["self_update_failures"] = (
+                    int(status.get("self_update_failures", 0)) + 1
+                )
+                status["last_self_update_error"] = error["message"]
+            debug_log(
+                self.log_dir,
+                "llm_output_error",
+                error,
+                request_kind=request.get("kind"),
+            )
             log_event(
                 self.log_dir,
                 "llm_request_failed",
@@ -2144,11 +2447,17 @@ class CoreLoop:
             )
             return
         finished_ns = time.monotonic_ns()
+        duration_ms = (finished_ns - started_ns) / 1_000_000
+        completed_count = int(status.get("completed_count", 0)) + 1
+        previous_average = float(status.get("average_duration_ms", 0.0))
         status.update(
             {
                 "state": "ready",
                 "finished_at_ns": finished_ns,
-                "last_duration_ms": (finished_ns - started_ns) / 1_000_000,
+                "last_duration_ms": duration_ms,
+                "average_duration_ms": previous_average
+                + (duration_ms - previous_average) / completed_count,
+                "completed_count": completed_count,
                 "error": None,
                 "last_request_state": "completed",
                 "last_request_error": None,
@@ -2159,7 +2468,7 @@ class CoreLoop:
             "llm_request_completed",
             request_id=request["request_id"],
             request_kind=request["kind"],
-            duration_ms=(finished_ns - started_ns) / 1_000_000,
+            duration_ms=duration_ms,
         )
         stats = self.state["runtime_stats"]
         stats["local_llm_calls"] = stats.get("local_llm_calls", 0) + 1
@@ -2189,7 +2498,6 @@ class CoreLoop:
             "available_tnn": self.memorizer.list_tnn_artifacts(),
             "loaded_tnn": sorted(self.state["loaded_tnn"]),
             "active_tnn": sorted(self.state["active_tnn"]),
-            "qnn": self.state["qnn_status"],
             "hormones": self.state["myself"]["hormones"],
             "tendencies": self.state["myself"]["tendencies"],
             "recent_conversation": self.state["conversation"][-8:],
@@ -2200,8 +2508,8 @@ class CoreLoop:
             "你是 EVE 的本地运行模型。只输出一个 JSON 对象，不输出隐藏推理。"
             "字段必须为 reply, thinking_summary, world_update, myself_update, "
             "blackboard_updates, active_tnn, memory_candidates。"
-            "可选字段 training_order 只能是 null 或受限训练订单对象；"
-            "definition_template 只允许 shape_locator 或 qnn_critic。"
+            "可选字段 training_order 只能是 null 或完整的通用训练订单，"
+            "并显式携带模型定义和真实 teacher 语义。"
         )
         user = json.dumps(context, ensure_ascii=False, default=_value_summary)
         return self._generate_from_messages(
@@ -2383,22 +2691,16 @@ class CoreLoop:
         )
         if not isinstance(candidates, list):
             raise TypeError("teacher objects must be an array")
-        aliases = {
-            "red circle": "red_circle",
-            "red_circle": "red_circle",
-            "blue triangle": "blue_triangle",
-            "blue_triangle": "blue_triangle",
-        }
         objects: list[dict[str, Any]] = []
         for item in candidates:
             if not isinstance(item, dict):
                 continue
             raw_class = str(
                 item.get("class", item.get("class_name", item.get("object", "")))
-            ).strip().casefold()
-            class_name = aliases.get(raw_class)
+            ).strip()
+            class_name = raw_class
             bbox = item.get("bbox")
-            if class_name is None or not isinstance(bbox, (list, tuple)):
+            if not class_name or not isinstance(bbox, (list, tuple)):
                 continue
             if len(bbox) != 4 or not all(
                 isinstance(number, (int, float)) for number in bbox
@@ -2423,14 +2725,13 @@ class CoreLoop:
             objects.append(
                 {
                     "class": class_name,
-                    "class_index": 0 if class_name == "red_circle" else 1,
                     "bbox": [x1, y1, x2, y2],
                     "center": [center_x, center_y],
                     "confidence": float(item.get("confidence", 1.0)),
                 }
             )
         if not objects:
-            raise ValueError("teacher result contains no valid shape labels")
+            raise ValueError("teacher result contains no valid object labels")
         return objects
 
     def _apply_llm_result(
@@ -2470,6 +2771,8 @@ class CoreLoop:
                 raise ValueError("blackboard ttl_ns must be non-negative")
             updates.append((str(update["key"]), update.get("value"), ttl_ns))
         now_ns = time.monotonic_ns()
+        world_keys = sorted(str(key) for key in result["world_update"])
+        self_keys = sorted(str(key) for key in result["myself_update"])
         exchange = {
             "request_id": request["request_id"],
             "kind": request["kind"],
@@ -2493,13 +2796,33 @@ class CoreLoop:
                 )
             if not self.set_active_tnn(desired):
                 raise ValueError("active_tnn update rejected")
-            self.state["conversation"].append(exchange)
-            self.state["conversation"] = self.state["conversation"][-100:]
+            if request["kind"] == "user":
+                self.state["conversation"].append(exchange)
+                self.state["conversation"] = self.state["conversation"][-100:]
             self.state["blackboard"]["latest_llm_result"] = _timed(
                 exchange, now_ns, producer="local_llm"
             )
+            if request["kind"] == "self_update":
+                status = self.state["model_status"]["local_llm"]
+                status["self_update_count"] = (
+                    int(status.get("self_update_count", 0)) + 1
+                )
+                status["last_self_update_at_ns"] = now_ns
+                status["last_self_update_request_id"] = request["request_id"]
+                status["last_self_update_summary"] = str(
+                    result["thinking_summary"]
+                )[:1000]
+                status["last_self_update_error"] = None
+                status["last_world_update_keys"] = world_keys
+                status["last_self_update_keys"] = self_keys
         reply_id = self.memorizer.enqueue(
-            exchange, "llm_reply", priority="critical"
+            exchange,
+            (
+                "self_update"
+                if request["kind"] == "self_update"
+                else "llm_reply"
+            ),
+            priority="critical",
         )
         thought_id = self.memorizer.enqueue(
             {
@@ -2529,6 +2852,21 @@ class CoreLoop:
             )
         if training_order is not None:
             self.submit_training_order(training_order)
+        debug_log(
+            self.log_dir,
+            "self_update_output" if request["kind"] == "self_update" else "llm_output",
+            {
+                "request_id": request["request_id"],
+                "kind": request["kind"],
+                "reply": str(result["reply"]),
+                "thinking_summary": str(result["thinking_summary"]),
+                "world_update": result["world_update"],
+                "self_update": result["myself_update"],
+                "blackboard_updates": result["blackboard_updates"],
+                "active_tnn": result["active_tnn"],
+                "memory_candidates": result["memory_candidates"],
+            },
+        )
 
     def _vlm_worker(self) -> None:
         status = self.state["model_status"]["vlm"]
@@ -3074,128 +3412,6 @@ class CoreLoop:
             "timestamp_ns": time.monotonic_ns(),
         }
 
-    def load_qnn_runtime(
-        self,
-        tnn_id: str,
-        version: str | None = None,
-        *,
-        minimum_action_score: float | None = None,
-    ) -> dict[str, Any]:
-        """Load one trainable state-action critic outside the TNN slot limit."""
-        import torch
-
-        from eve.core.qnn import load_qnn_artifact
-
-        artifact = self.memorizer.resolve_tnn_artifact(tnn_id, version)
-        device = torch.device(
-            self.runtime_device
-            or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        if device.type == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("target CUDA device is unavailable")
-        self._check_tnn_resources(Path(artifact["weights_path"]), device)
-        runtime = load_qnn_artifact(
-            self.memorizer,
-            tnn_id,
-            version,
-            device=device,
-            minimum_action_score=minimum_action_score,
-        )
-        previous = self.state.get("_qnn_runtime")
-        if previous is not None:
-            previous.close()
-        self.state["_qnn_runtime"] = runtime
-        now_ns = time.monotonic_ns()
-        status = self.state["qnn_status"]
-        status.update(
-            {
-                "state": "ready",
-                "tnn_id": runtime.tnn_id,
-                "version": runtime.version,
-                "device": str(runtime.device),
-                "minimum_action_score": runtime.minimum_action_score,
-                "model_path": runtime.artifact["model_path"],
-                "weights_path": runtime.artifact["weights_path"],
-                "memory_id": runtime.artifact["memory_id"],
-                "loaded_at_ns": now_ns,
-                "last_error": None,
-            }
-        )
-        self.state["blackboard"]["qnn_status"] = _timed(
-            dict(status), now_ns, producer="qnn"
-        )
-        return status
-
-    def unload_qnn_runtime(self) -> None:
-        runtime = self.state.get("_qnn_runtime")
-        if runtime is not None:
-            runtime.close()
-        self.state["_qnn_runtime"] = None
-        self.state["qnn_status"].update(
-            {
-                "state": "not_loaded",
-                "tnn_id": None,
-                "version": None,
-                "device": None,
-            }
-        )
-
-    def _evaluate_qnn_fitness(
-        self,
-        order: Any,
-        candidate_model: Any,
-        structure: dict[str, Any],
-    ) -> dict[str, Any]:
-        from eve.core.qnn import normalized_action_vector
-
-        qnn = self.state.get("_qnn_runtime")
-        if qnn is None:
-            raise RuntimeError("QNN fitness requested but no QNN is loaded")
-        samples = self.trainer._load_samples(order.fitness_data, structure)
-        if not samples:
-            raise ValueError("QNN fitness_data contains no valid samples")
-        runtime = structure.get("runtime", {})
-        output_name = runtime.get("action_output")
-        action_template = runtime.get("action_template", {})
-        if not output_name:
-            raise ValueError("candidate TNN has no action_output")
-
-        def average(model: Any, name: str, template: dict[str, Any]) -> float:
-            scores: list[float] = []
-            for sample in samples:
-                batch = next(
-                    iter(
-                        self.trainer._batches(
-                            [sample], 1, model, structure
-                        )
-                    )
-                )
-                outputs = model.infer(batch["inputs"])
-                if name not in outputs:
-                    raise KeyError(f"candidate did not produce {name}")
-                encoded = normalized_action_vector(outputs[name], template)
-                scores.append(
-                    qnn.score_prepared(batch["inputs"]["image"], encoded)
-                )
-            return sum(scores) / len(scores)
-
-        candidate = average(candidate_model, str(output_name), action_template)
-        baseline = None
-        existing = self.state["loaded_tnn"].get(order.target_tnn_id)
-        if existing is not None and existing.get("model") is not None:
-            baseline = average(
-                existing["model"],
-                str(existing.get("action_output") or output_name),
-                existing.get("action_template") or action_template,
-            )
-        return {
-            "candidate": candidate,
-            "baseline": baseline,
-            "sample_count": len(samples),
-            "qnn_id": qnn.tnn_id,
-            "qnn_version": qnn.version,
-        }
-
     def _check_tnn_resources(self, weights_path: Path, device: Any) -> None:
         import psutil
         import torch
@@ -3227,94 +3443,154 @@ class CoreLoop:
             record, now_ns, producer="core"
         )
 
-    def _select_action_candidates(
-        self,
-        candidates: list[dict[str, Any]],
-        now_ns: int,
-    ) -> list[dict[str, Any]]:
-        qnn = self.state.get("_qnn_runtime")
-        if qnn is None or not candidates:
-            return candidates
-        screen_sample = self.input_buffer.get_latest_screen()
-        if screen_sample is None:
-            raise RuntimeError("QNN cannot evaluate actions without a screen")
-        scored: list[tuple[float, dict[str, Any]]] = []
-        passthrough: list[dict[str, Any]] = []
-        failures: list[dict[str, Any]] = []
-        for action in candidates:
-            if action.get("action_type") != "mouse":
-                passthrough.append(action)
+    def _collect_tnn_completions(self) -> None:
+        for tnn_id, future in list(self._tnn_futures.items()):
+            if not future.done():
+                continue
+            self._tnn_futures.pop(tnn_id, None)
+            node = self.state["loaded_tnn"].get(tnn_id)
+            if node is None:
                 continue
             try:
-                score = qnn.score(screen_sample.value, action)
-                action["qnn_score"] = score
-                scored.append((score, action))
-            except Exception as exc:
-                failures.append(
-                    {
-                        "candidate_id": action.get("candidate_id"),
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
+                outputs = _commit_tnn_result(
+                    self.state,
+                    self.input_buffer,
+                    node,
+                    future.result(),
                 )
-                self.state["consumed_action_ids"].add(action["candidate_id"])
-        scored.sort(
-            key=lambda item: (
-                item[0],
-                str(item[1].get("candidate_id", "")),
-            ),
-            reverse=True,
+                log_event(
+                    self.log_dir,
+                    "tnn_output",
+                    tnn_id=tnn_id,
+                    output_names=sorted(outputs),
+                )
+                debug_log(
+                    self.log_dir,
+                    "tnn_output",
+                    outputs,
+                    tnn_id=tnn_id,
+                )
+            except Exception as exc:
+                node["running"] = False
+                node["status"] = "failed"
+                node["last_error"] = f"{type(exc).__name__}: {exc}"
+                self.state["tnn_status"][tnn_id] = "failed"
+                self.state["active_tnn"].discard(tnn_id)
+                self._record_error(f"tnn:{tnn_id}", exc, critical=False)
+
+    def _schedule_due_tnn(self, now_ns: int) -> None:
+        for tnn_id in sorted(self.state["active_tnn"]):
+            node = self.state["loaded_tnn"].get(tnn_id)
+            if node is None:
+                self.state["tnn_status"][tnn_id] = "requested_not_loaded"
+                continue
+            interval_ns = int(1_000_000_000 / node["target_frequency_hz"])
+            next_due_ns = int(node.get("next_due_ns", 0))
+            future = self._tnn_futures.get(tnn_id)
+            if future is not None:
+                if now_ns >= next_due_ns:
+                    node["skipped"] = True
+                    node["skipped_count"] = int(node.get("skipped_count", 0)) + 1
+                    node["next_due_ns"] = now_ns + interval_ns
+                continue
+            if next_due_ns and now_ns < next_due_ns:
+                continue
+            prepared = _prepare_tnn_inputs(
+                self.state, self.input_buffer, node, now_ns
+            )
+            node["next_due_ns"] = now_ns + interval_ns
+            if prepared is None:
+                node["status"] = "waiting_inputs"
+                continue
+            inputs, observed_times = prepared
+            node["running"] = True
+            node["skipped"] = False
+            node["status"] = "running"
+            if not node.get("first_started_ns"):
+                node["first_started_ns"] = now_ns
+            self._tnn_futures[tnn_id] = self._tnn_executor.submit(
+                _execute_tnn, node, inputs, observed_times
+            )
+
+    def _start_output_worker(self) -> None:
+        if self._output_thread is not None and self._output_thread.is_alive():
+            return
+        self._output_stop.clear()
+        self._output_thread = threading.Thread(
+            target=self._output_worker,
+            name="eve-output",
         )
-        selected: dict[str, Any] | None = None
-        if scored and scored[0][0] >= qnn.minimum_action_score:
-            selected = scored[0][1]
-        rejected = [
+        self._output_thread.start()
+
+    def _stop_output_worker(self, timeout_s: float) -> None:
+        self._output_stop.set()
+        self._clear_output_queue()
+        thread = self._output_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout_s)
+            if thread.is_alive():
+                raise RuntimeError("output worker did not stop")
+        self._output_thread = None
+
+    def _clear_output_queue(self) -> None:
+        while True:
+            try:
+                self._output_requests.get_nowait()
+            except queue.Empty:
+                return
+            else:
+                self._output_requests.task_done()
+
+    def _output_worker(self) -> None:
+        while not self._output_stop.is_set():
+            try:
+                action = self._output_requests.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                result = run_once(
+                    self.state,
+                    action,
+                    self.log_dir,
+                    before_output=self._mark_expected_output,
+                )
+                self._remember_chain(action, result)
+                now_ns = time.monotonic_ns()
+                if result.get("blocked"):
+                    self._adjust_hormones(
+                        {"cortisol": 0.004}, "permission_block", now_ns
+                    )
+                elif result.get("executed") or result.get("simulated"):
+                    self._adjust_hormones(
+                        {"dopamine": 0.002}, "action_success", now_ns
+                    )
+            except Exception as exc:
+                self._record_error("output", exc, critical=True)
+            finally:
+                self._output_requests.task_done()
+
+    def emergency_stop(self, reason: str = "emergency_stop") -> None:
+        self.state["emergency_stop"] = True
+        self.state["action_queue"].clear()
+        self._clear_output_queue()
+        self.state["lifecycle"].update(
             {
-                "candidate_id": action["candidate_id"],
-                "source": action.get("source"),
-                "score": score,
-                "reason": (
-                    "lower_than_selected"
-                    if selected is not None
-                    else "below_minimum_action_score"
-                ),
+                "state": "emergency_stopped",
+                "changed_at_ns": time.monotonic_ns(),
+                "reason": reason,
             }
-            for score, action in scored
-            if action is not selected
-        ]
-        for item in rejected:
-            self.state["consumed_action_ids"].add(item["candidate_id"])
-        decision = {
-            "qnn_id": qnn.tnn_id,
-            "qnn_version": qnn.version,
-            "evaluated_at_ns": now_ns,
-            "minimum_action_score": qnn.minimum_action_score,
-            "scores": [
-                {
-                    "candidate_id": action["candidate_id"],
-                    "source": action.get("source"),
-                    "score": score,
-                }
-                for score, action in scored
-            ],
-            "selected_candidate_id": (
-                selected.get("candidate_id") if selected is not None else None
-            ),
-            "rejected": rejected,
-            "failures": failures,
-            "passthrough_count": len(passthrough),
-        }
-        status = self.state["qnn_status"]
-        status["evaluation_count"] = int(
-            status.get("evaluation_count", 0)
-        ) + len(scored)
-        status["last_decision"] = decision
-        self.state["blackboard"]["latest_qnn_decision"] = _timed(
-            decision, now_ns, producer="qnn"
         )
-        self.memorizer.enqueue(
-            decision, "qnn_decision", priority="critical"
+
+    def reset_emergency_stop(self) -> None:
+        self.state["emergency_stop"] = False
+        self.state["paused"] = True
+        self.state["lifecycle"].update(
+            {
+                "state": "paused",
+                "changed_at_ns": time.monotonic_ns(),
+                "reason": "user_reset_emergency",
+            }
         )
-        return passthrough + ([selected] if selected is not None else [])
 
     def step(self, now_ns: int | None = None) -> list[dict[str, Any]]:
         if (
@@ -3341,79 +3617,44 @@ class CoreLoop:
         self._update_resources(now_ns)
         self._maybe_remember_input(now_ns, summary)
 
-        for tnn_id in sorted(self.state["active_tnn"]):
-            node = self.state["loaded_tnn"].get(tnn_id)
-            if node is None:
-                self.state["tnn_status"][tnn_id] = "requested_not_loaded"
-                continue
-            interval_ns = int(1_000_000_000 / node["run_frequency_hz"])
-            if now_ns - self.state["last_run_ns"].get(tnn_id, 0) < interval_ns:
-                continue
-            try:
-                outputs = _run_tnn(self.state, self.input_buffer, tnn_id, now_ns)
-                if outputs is not None:
-                    log_event(
-                        self.log_dir,
-                        "tnn_output",
-                        tnn_id=tnn_id,
-                        output_names=sorted(outputs),
-                    )
-            except Exception as exc:
-                self.state["tnn_status"][tnn_id] = "failed"
-                self.state["active_tnn"].discard(tnn_id)
-                node["status"] = "failed"
-                node["last_error"] = f"{type(exc).__name__}: {exc}"
-                self._record_error(f"tnn:{tnn_id}", exc, critical=False)
-                continue
+        self._collect_tnn_completions()
+        self._schedule_due_tnn(now_ns)
 
         queued_actions = list(self.state["action_queue"])
         self.state["action_queue"].clear()
-        try:
-            selected_actions = self._select_action_candidates(
-                queued_actions, now_ns
-            )
-        except Exception as exc:
-            selected_actions = []
-            for action in queued_actions:
-                self.state["consumed_action_ids"].add(action["candidate_id"])
-            self.state["qnn_status"]["state"] = "error"
-            self.state["qnn_status"]["last_error"] = (
-                f"{type(exc).__name__}: {exc}"
-            )
-            self._record_error("qnn_action_selection", exc, critical=False)
-        self.state["action_queue"].extend(selected_actions)
-
+        if queued_actions:
+            self._start_output_worker()
         results: list[dict[str, Any]] = []
-        while self.state["action_queue"]:
-            action = self.state["action_queue"].popleft()
+        for action in queued_actions:
             candidate_id = action["candidate_id"]
             if candidate_id in self.state["consumed_action_ids"]:
                 continue
             self.state["consumed_action_ids"].add(candidate_id)
-            try:
-                result = run_once(
-                    self.state,
-                    action,
-                    self.log_dir,
-                    before_output=self._mark_expected_output,
-                )
+            decision = check_action_permission(self.state, action)
+            if not decision["allowed"]:
+                result = run_once(self.state, action, self.log_dir)
                 results.append(result)
                 self._remember_chain(action, result)
-                if result.get("blocked"):
-                    self._adjust_hormones(
-                        {"cortisol": 0.004},
-                        "safegate_block",
-                        now_ns,
-                    )
-                elif result.get("executed") or result.get("simulated"):
-                    self._adjust_hormones(
-                        {"dopamine": 0.002},
-                        "action_success",
-                        now_ns,
-                    )
-            except Exception as exc:
-                self._record_error("output", exc, critical=True)
-                break
+                continue
+            try:
+                self._output_requests.put_nowait(action)
+            except queue.Full:
+                result = {
+                    "candidate_id": candidate_id,
+                    "action_id": candidate_id,
+                    "kind": action["action_type"],
+                    "mode": self.state["output_mode"],
+                    "started_at_ns": now_ns,
+                    "finished_at_ns": time.monotonic_ns(),
+                    "executed": False,
+                    "simulated": False,
+                    "blocked": True,
+                    "reason": "output_queue_full",
+                    "payload": {},
+                }
+                self.state["latest_output"] = result
+                results.append(result)
+                self._remember_chain(action, result)
         return results
 
     def _mark_expected_output(self, action: dict[str, Any]) -> None:
@@ -3470,18 +3711,6 @@ class CoreLoop:
             }
             for node in self.state["loaded_tnn"].values()
         ]
-        if self.state.get("_qnn_runtime") is not None:
-            snapshot["qnn"] = {
-                key: self.state["qnn_status"].get(key)
-                for key in (
-                    "tnn_id",
-                    "version",
-                    "minimum_action_score",
-                    "model_path",
-                    "weights_path",
-                    "memory_id",
-                )
-            }
         snapshot["blackboard"] = dict(
             list(self.state["blackboard"].items())[-50:]
         )
@@ -3539,9 +3768,8 @@ class CoreLoop:
         self.state["requested_tnn_on_restore"] = [
             str(item) for item in snapshot.get("active_tnn", [])
         ][:MAX_LOADED_TNN]
-        self.state["restored_qnn_description"] = snapshot.get("qnn")
         self.state["emergency_stop"] = False
-        self.state["permissions"] = safegate.default_permissions(False)
+        self.state["permissions"] = default_permissions(False)
         return True
 
     def _load_smoke_rule(self) -> None:
@@ -3788,14 +4016,14 @@ class CoreLoop:
             / max((now_ns - self._started_at_ns) / 1_000_000_000, 1e-9),
             "last_error": str(self.memorizer.last_writer_error or ""),
         }
-        review = self.memorizer.review_status()
-        self.state["node_status"]["memory_review"] = {
-            "state": review.get("state", "idle"),
-            "last_run_ns": now_ns if self.memorizer.review_running else 0,
+        promotion = self.memorizer.promotion_status()
+        self.state["node_status"]["memory_promotion"] = {
+            "state": promotion.get("state", "idle"),
+            "last_run_ns": now_ns if self.memorizer.promotion_running else 0,
             "last_duration_ms": 0.0,
             "average_duration_ms": 0.0,
             "actual_hz": 0.0,
-            "last_error": review.get("last_error"),
+            "last_error": promotion.get("last_error"),
         }
         for name in ("local_llm", "yolo", "vlm", "cloud_llm"):
             model = self.state["model_status"][name]
@@ -3825,20 +4053,22 @@ class CoreLoop:
                 self.state["dock_status"].get("last_result") or {}
             ).get("error"),
         }
-        qnn = self.state["qnn_status"]
-        self.state["node_status"]["qnn"] = {
-            "state": qnn.get("state", "not_loaded"),
-            "last_run_ns": (
-                (qnn.get("last_decision") or {}).get("evaluated_at_ns", 0)
-            ),
-            "last_duration_ms": 0.0,
-            "average_duration_ms": 0.0,
-            "actual_hz": float(qnn.get("evaluation_count", 0))
-            / max((now_ns - self._started_at_ns) / 1_000_000_000, 1e-9),
-            "last_error": qnn.get("last_error"),
-        }
+        for tnn_id, node in self.state["loaded_tnn"].items():
+            self.state["node_status"][tnn_id] = {
+                "state": node.get("status", "loaded"),
+                "last_run_ns": node.get("last_run_ns", 0),
+                "last_duration_ms": node.get("last_duration_ms", 0.0),
+                "average_duration_ms": node.get("average_duration_ms", 0.0),
+                "target_hz": node.get("target_frequency_hz", 0.0),
+                "actual_hz": node.get("actual_frequency_hz", 0.0),
+                "overdue": bool(node.get("overdue", False)),
+                "skipped": bool(node.get("skipped", False)),
+                "skipped_count": int(node.get("skipped_count", 0)),
+                "running": bool(node.get("running", False)),
+                "last_error": node.get("last_error"),
+            }
         for name in (
-            "safegate", "mouse_output", "keyboard_output",
+            "permission_check", "mouse_output", "keyboard_output",
             "speak_output",
         ):
             self.state["node_status"].setdefault(
@@ -3849,6 +4079,127 @@ class CoreLoop:
                     "last_duration_ms": 0.0,
                     "average_duration_ms": 0.0,
                     "last_error": None,
+                },
+            )
+        self._publish_loop_graph(now_ns)
+
+    def _publish_loop_graph(self, now_ns: int) -> None:
+        elapsed_s = max(
+            (now_ns - self._started_at_ns) / 1_000_000_000,
+            1e-9,
+        )
+        llm_status = self.state["model_status"]["local_llm"]
+        self.state["node_status"]["self_update_loop"] = {
+            "state": (
+                "paused"
+                if self.state["paused"] or self.state["emergency_stop"]
+                else llm_status.get("state", "unknown")
+            ),
+            "last_run_ns": llm_status.get("last_self_update_at_ns", 0),
+            "last_duration_ms": llm_status.get("last_duration_ms", 0.0),
+            "average_duration_ms": llm_status.get(
+                "average_duration_ms", 0.0
+            ),
+            "actual_hz": int(llm_status.get("self_update_count", 0))
+            / elapsed_s,
+            "queue_size": self._llm_requests.qsize(),
+            "next_due_ns": llm_status.get("next_self_update_due_ns", 0),
+            "run_count": int(llm_status.get("self_update_count", 0)),
+            "failure_count": int(llm_status.get("self_update_failures", 0)),
+            "last_error": llm_status.get("last_self_update_error"),
+        }
+        self.state["node_status"]["tnn_scheduler"] = {
+            "state": "running" if self.running else "stopped",
+            "last_run_ns": now_ns,
+            "last_duration_ms": 0.0,
+            "average_duration_ms": 0.0,
+            "actual_hz": self.stats().get("loop_hz", 0.0),
+            "queue_size": len(self._tnn_futures),
+            "run_count": self.state["runtime_stats"].get("tnn_invocations", 0),
+            "last_error": None,
+        }
+        output_running = bool(
+            self._output_thread is not None
+            and self._output_thread.is_alive()
+        )
+        self.state["node_status"]["output_worker"] = {
+            "state": "running" if output_running else "idle",
+            "last_run_ns": self.state.get("latest_output", {}).get(
+                "finished_at_ns", 0
+            )
+            if isinstance(self.state.get("latest_output"), dict)
+            else 0,
+            "last_duration_ms": 0.0,
+            "average_duration_ms": 0.0,
+            "actual_hz": (
+                int(self.state["runtime_stats"].get("actions_allowed", 0))
+                + int(self.state["runtime_stats"].get("actions_blocked", 0))
+            )
+            / elapsed_s,
+            "queue_size": self._output_requests.qsize(),
+            "last_error": None,
+        }
+        edges = [
+            {"source": "capture", "target": "buffer", "condition": "continuous samples"},
+            {"source": "buffer", "target": "core", "condition": "each Core iteration"},
+            {"source": "core", "target": "self_update_loop", "condition": "due and LLM ready"},
+            {"source": "self_update_loop", "target": "world", "condition": "validated world_update"},
+            {"source": "self_update_loop", "target": "self", "condition": "validated self_update"},
+            {"source": "core", "target": "yolo", "condition": "new screen frame"},
+            {"source": "yolo", "target": "blackboard", "condition": "current frame result"},
+            {"source": "core", "target": "tnn_scheduler", "condition": "node due and not running"},
+            {"source": "tnn_scheduler", "target": "output_worker", "condition": "valid action candidate"},
+            {"source": "output_worker", "target": "mouse_output", "condition": "permission recheck"},
+            {"source": "output_worker", "target": "keyboard_output", "condition": "permission recheck"},
+            {"source": "output_worker", "target": "speak_output", "condition": "permission recheck"},
+            {"source": "core", "target": "memory_writer", "condition": "bounded async writes"},
+            {"source": "core", "target": "dock", "condition": "training order queued"},
+        ]
+        referenced = {
+            value
+            for edge in edges
+            for value in (edge["source"], edge["target"])
+        }
+        nodes = []
+        for name in sorted(referenced | set(self.state["node_status"])):
+            status = self.state["node_status"].get(name, {})
+            nodes.append(
+                {
+                    "id": name,
+                    "state": status.get("state", "state_store"),
+                    "actual_hz": status.get("actual_hz", 0.0),
+                    "last_run_ns": status.get("last_run_ns", 0),
+                    "last_duration_ms": status.get("last_duration_ms", 0.0),
+                    "average_duration_ms": status.get(
+                        "average_duration_ms", 0.0
+                    ),
+                    "queue_size": status.get("queue_size", 0),
+                    "running": status.get("running"),
+                    "overdue": status.get("overdue"),
+                    "skipped_count": status.get("skipped_count", 0),
+                    "last_error": status.get("last_error"),
+                }
+            )
+        graph = {
+            "updated_at_ns": now_ns,
+            "nodes": nodes,
+            "edges": edges,
+        }
+        self.state["loop_graph"] = graph
+        if now_ns - self._last_debug_snapshot_ns >= 1_000_000_000:
+            self._last_debug_snapshot_ns = now_ns
+            debug_log(
+                self.log_dir,
+                "loop_snapshot",
+                {
+                    "graph": graph,
+                    "model_status": self.state["model_status"],
+                    "world": self.state["world"],
+                    "self": self.state["myself"],
+                    "blackboard": {
+                        key: _value_summary(value.get("value"))
+                        for key, value in self.state["blackboard"].items()
+                    },
                 },
             )
 
@@ -3908,11 +4259,11 @@ class CoreLoop:
         memory_ids: dict[str, str] = {}
         try:
             decision = self.state["blackboard"].get(
-                "latest_safegate_result", {}
+                "latest_permission_result", {}
             ).get("value", {})
             for payload_type, payload in (
                 ("action_candidate", action),
-                ("safegate_result", decision),
+                ("permission_result", decision),
                 ("output_result", result),
             ):
                 memory_id = self.memorizer.enqueue(
@@ -3981,5 +4332,6 @@ class CoreLoop:
         if critical:
             self._failed_event.set()
         log_event(self.log_dir, "runtime_error", **error)
+        debug_log(self.log_dir, "runtime_error", error)
         if loop_node != "memory":
             self.memorizer.enqueue(error, "runtime_error", priority="critical")

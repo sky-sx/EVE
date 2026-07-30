@@ -20,7 +20,6 @@ from eve.core.loop import (
     create_runtime_state,
     log_event,
 )
-from eve.core.safegate import emergency_stop, reset_emergency
 from eve.input.buffer import InputBuffer
 from eve.memory.memorizer import Memorizer
 from eve.output import keyboard, mouse, speak
@@ -95,6 +94,7 @@ class EVEApplication:
                     {
                         "state": "configured",
                         "path": path,
+                        "auto_start": name == "yolo",
                         "quantization": (
                             "4bit-nf4-required"
                             if name in {"local_llm", "vlm"}
@@ -233,7 +233,7 @@ class EVEApplication:
         log_event(self.run_dir, "shutdown_complete", reason=self.exit_reason)
 
     def emergency(self, reason: str = "user_emergency_stop") -> None:
-        emergency_stop(self.state)
+        self.core.emergency_stop(reason)
         self.state["lifecycle"]["escape_triggered_at_ns"] = time.monotonic_ns()
         self.state["lifecycle"]["reason"] = reason
         self.core.cancel_generation()
@@ -250,7 +250,7 @@ class EVEApplication:
         log_event(self.run_dir, "emergency_stop", source=reason)
 
     def clear_emergency(self) -> None:
-        reset_emergency(self.state)
+        self.core.reset_emergency_stop()
         mouse.reset_stop()
         keyboard.reset_stop()
         speak.reset_stop()
@@ -305,8 +305,8 @@ class EVEApplication:
             "core_loop_hz": core["loop_hz"],
             "tnn_invocations": core["tnn_invocations"],
             "tnn_device": self.state["resource_status"].get("tnn_device"),
-            "safegate_allowed": stats.get("safegate_allowed", 0),
-            "safegate_blocked": stats.get("safegate_blocked", 0),
+            "actions_allowed": stats.get("actions_allowed", 0),
+            "actions_blocked": stats.get("actions_blocked", 0),
             "mock_outputs": stats.get("mock_outputs", 0),
             "real_output_calls": 0,
             "memory_written": memory["written"],
@@ -327,6 +327,7 @@ class EVEApplication:
             ),
             "capture_process_stopped": not self.buffer.capture_running,
             "log": str(self.run_dir / "eve.jsonl"),
+            "debug_log": str(self.run_dir / "debug.jsonl"),
         }
 
     def _watch_stop(self) -> None:
@@ -382,8 +383,8 @@ class EVEApplication:
             or self.memory.writer_running
         )
 
-    def force_memory_review(self) -> bool:
-        return self.memory.force_review()
+    def force_memory_promotion(self) -> bool:
+        return self.memory.force_promotion()
 
     def memory_view_snapshot(self) -> dict[str, Any]:
         stm_ids = self.memory.tier_ids("stm")
@@ -394,7 +395,7 @@ class EVEApplication:
         latest_ltm_id = ltm_ids[-1] if ltm_ids else None
         return {
             "counts": self.memory.counts(),
-            "review": self.memory.review_status(),
+            "promotion": self.memory.promotion_status(),
             "latest_memory": latest_unit.__dict__ if latest_unit else None,
             "latest_event": latest_event.__dict__ if latest_event else None,
             "ltm_memory_ids": ltm_ids[-50:],
@@ -432,6 +433,68 @@ def _conversation_text(items: list[dict[str, Any]]) -> str:
         if user or reply:
             lines.append("")
     return "\n".join(lines).strip() or "暂无对话"
+
+
+def _self_state_text(state: dict[str, Any]) -> str:
+    visible = state["myself"]
+    status = state["model_status"]["local_llm"]
+    other = {
+        key: value
+        for key, value in visible.items()
+        if key
+        not in {
+            "what_im_thinking",
+            "hormones",
+            "tendencies",
+            "last_hormone_change",
+        }
+    }
+    return (
+        f"Current task: {visible.get('current_task', '') or '-'}\n"
+        f"Self update count: {status.get('self_update_count', 0)}\n"
+        f"Last update: {_format_ns(status.get('last_self_update_at_ns'))}\n"
+        f"World fields: {status.get('last_world_update_keys', [])}\n"
+        f"Self fields: {status.get('last_self_update_keys', [])}\n\n"
+        "Visible self summary\n"
+        "--------------------\n"
+        f"{visible.get('what_im_thinking', '') or '-'}\n\n"
+        "Other self state\n"
+        "----------------\n"
+        f"{_json_text(other)}"
+    )
+
+
+def _loop_graph_text(graph: dict[str, Any]) -> str:
+    nodes = {
+        str(item.get("id")): item
+        for item in graph.get("nodes", [])
+        if isinstance(item, dict)
+    }
+
+    def label(name: str) -> str:
+        node = nodes.get(name, {})
+        hz = float(node.get("actual_hz", 0.0) or 0.0)
+        state = node.get("state", "state_store")
+        queue_size = int(node.get("queue_size", 0) or 0)
+        duration = float(node.get("last_duration_ms", 0.0) or 0.0)
+        error = node.get("last_error")
+        suffix = f", error={error}" if error else ""
+        return (
+            f"{name} [{state}, {hz:.3f} Hz, {duration:.2f} ms, "
+            f"queue={queue_size}{suffix}]"
+        )
+
+    lines = [f"Updated: {_format_ns(graph.get('updated_at_ns'))}", ""]
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source", "?"))
+        target = str(edge.get("target", "?"))
+        lines.append(
+            f"{label(source)}\n  -> {label(target)}\n"
+            f"     when: {edge.get('condition', '')}\n"
+        )
+    return "\n".join(lines).strip() or "Loop graph is not available yet."
 
 
 def _format_ns(value: Any) -> str:
@@ -513,7 +576,7 @@ class EVEControlWindow:
                 self._build_ui(qt)
                 self._timer = qt["QTimer"](self)
                 self._timer.timeout.connect(self.refresh)
-                self._timer.start(200)
+                self._timer.start(500)
                 shortcut = qt["QShortcut"](qt["QKeySequence"]("Esc"), self)
                 shortcut.activated.connect(
                     lambda: self._emergency("gui_escape")
@@ -556,6 +619,25 @@ class EVEControlWindow:
                 editor.setReadOnly(True)
                 editor.setMinimumHeight(height)
                 return editor
+
+            @staticmethod
+            def _set_stable_text(editor: Any, text: str) -> None:
+                if editor.toPlainText() == text:
+                    return
+                scrollbar = editor.verticalScrollBar()
+                if scrollbar.isSliderDown():
+                    return
+                cursor = editor.textCursor()
+                if editor.hasFocus() and cursor.hasSelection():
+                    return
+                old_value = scrollbar.value()
+                was_at_bottom = old_value >= scrollbar.maximum() - 2
+                editor.setPlainText(text)
+                scrollbar.setValue(
+                    scrollbar.maximum()
+                    if was_at_bottom
+                    else min(old_value, scrollbar.maximum())
+                )
 
             def _build_visual_page(self, page: Any, qt: dict[str, Any]) -> None:
                 layout = qt["QVBoxLayout"](page)
@@ -607,6 +689,11 @@ class EVEControlWindow:
                 layout.addLayout(row)
                 self.conversation_view = self._readonly(qt, 260)
                 layout.addWidget(self.conversation_view)
+                self.self_update_metrics = qt["QLabel"](
+                    "Self update loop has not started."
+                )
+                self.self_update_metrics.setWordWrap(True)
+                layout.addWidget(self.self_update_metrics)
                 grid = qt["QGridLayout"]()
                 self.thinking_view = self._readonly(qt, 100)
                 self.world_view = self._readonly(qt, 180)
@@ -634,6 +721,14 @@ class EVEControlWindow:
                     ]
                 )
                 layout.addWidget(self.node_table)
+                layout.addWidget(qt["QLabel"]("Runtime loop graph"))
+                self.loop_graph_view = self._readonly(qt, 260)
+                layout.addWidget(self.loop_graph_view)
+                self.debug_log_path = qt["QLabel"](
+                    f"Debug output: {self.application.run_dir / 'debug.jsonl'}"
+                )
+                self.debug_log_path.setWordWrap(True)
+                layout.addWidget(self.debug_log_path)
 
             def _build_lifecycle_page(self, page: Any, qt: dict[str, Any]) -> None:
                 layout = qt["QVBoxLayout"](page)
@@ -660,15 +755,15 @@ class EVEControlWindow:
                 layout = qt["QVBoxLayout"](page)
                 row = qt["QHBoxLayout"]()
                 self.memory_counts = qt["QLabel"]("STM 0 / MTM 0 / LTM 0")
-                review = qt["QPushButton"]("强制睡眠整理")
-                review.clicked.connect(self._force_review)
+                promotion = qt["QPushButton"]("强制记忆晋升")
+                promotion.clicked.connect(self._force_promotion)
                 row.addWidget(self.memory_counts)
-                row.addWidget(review)
+                row.addWidget(promotion)
                 layout.addLayout(row)
-                self.review_progress = qt["QProgressBar"]()
-                layout.addWidget(self.review_progress)
-                self.review_label = qt["QLabel"]("整理：空闲")
-                layout.addWidget(self.review_label)
+                self.promotion_progress = qt["QProgressBar"]()
+                layout.addWidget(self.promotion_progress)
+                self.promotion_label = qt["QLabel"]("记忆晋升：空闲")
+                layout.addWidget(self.promotion_label)
                 self.memory_view = self._readonly(qt, 170)
                 self.blackboard_view = self._readonly(qt, 280)
                 layout.addWidget(qt["QLabel"]("最近 MemoryUnit / Event"))
@@ -917,11 +1012,11 @@ class EVEControlWindow:
                 except Exception as exc:
                     self._background_error = str(exc)
 
-            def _force_review(self) -> None:
+            def _force_promotion(self) -> None:
                 if not self.application.state["cold_started"]:
                     self._background_error = "冷启动后才能执行 Memory 整理"
                     return
-                if not self.application.force_memory_review():
+                if not self.application.force_memory_promotion():
                     self._background_error = "Memory 整理已在运行"
 
             def _load_tnn(self) -> None:
@@ -1022,28 +1117,47 @@ class EVEControlWindow:
                 result = state.get("last_runtime_visual_result")
                 if result is None:
                     result = state.get("visual_result")
-                self.visual_result.setPlainText(
+                self._set_stable_text(
+                    self.visual_result,
                     _json_text(result) if result else "暂无 YOLO/TNN 结果"
                 )
                 teacher_result = state.get("last_teacher_visual_result")
                 if teacher_result is None:
                     teacher_result = state.get("teacher_visual_result")
-                self.teacher_visual_result.setPlainText(
+                self._set_stable_text(
+                    self.teacher_visual_result,
                     _json_text(teacher_result)
                     if teacher_result
                     else "尚未请求 VLM 教师复核"
                 )
 
             def _refresh_text(self, state: dict[str, Any]) -> None:
-                self.conversation_view.setPlainText(
+                status = state["model_status"]["local_llm"]
+                node = state["node_status"].get("self_update_loop", {})
+                self.self_update_metrics.setText(
+                    f"state={status.get('state')} | "
+                    f"updates={status.get('self_update_count', 0)} | "
+                    f"failures={status.get('self_update_failures', 0)} | "
+                    f"actual={float(node.get('actual_hz', 0.0) or 0.0):.3f} Hz | "
+                    f"interval={float(status.get('self_update_interval_s', 0.0) or 0.0):.2f}s | "
+                    f"last={_format_ns(status.get('last_self_update_at_ns'))} | "
+                    f"next={_format_ns(status.get('next_self_update_due_ns'))}"
+                )
+                self._set_stable_text(
+                    self.conversation_view,
                     _conversation_text(state["conversation"][-30:])
                 )
-                self.thinking_view.setPlainText(
+                self._set_stable_text(
+                    self.thinking_view,
                     str(state["myself"].get("what_im_thinking", ""))
                     or "暂无可见思想摘要"
                 )
-                self.world_view.setPlainText(_json_text(state["world"]))
-                self.myself_view.setPlainText(_json_text(state["myself"]))
+                self._set_stable_text(
+                    self.world_view, _json_text(state["world"])
+                )
+                self._set_stable_text(
+                    self.myself_view, _self_state_text(state)
+                )
 
             def _refresh_resources(self, state: dict[str, Any]) -> None:
                 resources = state["resource_status"]
@@ -1063,9 +1177,8 @@ class EVEControlWindow:
                 )
                 required = [
                     "capture", "buffer", "core", "local_llm", "yolo", "vlm",
-                    "cloud_llm", "memory_writer", "memory_review", "safegate",
+                    "cloud_llm", "memory_writer", "memory_promotion", "permission_check",
                     "mouse_output", "keyboard_output", "speak_output", "dock",
-                    "qnn",
                 ]
                 nodes = state["node_status"]
                 names = required + [
@@ -1088,6 +1201,13 @@ class EVEControlWindow:
                         self.node_table.setItem(
                             row, column, qt["QTableWidgetItem"](str(value))
                         )
+                self._set_stable_text(
+                    self.loop_graph_view,
+                    _loop_graph_text(state.get("loop_graph", {})),
+                )
+                self.debug_log_path.setText(
+                    f"Debug output: {self.application.run_dir / 'debug.jsonl'}"
+                )
 
             def _refresh_lifecycle(self, state: dict[str, Any]) -> None:
                 lifecycle = state["lifecycle"]
@@ -1107,18 +1227,19 @@ class EVEControlWindow:
                     f"STM {counts['stm']} | MTM {counts['mtm']} | "
                     f"LTM {counts['ltm']} | Event {counts['events']}"
                 )
-                review = snapshot["review"]
-                total = int(review.get("total", 0))
-                processed = int(review.get("processed", 0))
-                self.review_progress.setMaximum(max(1, total))
-                self.review_progress.setValue(processed)
-                eta = review.get("eta_s")
+                promotion = snapshot["promotion"]
+                total = int(promotion.get("total", 0))
+                processed = int(promotion.get("processed", 0))
+                self.promotion_progress.setMaximum(max(1, total))
+                self.promotion_progress.setValue(processed)
+                eta = promotion.get("eta_s")
                 eta_text = "正在计算" if eta is None else f"{eta:.2f}s"
-                self.review_label.setText(
-                    f"{review.get('state')} | {processed}/{total} | ETA {eta_text} | "
-                    f"结果 {review.get('last_result')} | 错误 {review.get('last_error')}"
+                self.promotion_label.setText(
+                    f"{promotion.get('state')} | {processed}/{total} | ETA {eta_text} | "
+                    f"结果 {promotion.get('last_result')} | 错误 {promotion.get('last_error')}"
                 )
-                self.memory_view.setPlainText(
+                self._set_stable_text(
+                    self.memory_view,
                     _json_text(
                         {
                             "latest_memory": snapshot["latest_memory"],
@@ -1128,7 +1249,8 @@ class EVEControlWindow:
                         }
                     )
                 )
-                self.blackboard_view.setPlainText(
+                self._set_stable_text(
+                    self.blackboard_view,
                     _json_text(state["blackboard"])
                 )
 
@@ -1149,15 +1271,18 @@ class EVEControlWindow:
                     check.blockSignals(True)
                     check.setChecked(bool(permissions[name]))
                     check.blockSignals(False)
-                self.tendency_view.setPlainText(
+                self._set_stable_text(
+                    self.tendency_view,
                     _json_text(state["myself"]["tendencies"])
                 )
 
             def _refresh_settings(self, state: dict[str, Any]) -> None:
-                self.model_status_view.setPlainText(
+                self._set_stable_text(
+                    self.model_status_view,
                     _json_text(state["model_status"])
                 )
-                self.hormone_view.setPlainText(
+                self._set_stable_text(
+                    self.hormone_view,
                     _json_text(
                         {
                             "current": state["myself"]["hormones"],
@@ -1194,7 +1319,7 @@ class EVEControlWindow:
                         node.get("model_path", ""),
                         node.get("device", ""),
                         node.get("precision", ""),
-                        node.get("run_frequency_hz", ""),
+                        node.get("actual_frequency_hz", ""),
                         node.get("output_ttl_ns", ""),
                         _format_ns(node.get("last_run_ns")),
                         node.get("last_duration_ms", ""),
@@ -1246,11 +1371,11 @@ class EVEControlWindow:
                                 ),
                             }
                         )
-                self.tnn_detail.setPlainText(
+                self._set_stable_text(
+                    self.tnn_detail,
                     _json_text(
                         {
                             "dock": state.get("dock_status", {}),
-                            "qnn": state.get("qnn_status", {}),
                             "training_orders": state.get("training_orders", {}),
                             "available_artifacts": (
                                 self.application.memory.list_tnn_artifacts()
@@ -1384,7 +1509,7 @@ def main(argv: list[str] | None = None) -> int:
         if not application.wait(duration):
             exit_code = 1
     except KeyboardInterrupt:
-        emergency_stop(application.state)
+        application.emergency("keyboard_interrupt")
         application.exit_reason = "keyboard_interrupt"
     except Exception as exc:
         exit_code = 1

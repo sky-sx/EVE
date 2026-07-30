@@ -54,7 +54,6 @@ class TrainingOrder:
     experience_query: dict[str, Any] = field(default_factory=dict)
     evaluation_data: list[str] = field(default_factory=list)
     regression_data: list[str] = field(default_factory=list)
-    fitness_data: list[str] = field(default_factory=list)
     teacher_mode: str = "existing_label"
     teacher_prompt: str = ""
     task_id: str = ""
@@ -62,8 +61,6 @@ class TrainingOrder:
     train_ratio: float = 0.8
     minimum_samples: int = 1
     acceptance: dict[str, float] = field(default_factory=dict)
-    minimum_qnn_fitness: float | None = None
-    minimum_qnn_margin: float = 0.0
     continue_training: bool = False
     epochs: int | None = None
     definition: dict[str, Any] = field(default_factory=dict)
@@ -84,278 +81,6 @@ class TrainingResult:
     sample_count: int = 0
     accepted: bool = True
     rejection_reason: str | None = None
-
-
-def shape_locator_definition(*, version: str | None = None) -> dict[str, Any]:
-    return {
-        "mode": "json",
-        "version": version or f"v{time.time_ns()}",
-        "structure": {
-            "input_schema": {
-                "image": {
-                    "dtype": "float32",
-                    "shape": [3, 64, 64],
-                    "preprocess": "screen_rgb_64",
-                }
-            },
-            "output_schema": {
-                "target_center": {"dtype": "float32", "shape": [2]}
-            },
-            "target_schema": {
-                "target_center": {"dtype": "float32", "shape": [2]}
-            },
-            "nodes": [
-                {
-                    "id": "conv1",
-                    "op": "conv2d",
-                    "from": ["image"],
-                    "params": {
-                        "in_channels": 3,
-                        "out_channels": 8,
-                        "kernel_size": 5,
-                        "stride": 2,
-                    },
-                },
-                {
-                    "id": "relu1",
-                    "op": "relu",
-                    "from": ["conv1"],
-                    "params": {},
-                },
-                {
-                    "id": "pool1",
-                    "op": "maxpool2d",
-                    "from": ["relu1"],
-                    "params": {"kernel_size": 2},
-                },
-                {
-                    "id": "conv2",
-                    "op": "conv2d",
-                    "from": ["pool1"],
-                    "params": {
-                        "in_channels": 8,
-                        "out_channels": 16,
-                        "kernel_size": 3,
-                        "stride": 2,
-                    },
-                },
-                {
-                    "id": "relu2",
-                    "op": "relu",
-                    "from": ["conv2"],
-                    "params": {},
-                },
-                {
-                    "id": "adaptive",
-                    "op": "adaptive_avgpool2d",
-                    "from": ["relu2"],
-                    "params": {"output_size": [4, 4]},
-                },
-                {
-                    "id": "flat",
-                    "op": "flatten",
-                    "from": ["adaptive"],
-                    "params": {"start_dim": 1},
-                },
-                {
-                    "id": "hidden",
-                    "op": "linear",
-                    "from": ["flat"],
-                    "params": {"in_features": 256, "out_features": 64},
-                },
-                {
-                    "id": "relu3",
-                    "op": "relu",
-                    "from": ["hidden"],
-                    "params": {},
-                },
-                {
-                    "id": "center",
-                    "op": "linear",
-                    "from": ["relu3"],
-                    "params": {"in_features": 64, "out_features": 2},
-                },
-                {
-                    "id": "normalized",
-                    "op": "sigmoid",
-                    "from": ["center"],
-                    "params": {},
-                },
-            ],
-            "outputs": {"target_center": "normalized"},
-            "training": {
-                "batch_size": 16,
-                "optimizer": {"type": "adam", "lr": 0.001},
-                "losses": [
-                    {
-                        "type": "mse",
-                        "output": "target_center",
-                        "target": "target_center",
-                    }
-                ],
-            },
-            "runtime": {
-                "input_refs": {"image": "state:screen"},
-                "run_frequency_hz": 2.0,
-                "output_ttl_ns": 500_000_000,
-                "action_output": "target_center",
-                "action_template": {
-                    "action_type": "mouse",
-                    "action": "click",
-                    "coordinates": "normalized_xy",
-                    "button": "left",
-                },
-            },
-        },
-    }
-
-
-def qnn_critic_definition(*, version: str | None = None) -> dict[str, Any]:
-    """Small critic mapping screen state and a mouse action to expected reward."""
-    return {
-        "mode": "json",
-        "version": version or f"v{time.time_ns()}",
-        "structure": {
-            "input_schema": {
-                "image": {
-                    "dtype": "float32",
-                    "shape": [3, 64, 64],
-                    "preprocess": "screen_rgb_64",
-                },
-                "action": {"dtype": "float32", "shape": [4]},
-            },
-            "output_schema": {
-                "q_value": {"dtype": "float32", "shape": [1]}
-            },
-            "target_schema": {
-                "reward": {"dtype": "float32", "shape": [1]}
-            },
-            "nodes": [
-                {
-                    "id": "conv1",
-                    "op": "conv2d",
-                    "from": ["image"],
-                    "params": {
-                        "in_channels": 3,
-                        "out_channels": 8,
-                        "kernel_size": 5,
-                        "stride": 2,
-                    },
-                },
-                {
-                    "id": "image_relu1",
-                    "op": "relu",
-                    "from": ["conv1"],
-                    "params": {},
-                },
-                {
-                    "id": "pool1",
-                    "op": "maxpool2d",
-                    "from": ["image_relu1"],
-                    "params": {"kernel_size": 2},
-                },
-                {
-                    "id": "conv2",
-                    "op": "conv2d",
-                    "from": ["pool1"],
-                    "params": {
-                        "in_channels": 8,
-                        "out_channels": 16,
-                        "kernel_size": 3,
-                        "stride": 2,
-                    },
-                },
-                {
-                    "id": "image_relu2",
-                    "op": "relu",
-                    "from": ["conv2"],
-                    "params": {},
-                },
-                {
-                    "id": "adaptive",
-                    "op": "adaptive_avgpool2d",
-                    "from": ["image_relu2"],
-                    "params": {"output_size": [4, 4]},
-                },
-                {
-                    "id": "flat",
-                    "op": "flatten",
-                    "from": ["adaptive"],
-                    "params": {"start_dim": 1},
-                },
-                {
-                    "id": "image_hidden",
-                    "op": "linear",
-                    "from": ["flat"],
-                    "params": {"in_features": 256, "out_features": 64},
-                },
-                {
-                    "id": "image_features",
-                    "op": "relu",
-                    "from": ["image_hidden"],
-                    "params": {},
-                },
-                {
-                    "id": "action_hidden",
-                    "op": "linear",
-                    "from": ["action"],
-                    "params": {"in_features": 4, "out_features": 16},
-                },
-                {
-                    "id": "action_features",
-                    "op": "relu",
-                    "from": ["action_hidden"],
-                    "params": {},
-                },
-                {
-                    "id": "joint",
-                    "op": "concat",
-                    "from": ["image_features", "action_features"],
-                    "params": {"dim": 1},
-                },
-                {
-                    "id": "joint_hidden",
-                    "op": "linear",
-                    "from": ["joint"],
-                    "params": {"in_features": 80, "out_features": 32},
-                },
-                {
-                    "id": "joint_features",
-                    "op": "relu",
-                    "from": ["joint_hidden"],
-                    "params": {},
-                },
-                {
-                    "id": "raw_q",
-                    "op": "linear",
-                    "from": ["joint_features"],
-                    "params": {"in_features": 32, "out_features": 1},
-                },
-                {
-                    "id": "bounded_q",
-                    "op": "tanh",
-                    "from": ["raw_q"],
-                    "params": {},
-                },
-            ],
-            "outputs": {"q_value": "bounded_q"},
-            "training": {
-                "batch_size": 16,
-                "optimizer": {"type": "adam", "lr": 0.001},
-                "losses": [
-                    {
-                        "type": "mse",
-                        "output": "q_value",
-                        "target": "reward",
-                    }
-                ],
-            },
-            "runtime": {
-                "role": "qnn",
-                "minimum_action_score": 0.0,
-            },
-        },
-    }
 
 
 def _validate_structure(structure: dict[str, Any]) -> None:
@@ -766,25 +491,22 @@ class Trainer:
 
     def process_one(
         self,
-        model_adapters: dict[str, Any] | None = None,
     ) -> TrainingResult:
         with self._lock:
             if not self._queue:
                 return TrainingResult(order_id="", error="No orders in queue")
             order = self._queue.pop(0)
-        return self.process_order(order, model_adapters=model_adapters)
+        return self.process_order(order)
 
     def process_order(
         self,
         order: TrainingOrder,
-        *,
-        model_adapters: dict[str, Any] | None = None,
     ) -> TrainingResult:
         started = time.perf_counter()
         self._current_order = order
         self._running = True
         try:
-            result = self._execute(order, started, model_adapters)
+            result = self._execute(order, started)
         except Exception as exc:
             result = TrainingResult(
                 order_id=order.order_id,
@@ -802,17 +524,19 @@ class Trainer:
         self,
         order: TrainingOrder,
         started: float,
-        model_adapters: dict[str, Any] | None,
     ) -> TrainingResult:
         if not order.order_id or not order.target_tnn_id:
             raise ValueError("order_id and target_tnn_id are required")
-        if (
-            order.minimum_qnn_fitness is not None
-            and not -1.0 <= float(order.minimum_qnn_fitness) <= 1.0
-        ):
-            raise ValueError("minimum_qnn_fitness must be between -1 and 1")
-        if not 0.0 <= float(order.minimum_qnn_margin) <= 2.0:
-            raise ValueError("minimum_qnn_margin must be between 0 and 2")
+        if order.teacher_mode != "existing_label":
+            raise ValueError(
+                f"teacher_mode={order.teacher_mode!r} is unsupported; "
+                "only explicit existing labels are currently trainable"
+            )
+        if order.teacher_prompt:
+            raise ValueError(
+                "teacher_prompt is unsupported until a teacher-backed label "
+                "generation pipeline is configured"
+            )
         definition = order.definition
         mode = definition.get("mode")
         if mode not in {"json", "python"}:
@@ -920,52 +644,6 @@ class Trainer:
             evaluation=averaged_eval,
             regression=averaged_regression,
         )
-        qnn_fitness: dict[str, Any] = {}
-        requires_qnn = (
-            order.minimum_qnn_fitness is not None
-            or order.minimum_qnn_margin > 0.0
-        )
-        if accepted and requires_qnn:
-            evaluator = (model_adapters or {}).get("fitness_evaluator")
-            if not callable(evaluator):
-                accepted = False
-                rejection_reason = "QNN fitness evaluator is unavailable"
-            elif not order.fitness_data:
-                accepted = False
-                rejection_reason = "QNN fitness requires fitness_data"
-            else:
-                evaluation = evaluator(order, tnn, structure)
-                if not isinstance(evaluation, dict):
-                    raise TypeError(
-                        "QNN fitness evaluator must return a mapping"
-                    )
-                qnn_fitness = dict(evaluation)
-                candidate_fitness = qnn_fitness.get("candidate")
-                baseline_fitness = qnn_fitness.get("baseline")
-                if candidate_fitness is None:
-                    accepted = False
-                    rejection_reason = "QNN candidate fitness is unavailable"
-                elif (
-                    order.minimum_qnn_fitness is not None
-                    and float(candidate_fitness)
-                    < float(order.minimum_qnn_fitness)
-                ):
-                    accepted = False
-                    rejection_reason = (
-                        "minimum_qnn_fitness not reached: "
-                        f"{candidate_fitness} < {order.minimum_qnn_fitness}"
-                    )
-                elif (
-                    baseline_fitness is not None
-                    and float(candidate_fitness) - float(baseline_fitness)
-                    < float(order.minimum_qnn_margin)
-                ):
-                    accepted = False
-                    rejection_reason = (
-                        "minimum_qnn_margin not reached: "
-                        f"{float(candidate_fitness) - float(baseline_fitness)} "
-                        f"< {order.minimum_qnn_margin}"
-                    )
         self._write_metadata(
             artifact,
             order,
@@ -978,13 +656,24 @@ class Trainer:
             str(self.training_device),
             accepted,
             rejection_reason,
-            qnn_fitness,
         )
-        memory_id = self._memorizer.store_tnn_artifact(
-            source_directory=str(artifact),
-            tnn_id=order.target_tnn_id,
-            version=version,
-        )
+        if accepted:
+            memory_id = self._memorizer.store_tnn_artifact(
+                source_directory=str(artifact),
+                tnn_id=order.target_tnn_id,
+                version=version,
+            )
+        else:
+            memory_id = self._memorizer.create(
+                {
+                    "order_id": order.order_id,
+                    "tnn_id": order.target_tnn_id,
+                    "version": version,
+                    "accepted": False,
+                    "rejection_reason": rejection_reason,
+                },
+                "training_report",
+            )
         return TrainingResult(
             order_id=order.order_id,
             tnn_id=order.target_tnn_id,
@@ -994,7 +683,6 @@ class Trainer:
                 **averaged_train,
                 "evaluation": averaged_eval,
                 "regression": averaged_regression,
-                "qnn_fitness": qnn_fitness,
             },
             report_memory_id=memory_id,
             weights_path=str(artifact / "weights.pt"),
@@ -1014,18 +702,35 @@ class Trainer:
         order: TrainingOrder,
         version: str,
     ) -> tuple[dict[str, Any], Path, TinyNN]:
-        model_memory_id = definition.get("model_memory_id")
-        if not model_memory_id:
-            raise ValueError("Python mode requires model_memory_id")
-        resolved = self._memorizer.resolve_tnn_artifact(str(model_memory_id))
         model_path = artifact / "model.py"
-        shutil.copy2(resolved["model_path"], model_path)
+        model_memory_id = definition.get("model_memory_id")
+        source_model_path = definition.get("model_path")
+        resolved: dict[str, Any] | None = None
+        if model_memory_id:
+            resolved = self._memorizer.resolve_tnn_artifact(str(model_memory_id))
+            source_model_path = resolved["model_path"]
+        if not source_model_path:
+            raise ValueError("Python mode requires model_path or model_memory_id")
+        shutil.copy2(Path(source_model_path), model_path)
         tnn = _import_tnn_model(model_path, str(definition.get("factory", "create_tnn")))
-        if order.continue_training:
+        if order.continue_training and resolved is not None:
             tnn.load_weights(resolved["weights_path"], map_location="cpu")
-        structure = json.loads(Path(resolved["structure_path"]).read_text(encoding="utf-8"))
+        elif order.continue_training:
+            weights_path = definition.get("weights_path")
+            if not weights_path:
+                raise ValueError(
+                    "continue_training with model_path requires weights_path"
+                )
+            tnn.load_weights(str(weights_path), map_location="cpu")
+        if resolved is not None:
+            structure = json.loads(
+                Path(resolved["structure_path"]).read_text(encoding="utf-8")
+            )
+        else:
+            structure = copy.deepcopy(definition.get("structure") or {})
         structure.setdefault("input_schema", tnn.get_input_schema())
         structure.setdefault("output_schema", tnn.get_output_schema())
+        structure.setdefault("target_schema", tnn.get_output_schema())
         structure.setdefault("training", {})
         structure["_tnn_id"] = order.target_tnn_id
         structure["_version"] = version
@@ -1042,9 +747,14 @@ class Trainer:
                 if not isinstance(candidate, dict):
                     continue
                 if candidate.get("experience_version") == 1:
-                    converted = self._experience_sample(candidate, structure)
-                    if converted is not None:
-                        samples.append(converted)
+                    converted = candidate.get("training_sample")
+                    if isinstance(converted, dict):
+                        inputs = converted.get("inputs")
+                        targets = converted.get("targets")
+                        if isinstance(inputs, dict) and isinstance(targets, dict):
+                            samples.append(
+                                {"inputs": dict(inputs), "targets": dict(targets)}
+                            )
                     continue
                 if "inputs" in candidate and "targets" in candidate:
                     samples.append(candidate)
@@ -1068,142 +778,6 @@ class Trainer:
                 ):
                     samples.append({"inputs": inputs, "targets": targets})
         return samples
-
-    def _experience_sample(
-        self,
-        experience: dict[str, Any],
-        structure: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if structure.get("runtime", {}).get("role") == "qnn":
-            return self._qnn_experience_sample(experience, structure)
-        state = experience.get("state", {})
-        teacher = experience.get("teacher", {})
-        objects = teacher.get("objects", [])
-        if not isinstance(state, dict) or not isinstance(objects, list):
-            return None
-        target_classes = {
-            str(item)
-            for item in experience.get("task", {}).get("target_classes", [])
-        }
-        target = next(
-            (
-                item
-                for item in objects
-                if isinstance(item, dict)
-                and (
-                    not target_classes
-                    or str(item.get("class")) in target_classes
-                )
-            ),
-            None,
-        )
-        if target is None:
-            return None
-        screen_memory_id = state.get("screen_memory_id")
-        if not screen_memory_id:
-            return None
-        screen = self._memorizer.read(str(screen_memory_id))
-        input_schema = structure["input_schema"]
-        target_schema = structure.get(
-            "target_schema", structure["output_schema"]
-        )
-        inputs: dict[str, Any] = {}
-        for name, schema in input_schema.items():
-            if name in {"screen", "image"}:
-                inputs[name] = self._prepare_experience_input(screen, schema)
-            elif name == "cursor":
-                cursor = state.get("cursor", {})
-                inputs[name] = [cursor.get("x", 0), cursor.get("y", 0)]
-            elif name in state:
-                inputs[name] = state[name]
-        targets: dict[str, Any] = {}
-        for name in target_schema:
-            if name in {"target_center", "mouse_position"}:
-                center = target.get("center")
-                shape = getattr(screen, "shape", ())
-                if (
-                    name == "target_center"
-                    and isinstance(center, (list, tuple))
-                    and len(shape) >= 2
-                    and shape[0]
-                    and shape[1]
-                ):
-                    targets[name] = [
-                        float(center[0]) / float(shape[1]),
-                        float(center[1]) / float(shape[0]),
-                    ]
-                else:
-                    targets[name] = center
-            elif name == "target_present":
-                targets[name] = [1.0]
-            elif name == "target_class":
-                targets[name] = target.get("class_index", 0)
-            elif name in target:
-                targets[name] = target[name]
-        if len(inputs) != len(input_schema) or len(targets) != len(target_schema):
-            return None
-        return {"inputs": inputs, "targets": targets}
-
-    def _qnn_experience_sample(
-        self,
-        experience: dict[str, Any],
-        structure: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        from eve.core.qnn import action_vector
-
-        state = experience.get("state", {})
-        action = experience.get("action", {})
-        environment = experience.get("environment", {})
-        screen_memory_id = (
-            state.get("screen_memory_id") if isinstance(state, dict) else None
-        )
-        if (
-            not screen_memory_id
-            or not isinstance(action, dict)
-            or not isinstance(environment, dict)
-        ):
-            return None
-        screen = self._memorizer.read(str(screen_memory_id))
-        shape = getattr(screen, "shape", ())
-        if len(shape) < 2 or not shape[0] or not shape[1]:
-            return None
-        try:
-            encoded_action = action_vector(
-                action,
-                width=int(shape[1]),
-                height=int(shape[0]),
-            )
-        except (TypeError, ValueError):
-            return None
-        reward = environment.get("reward")
-        if reward is None:
-            reward = 1.0 if environment.get("hit") else -1.0
-        reward = min(1.0, max(-1.0, float(reward)))
-        return {
-            "inputs": {
-                "image": self._prepare_experience_input(
-                    screen, structure["input_schema"]["image"]
-                ),
-                "action": encoded_action,
-            },
-            "targets": {"reward": [reward]},
-        }
-
-    @staticmethod
-    def _prepare_experience_input(value: Any, schema: dict[str, Any]) -> Any:
-        if schema.get("preprocess") != "screen_rgb_64":
-            return value
-        tensor = torch.as_tensor(value)
-        if tensor.ndim != 3 or tensor.shape[-1] < 3:
-            raise ValueError("screen_rgb_64 requires an HWC screen image")
-        tensor = tensor[..., :3].flip(-1).permute(2, 0, 1).float() / 255.0
-        tensor = torch.nn.functional.interpolate(
-            tensor.unsqueeze(0),
-            size=(64, 64),
-            mode="bilinear",
-            align_corners=False,
-        )
-        return tensor.squeeze(0).tolist()
 
     @staticmethod
     def _batches(
@@ -1243,7 +817,6 @@ class Trainer:
         training_device: str,
         accepted: bool,
         rejection_reason: str | None,
-        qnn_fitness: dict[str, Any],
     ) -> None:
         documents = {
             "structure.json": structure,
@@ -1264,7 +837,6 @@ class Trainer:
                 "train_metrics": train_metrics,
                 "evaluation_metrics": eval_metrics,
                 "regression_metrics": regression_metrics,
-                "qnn_fitness": qnn_fitness,
                 "accepted": accepted,
                 "rejection_reason": rejection_reason,
             },

@@ -47,6 +47,7 @@ def _result(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
+        "candidate_id": action_id,
         "action_id": action_id,
         "kind": "keyboard",
         "mode": mode,

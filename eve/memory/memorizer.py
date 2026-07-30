@@ -84,9 +84,9 @@ class Memorizer:
         self._written_count = 0
         self._dropped_count = 0
         self._failed_count = 0
-        self._review_thread: threading.Thread | None = None
-        self._review_stop = threading.Event()
-        self._review_status: dict[str, Any] = {
+        self._promotion_thread: threading.Thread | None = None
+        self._promotion_stop = threading.Event()
+        self._promotion_status: dict[str, Any] = {
             "state": "idle",
             "total": 0,
             "processed": 0,
@@ -119,7 +119,7 @@ class Memorizer:
         self._writer_thread.start()
 
     def stop_writer(self, timeout_s: float = 3.0, *, flush: bool = True) -> None:
-        self.stop_review(timeout_s)
+        self.stop_promotion(timeout_s)
         failure: Exception | None = None
         if flush:
             try:
@@ -268,18 +268,30 @@ class Memorizer:
             return True
 
     def promote_to_mtm(self, memory_id: str) -> None:
-        if memory_id not in self.catalog:
-            raise KeyError(memory_id)
+        with self._lock:
+            if memory_id not in self.catalog:
+                raise KeyError(memory_id)
+            self._promote_to_mtm_locked(memory_id)
+
+    def promote_to_ltm(self, memory_id: str) -> None:
+        with self._lock:
+            if memory_id not in self.catalog:
+                raise KeyError(memory_id)
+            if memory_id not in self.mtm:
+                raise ValueError("memory must pass through MTM before LTM")
+            self.mtm.discard(memory_id)
+            self.ltm.add(memory_id)
+            self._append_catalog({"op": "promote_ltm", "memory_id": memory_id})
+
+    def _promote_to_mtm_locked(self, memory_id: str) -> None:
+        self.stm = [item for item in self.stm if item != memory_id]
         self.mtm.add(memory_id)
         self._append_catalog({"op": "promote", "memory_id": memory_id})
 
-    def promote_to_ltm(self, memory_id: str) -> None:
-        if memory_id not in self.catalog:
-            raise KeyError(memory_id)
-        if memory_id not in self.mtm:
-            raise ValueError("memory must pass through MTM before LTM")
-        self.ltm.add(memory_id)
-        self._append_catalog({"op": "promote_ltm", "memory_id": memory_id})
+    def _append_to_stm_locked(self, memory_id: str) -> None:
+        self.stm.append(memory_id)
+        while len(self.stm) > self.stm_limit:
+            self._promote_to_mtm_locked(self.stm[0])
 
     @property
     def ltm_count(self) -> int:
@@ -405,48 +417,48 @@ class Memorizer:
             default=None,
         )
 
-    def force_review(self) -> bool:
-        if self._review_thread is not None and self._review_thread.is_alive():
+    def force_promotion(self) -> bool:
+        if (
+            self._promotion_thread is not None
+            and self._promotion_thread.is_alive()
+        ):
             return False
-        self._review_stop.clear()
-        self._review_thread = threading.Thread(
-            target=self._review_loop,
-            name="eve-memory-review",
+        self._promotion_stop.clear()
+        self._promotion_thread = threading.Thread(
+            target=self._promotion_loop,
+            name="eve-memory-promotion",
         )
-        self._review_thread.start()
+        self._promotion_thread.start()
         return True
 
-    def stop_review(self, timeout_s: float = 3.0) -> None:
-        self._review_stop.set()
-        thread = self._review_thread
+    def stop_promotion(self, timeout_s: float = 3.0) -> None:
+        self._promotion_stop.set()
+        thread = self._promotion_thread
         if thread is not None:
             thread.join(timeout_s)
             if thread.is_alive():
-                raise RuntimeError("memory review did not stop")
-        self._review_thread = None
+                raise RuntimeError("memory promotion did not stop")
+        self._promotion_thread = None
 
     @property
-    def review_running(self) -> bool:
-        return self._review_thread is not None and self._review_thread.is_alive()
+    def promotion_running(self) -> bool:
+        return bool(
+            self._promotion_thread is not None
+            and self._promotion_thread.is_alive()
+        )
 
-    def review_status(self) -> dict[str, Any]:
-        return dict(self._review_status)
+    def promotion_status(self) -> dict[str, Any]:
+        return dict(self._promotion_status)
 
-    def _review_loop(self) -> None:
+    def _promotion_loop(self) -> None:
         started = time.monotonic()
-        to_ltm = [
-            memory_id
-            for memory_id in list(self.stm)
-            if memory_id in self.mtm and memory_id not in self.ltm
-        ]
-        to_mtm = [
-            memory_id for memory_id in list(self.stm) if memory_id not in self.mtm
-        ]
+        to_ltm = list(self.mtm)
+        to_mtm = list(self.stm)
         candidates = [("ltm", item) for item in to_ltm] + [
             ("mtm", item) for item in to_mtm
         ]
         total = len(candidates)
-        self._review_status.update(
+        self._promotion_status.update(
             {
                 "state": "running",
                 "total": total,
@@ -460,8 +472,8 @@ class Memorizer:
             promoted_mtm = 0
             promoted_ltm = 0
             for index, (target, memory_id) in enumerate(candidates, start=1):
-                if self._review_stop.is_set():
-                    self._review_status["state"] = "cancelled"
+                if self._promotion_stop.is_set():
+                    self._promotion_status["state"] = "cancelled"
                     return
                 if target == "ltm":
                     self.promote_to_ltm(memory_id)
@@ -472,14 +484,14 @@ class Memorizer:
                 elapsed = max(time.monotonic() - started, 1e-9)
                 rate = index / elapsed
                 remaining = total - index
-                self._review_status.update(
+                self._promotion_status.update(
                     {
                         "processed": index,
                         "remaining": remaining,
                         "eta_s": remaining / rate if rate > 0 else None,
                     }
                 )
-            self._review_status.update(
+            self._promotion_status.update(
                 {
                     "state": "completed",
                     "eta_s": 0.0,
@@ -492,7 +504,7 @@ class Memorizer:
                 }
             )
         except Exception as exc:
-            self._review_status.update(
+            self._promotion_status.update(
                 {
                     "state": "error",
                     "last_error": f"{type(exc).__name__}: {exc}",
@@ -658,6 +670,11 @@ class Memorizer:
             self.ltm = {
                 item for item in data.get("ltm", []) if item in self.catalog
             }
+            self.mtm.difference_update(self.ltm)
+            self.stm = [
+                item for item in self.stm
+                if item not in self.mtm and item not in self.ltm
+            ]
         if not self.catalog_path.exists():
             return
         for line in self.catalog_path.read_text(encoding="utf-8").splitlines():
@@ -669,7 +686,6 @@ class Memorizer:
                 unit = MemoryUnit(**record["unit"])
                 self.catalog[unit.memory_id] = unit
                 self.stm.append(unit.memory_id)
-                self.stm = self.stm[-self.stm_limit :]
             elif operation == "delete":
                 memory_id = record["memory_id"]
                 self.catalog.pop(memory_id, None)
@@ -677,13 +693,21 @@ class Memorizer:
                 self.mtm.discard(memory_id)
                 self.ltm.discard(memory_id)
             elif operation == "promote" and record["memory_id"] in self.catalog:
+                self.stm = [
+                    item for item in self.stm if item != record["memory_id"]
+                ]
                 self.mtm.add(record["memory_id"])
             elif (
                 operation == "promote_ltm"
                 and record["memory_id"] in self.catalog
             ):
-                self.mtm.add(record["memory_id"])
+                self.stm = [
+                    item for item in self.stm if item != record["memory_id"]
+                ]
+                self.mtm.discard(record["memory_id"])
                 self.ltm.add(record["memory_id"])
+        assigned = set(self.stm) | self.mtm | self.ltm
+        self.mtm.update(set(self.catalog) - assigned)
 
     def _load_events(self) -> None:
         if not self.event_catalog_path.exists():
@@ -746,9 +770,8 @@ class Memorizer:
         )
         with self._lock:
             self.catalog[memory_id] = unit
-            self.stm.append(memory_id)
-            self.stm = self.stm[-self.stm_limit :]
             self._append_catalog({"op": "create", "unit": asdict(unit)})
+            self._append_to_stm_locked(memory_id)
 
     def _write_payload(self, memory_id: str, payload: Any) -> tuple[Path, bytes]:
         array = self._as_array(payload)
