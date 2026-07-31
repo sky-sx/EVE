@@ -22,21 +22,13 @@ from eve.output import keyboard, mouse, speak
 
 MAX_LOADED_TNN = 5
 OUTPUT_QUEUE_CAPACITY = 16
-SELF_UPDATE_MIN_IDLE_S = 1.0
-SELF_UPDATE_MAX_IDLE_S = 3.0
+LLM_PROTOCOL_VERSION = 2
+SNAPSHOT_VERSION = 2
+DEFAULT_AUTONOMOUS_INTERVAL_S = 2.0
 CORE_MODEL_DIR = Path(__file__).resolve().parent
 DEFAULT_LOCAL_LLM_PATH = str(CORE_MODEL_DIR / "deepseek-7b")
 DEFAULT_VLM_PATH = str(CORE_MODEL_DIR / "qwen")
 DEFAULT_YOLO_PATH = str(CORE_MODEL_DIR / "yolo26" / "weights" / "yolo26n.pt")
-DEFAULT_HORMONES = {
-    "dopamine": 0.5,
-    "serotonin": 0.5,
-    "norepinephrine": 0.5,
-    "oxytocin": 0.5,
-    "cortisol": 0.5,
-    "acetylcholine": 0.5,
-}
-
 MOUSE_ATOMS = (
     "move", "left_click", "left_double_click", "right_click",
     "middle_click", "scroll_up", "scroll_down", "left_drag",
@@ -78,6 +70,17 @@ def default_permissions(enabled: bool = False) -> dict[str, Any]:
         "keyboard": {name: bool(enabled) for name in SUPPORTED_KEYS},
         "send_text": bool(enabled),
         "speak": bool(enabled),
+    }
+
+
+def default_goodness() -> dict[str, Any]:
+    return {
+        "score": 0.0,
+        "confidence": 0.0,
+        "reason": "",
+        "target": "",
+        "evidence_memory_ids": [],
+        "updated_at_ns": 0,
     }
 
 
@@ -242,20 +245,30 @@ def create_runtime_state(
         raise ValueError(f"unknown output mode: {output_mode}")
     return {
         "cold_started": False,
-        "world": {},
+        "world": {
+            "perception": {
+                "visual": {},
+                "cursor": {},
+                "keyboard_activity": {},
+                "updated_at_ns": 0,
+            },
+            "interpretation": {},
+            "uncertainty": {},
+            "task_state": {},
+        },
         "myself": {
             "current_task": "",
             "what_im_thinking": "",
-            "hormones": dict(DEFAULT_HORMONES),
+            "cognition": {
+                "current_understanding": "",
+                "current_uncertainties": [],
+                "current_focus": [],
+            },
+            "goodness": default_goodness(),
             "tendencies": {
-                name: {
-                    "strength": 0.0,
-                    "updated_at_ns": 0,
-                    "suppressed": True,
-                    "reason": "permission_disabled",
-                }
+                name: 0.0
                 for name in (
-                    "mouse", "keyboard", "send_text", "speak",
+                    "mouse", "keyboard", "text_reply", "speech",
                     "thinking", "pause", "sleep",
                 )
             },
@@ -271,16 +284,21 @@ def create_runtime_state(
             "local_llm": {
                 "state": "not_configured",
                 "device": None,
-                "self_update_count": 0,
-                "self_update_failures": 0,
-                "last_self_update_at_ns": 0,
-                "next_self_update_due_ns": 0,
-                "self_update_interval_s": 0.0,
+                "attempt_count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "schema_failure_count": 0,
+                "repair_count": 0,
+                "last_latency_ms": 0.0,
+                "last_trigger_kind": None,
+                "last_error": None,
+                "next_thinking_due_ns": 0,
+                "autonomous_interval_s": DEFAULT_AUTONOMOUS_INTERVAL_S,
             },
             "vlm": {
                 "state": "not_configured",
                 "device": None,
-                "role": "teacher",
+                "role": "visual_interpretation",
             },
             "yolo": {
                 "state": "not_configured",
@@ -297,6 +315,7 @@ def create_runtime_state(
             "cloud_model": "",
             "cloud_timeout_s": 30.0,
             "cloud_enabled": False,
+            "autonomous_interval_s": DEFAULT_AUTONOMOUS_INTERVAL_S,
         },
         "permissions": default_permissions(allow_mock_actions),
         "resource_status": {},
@@ -322,7 +341,8 @@ def create_runtime_state(
         "conversation": [],
         "visual_result": None,
         "last_runtime_visual_result": None,
-        "teacher_visual_result": None,
+        "visual_interpretation_result": None,
+        "last_visual_interpretation_result": None,
         "cloud_result": None,
         "cuda_status": {},
         "last_feedback": None,
@@ -416,6 +436,76 @@ def _timed(
         "source": producer,
         "status": "active",
     }
+
+
+def _normalize_visual_detections(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        bbox = raw.get("bbox")
+        if not (
+            isinstance(bbox, (list, tuple))
+            and len(bbox) == 4
+            and all(isinstance(number, (int, float)) for number in bbox)
+        ):
+            continue
+        x1, y1, x2, y2 = (float(number) for number in bbox)
+        center = raw.get("center")
+        if not (
+            isinstance(center, (list, tuple))
+            and len(center) == 2
+            and all(isinstance(number, (int, float)) for number in center)
+        ):
+            center = [(x1 + x2) / 2.0, (y1 + y2) / 2.0]
+        normalized.append(
+            {
+                "class_name": str(
+                    raw.get("class_name", raw.get("class", "unknown"))
+                ),
+                "confidence": min(1.0, max(0.0, float(raw.get("confidence", 0.0)))),
+                "bbox": [x1, y1, x2, y2],
+                "center": [float(center[0]), float(center[1])],
+                "region": raw.get("region"),
+                **(
+                    {"class_id": int(raw["class_id"])}
+                    if isinstance(raw.get("class_id"), int)
+                    else {}
+                ),
+            }
+        )
+    return normalized
+
+
+def _project_visual_perception(
+    state: dict[str, Any], visual_result: dict[str, Any]
+) -> None:
+    """Project current machine vision into the code-owned World fact layer."""
+    if visual_result.get("status") != "current":
+        return
+    perception = state["world"]["perception"]
+    perception["visual"] = {
+        "reference_frame_id": visual_result.get(
+            "reference_frame_id", visual_result.get("frame_id")
+        ),
+        "captured_at_ns": int(
+            visual_result.get(
+                "reference_frame_timestamp_ns",
+                visual_result.get("captured_at_ns", 0),
+            )
+            or 0
+        ),
+        "source": str(visual_result.get("source", "unknown")),
+        "model": str(visual_result.get("model", visual_result.get("tnn_id", ""))),
+        "status": "current",
+        "detections": _normalize_visual_detections(
+            visual_result.get("detections", [])
+        ),
+        "updated_at_ns": time.monotonic_ns(),
+    }
+    perception["updated_at_ns"] = perception["visual"]["updated_at_ns"]
 
 
 def _resolve(
@@ -619,6 +709,7 @@ def _commit_tnn_result(
                 node["output_ttl_ns"],
                 tnn_id,
             )
+            _project_visual_perception(state, visual_result)
     action_output = node["action_output"]
     if action_output and action_output in outputs:
         action_value = _action_from_output(
@@ -954,11 +1045,10 @@ class CoreLoop:
         self._model_load_lock = threading.Lock()
         self._request_serial = 0
         self._last_autonomous_ns = 0
-        self._last_hormone_ns = time.monotonic_ns()
         self._thread: threading.Thread | None = None
         self._started_at_ns = 0
-        self._last_input_snapshot_ns = time.monotonic_ns()
         self._last_debug_snapshot_ns = 0
+        self._remembered_observation_frames: dict[int, str] = {}
         self._waiting_training_orders: dict[str, Any] = {}
         self._submitted_training_orders: dict[str, Any] = {}
 
@@ -996,12 +1086,16 @@ class CoreLoop:
             "user_text",
             priority="critical",
         )
+        observation_memory_id = self._remember_observation_bundle(
+            reason="user_triggered_thinking"
+        )
         request = {
             "request_id": request_id,
             "kind": "user",
             "message": text,
             "requested_at_ns": time.monotonic_ns(),
             "memory_id": memory_id,
+            "observation_memory_id": observation_memory_id,
         }
         try:
             self._llm_requests.put_nowait(request)
@@ -1026,18 +1120,18 @@ class CoreLoop:
         if status.get("state") in {"queued", "running"}:
             status["state"] = "cancel_requested"
 
-    def submit_teacher_review(
-        self, *, prompt: str = "请复核当前屏幕并生成可用于训练的视觉标签。"
+    def submit_visual_interpretation(
+        self, *, prompt: str = "请解释当前屏幕中的视觉对象与空间关系。"
     ) -> str:
         if not self.state["cold_started"]:
-            raise RuntimeError("cold start EVE before requesting VLM teacher")
+            raise RuntimeError("cold start EVE before requesting VLM interpretation")
         status = self.state["model_status"]["vlm"]
         if status.get("state") not in {
-            "configured", "teacher_idle", "ready"
+            "configured", "idle", "ready"
         }:
             raise RuntimeError(
                 status.get("error")
-                or f"VLM teacher is {status.get('state')}"
+                or f"VLM is {status.get('state')}"
             )
         sample = self.input_buffer.get_latest_screen()
         if sample is None:
@@ -1068,17 +1162,16 @@ class CoreLoop:
         )
         log_event(
             self.log_dir,
-            "vlm_teacher_review_requested",
+            "vlm_interpretation_requested",
             request_id=request_id,
             reference_frame_id=frame.frame_id,
         )
         return request_id
 
     def submit_visual_request(
-        self, *, prompt: str = "请复核当前屏幕并生成可用于训练的视觉标签。"
+        self, *, prompt: str = "请解释当前屏幕中的视觉对象与空间关系。"
     ) -> str:
-        """Backward-compatible alias for an explicit VLM teacher review."""
-        return self.submit_teacher_review(prompt=prompt)
+        return self.submit_visual_interpretation(prompt=prompt)
 
     def submit_runtime_visual_analysis(self) -> str:
         if not self.state["cold_started"]:
@@ -1138,6 +1231,56 @@ class CoreLoop:
             )
             if key in result
         }
+
+    def _remember_observation_bundle(
+        self, *, reason: str, frame: Any | None = None
+    ) -> str | None:
+        """Persist one real frame reference for an explicit important event."""
+        if frame is None:
+            sample = self.input_buffer.get_latest_screen()
+            if sample is None:
+                return None
+            frame = sample.value
+        frame_id = int(frame.frame_id)
+        screen_memory_id = self._remembered_observation_frames.get(frame_id)
+        if screen_memory_id is None:
+            import numpy as np
+
+            screen_memory_id = self.memorizer.enqueue(
+                np.array(frame.image, copy=True), "screen_image", priority="critical"
+            )
+            self._remembered_observation_frames[frame_id] = screen_memory_id
+            if len(self._remembered_observation_frames) > 32:
+                oldest = next(iter(self._remembered_observation_frames))
+                self._remembered_observation_frames.pop(oldest, None)
+        cursor_sample = self.input_buffer.get_latest_cursor()
+        cursor = cursor_sample.value if cursor_sample is not None else None
+        visual = self._visual_result_for_frame(frame_id)
+        bundle = {
+            "screen_memory_id": screen_memory_id,
+            "frame_id": frame_id,
+            "captured_at_ns": int(frame.captured_at_ns),
+            "visual_facts": visual or {},
+            "cursor": (
+                {
+                    "x": int(getattr(cursor, "x", 0)),
+                    "y": int(getattr(cursor, "y", 0)),
+                    "captured_at_ns": int(getattr(cursor, "captured_at_ns", 0)),
+                }
+                if cursor is not None
+                else {}
+            ),
+            "keyboard_activity": self.state["world"]["perception"].get(
+                "keyboard_activity", {}
+            ),
+            "current_task": self.state["myself"].get("current_task", ""),
+            "action_id": None,
+            "result_id": None,
+            "reason": str(reason),
+        }
+        return self.memorizer.enqueue(
+            bundle, "observation_bundle", priority="critical"
+        )
 
     def submit_cloud_request(self, message: str) -> str:
         if not self.state["cold_started"]:
@@ -1245,12 +1388,6 @@ class CoreLoop:
         if kind not in {"praise", "criticism"}:
             raise ValueError("feedback must be praise or criticism")
         now_ns = time.monotonic_ns()
-        deltas = (
-            {"dopamine": 0.08, "oxytocin": 0.06, "cortisol": -0.03}
-            if kind == "praise"
-            else {"dopamine": -0.04, "norepinephrine": 0.05, "cortisol": 0.08}
-        )
-        self._adjust_hormones(deltas, f"user_{kind}", now_ns)
         record = {
             "kind": kind,
             "timestamp_ns": now_ns,
@@ -1265,6 +1402,10 @@ class CoreLoop:
         self.state["blackboard"]["latest_feedback"] = _timed(
             record, now_ns, producer="user"
         )
+        observation_id = self._remember_observation_bundle(
+            reason=f"explicit_user_{kind}"
+        )
+        record["observation_memory_id"] = observation_id
         return record
 
     def submit_training_order(self, value: Any) -> str:
@@ -1292,8 +1433,12 @@ class CoreLoop:
             raise TypeError("training order must be a mapping or TrainingOrder")
         if not order.order_id or not order.target_tnn_id:
             raise ValueError("training order requires order_id and target_tnn_id")
-        if not order.definition:
-            raise ValueError("training order requires a model definition")
+        if bool(order.model_path) == bool(order.model_memory_id):
+            raise ValueError(
+                "training order requires exactly one model.py path or model memory id"
+            )
+        if not order.acceptance:
+            raise ValueError("training order requires acceptance criteria")
         existing = self.state["training_orders"].get(order.order_id)
         if existing and existing.get("state") in {
             "waiting_for_data",
@@ -1313,6 +1458,9 @@ class CoreLoop:
             "sample_ids": list(order.training_data),
             "queued_at_ns": time.monotonic_ns(),
         }
+        record["observation_memory_id"] = self._remember_observation_bundle(
+            reason="training_order"
+        )
         self.state["training_orders"][order.order_id] = record
         self._submitted_training_orders[order.order_id] = order
         self.state["blackboard"]["latest_training_order"] = _timed(
@@ -1321,8 +1469,8 @@ class CoreLoop:
         self.memorizer.enqueue(
             {
                 **record,
-                "definition": order.definition,
-                "teacher_mode": order.teacher_mode,
+                "model_path": order.model_path,
+                "model_memory_id": order.model_memory_id,
             },
             "training_order",
             priority="critical",
@@ -1503,9 +1651,9 @@ class CoreLoop:
         self,
         feedback: dict[str, Any],
     ) -> str:
-        teacher = self.state.get("last_teacher_visual_result")
+        teacher = self.state.get("last_visual_interpretation_result")
         if not isinstance(teacher, dict) or teacher.get("label_status") != "valid":
-            raise RuntimeError("a current valid VLM teacher result is required")
+            raise RuntimeError("a valid VLM visual result is required")
         now_ns = int(feedback.get("timestamp_ns", time.monotonic_ns()))
         cursor = self.input_buffer.get_latest_cursor()
         cursor_value = cursor.value if cursor is not None else None
@@ -1609,7 +1757,6 @@ class CoreLoop:
         self._stop_event.clear()
         self._failed_event.clear()
         self._started_at_ns = time.monotonic_ns()
-        self._last_input_snapshot_ns = self._started_at_ns
         self.state["cold_started"] = True
         self.state["paused"] = False
         self.state["lifecycle"].update(
@@ -1939,6 +2086,7 @@ class CoreLoop:
                         ttl_ns=1_000_000_000,
                         producer="yolo",
                     )
+                    _project_visual_perception(self.state, result)
             stats = self.state["runtime_stats"]
             stats["yolo_calls"] = stats.get("yolo_calls", 0) + 1
             status.update(
@@ -2009,11 +2157,16 @@ class CoreLoop:
         request: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        image_id = self.memorizer.enqueue(
-            request["image"],
-            "screen_image",
-            priority="normal",
+        frame = ScreenFrame(
+            frame_id=int(request["frame_id"]),
+            captured_at_ns=int(request["frame_timestamp_ns"]),
+            slot=-1,
+            image=request["image"],
         )
+        observation_id = self._remember_observation_bundle(
+            reason="explicit_runtime_visual_request", frame=frame
+        )
+        image_id = self._remembered_observation_frames.get(int(request["frame_id"]))
         result_id = self.memorizer.enqueue(
             result,
             "runtime_visual_result",
@@ -2021,7 +2174,7 @@ class CoreLoop:
         )
         if image_id and result_id:
             self.memorizer.create_event(
-                [image_id, result_id],
+                [item for item in (image_id, observation_id, result_id) if item],
                 summary="Requested runtime visual analysis",
                 tags=["runtime_visual", "yolo"],
             )
@@ -2218,10 +2371,9 @@ class CoreLoop:
                 try:
                     self._process_llm_request(request)
                 except Exception as exc:
-                    if request.get("kind") == "self_update":
-                        status["self_update_failures"] = (
-                            int(status.get("self_update_failures", 0)) + 1
-                        )
+                    status["failure_count"] = int(
+                        status.get("failure_count", 0)
+                    ) + 1
                     status.update(
                         {
                             "state": "ready",
@@ -2312,31 +2464,31 @@ class CoreLoop:
             return
         now_ns = time.monotonic_ns()
         interval_s = self._autonomous_interval_s()
-        status["self_update_interval_s"] = interval_s
-        status["next_self_update_due_ns"] = int(
+        status["autonomous_interval_s"] = interval_s
+        status["next_thinking_due_ns"] = int(
             self._last_autonomous_ns + interval_s * 1_000_000_000
         )
         if now_ns - self._last_autonomous_ns < interval_s * 1_000_000_000:
             return
         self._last_autonomous_ns = now_ns
-        request_id = f"self_update_{time.time_ns()}"
+        request_id = f"autonomous_{time.time_ns()}"
         try:
             self._llm_requests.put_nowait(
                 {
                     "request_id": request_id,
-                    "kind": "self_update",
-                    "message": "进行一次低频 self 状态更新。",
+                    "kind": "autonomous",
+                    "message": "进行一次自主的 LLM-based self update。",
                     "requested_at_ns": now_ns,
                     "memory_id": None,
                 }
             )
             status["queued_request_id"] = request_id
-            status["next_self_update_due_ns"] = int(
+            status["next_thinking_due_ns"] = int(
                 now_ns + interval_s * 1_000_000_000
             )
             debug_log(
                 self.log_dir,
-                "self_update_scheduled",
+                "autonomous_thinking_scheduled",
                 {
                     "request_id": request_id,
                     "interval_s": interval_s,
@@ -2344,25 +2496,15 @@ class CoreLoop:
                 },
             )
         except queue.Full:
-            status["self_update_queue_full"] = (
-                int(status.get("self_update_queue_full", 0)) + 1
+            status["queue_full_count"] = (
+                int(status.get("queue_full_count", 0)) + 1
             )
 
     def _autonomous_interval_s(self) -> float:
-        hormones = self.state["myself"]["hormones"]
-        alert = (
-            hormones["norepinephrine"]
-            + hormones["cortisol"]
-            + hormones["acetylcholine"]
-        ) / 3
-        return max(
-            SELF_UPDATE_MIN_IDLE_S,
-            min(
-                SELF_UPDATE_MAX_IDLE_S,
-                SELF_UPDATE_MAX_IDLE_S
-                - (SELF_UPDATE_MAX_IDLE_S - SELF_UPDATE_MIN_IDLE_S) * alert,
-            ),
+        configured = self.state["model_config"].get(
+            "autonomous_interval_s", DEFAULT_AUTONOMOUS_INTERVAL_S
         )
+        return max(0.25, float(configured))
 
     def _process_llm_request(self, request: dict[str, Any]) -> None:
         status = self.state["model_status"]["local_llm"]
@@ -2377,13 +2519,10 @@ class CoreLoop:
                 "started_at_ns": started_ns,
             }
         )
+        status["attempt_count"] = int(status.get("attempt_count", 0)) + 1
+        status["last_trigger_kind"] = request["kind"]
         context = self._llm_context(request)
-        if self.local_llm_backend is not None:
-            raw = self.local_llm_backend(context)
-        elif request["kind"] == "user":
-            raw = self._generate_local_chat(context)
-        else:
-            raw = self._generate_local_llm(context)
+        raw = self._invoke_local_llm(context)
         if self._cancel_generation.is_set():
             status.update(
                 {
@@ -2394,58 +2533,67 @@ class CoreLoop:
             )
             return
         try:
-            if (
-                self.local_llm_backend is None
-                and request["kind"] == "user"
-            ):
-                self._apply_chat_reply(request, str(raw))
-            else:
-                result = (
-                    raw
-                    if isinstance(raw, dict)
-                    else self._parse_model_json(str(raw))
-                )
-                self._apply_llm_result(request, result)
+            result = self._coerce_llm_result(raw, request)
+            self._apply_llm_result(request, result)
         except Exception as exc:
-            summary = self._safe_model_output_summary(str(raw))
-            error = {
-                "request_id": request["request_id"],
-                "message": f"{type(exc).__name__}: {exc}",
-                "raw_output_summary": summary,
-                "timestamp_ns": time.monotonic_ns(),
-            }
-            status.update(
-                {
-                    "state": "ready",
-                    "error": None,
-                    "last_request_state": "error",
-                    "last_request_error": error["message"],
-                    **error,
+            status["schema_failure_count"] = int(
+                status.get("schema_failure_count", 0)
+            ) + 1
+            try:
+                repair_context = {
+                    **context,
+                    "repair": {
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "invalid_output": self._safe_model_output_summary(str(raw)),
+                        "instruction": "Return one valid protocol v2 JSON object only.",
+                    },
                 }
-            )
-            self.state["blackboard"]["local_llm_error"] = _timed(
-                error, error["timestamp_ns"], producer="local_llm"
-            )
-            self.memorizer.enqueue(error, "local_llm_error", priority="critical")
-            if request.get("kind") == "self_update":
-                status["self_update_failures"] = (
-                    int(status.get("self_update_failures", 0)) + 1
+                status["attempt_count"] = int(status.get("attempt_count", 0)) + 1
+                repaired_raw = self._invoke_local_llm(repair_context)
+                status["repair_count"] = int(status.get("repair_count", 0)) + 1
+                result = self._coerce_llm_result(repaired_raw, request)
+                self._apply_llm_result(request, result)
+                raw = repaired_raw
+            except Exception as repair_exc:
+                status["failure_count"] = int(status.get("failure_count", 0)) + 1
+                status["last_error"] = f"{type(repair_exc).__name__}: {repair_exc}"
+                summary = self._safe_model_output_summary(str(raw))
+                error = {
+                    "request_id": request["request_id"],
+                    "message": f"{type(repair_exc).__name__}: {repair_exc}",
+                    "initial_error": f"{type(exc).__name__}: {exc}",
+                    "raw_output_summary": summary,
+                    "timestamp_ns": time.monotonic_ns(),
+                }
+                status.update(
+                    {
+                        "state": "ready",
+                        "error": None,
+                        "last_request_state": "error",
+                        "last_request_error": error["message"],
+                        **error,
+                    }
                 )
-                status["last_self_update_error"] = error["message"]
-            debug_log(
-                self.log_dir,
-                "llm_output_error",
-                error,
-                request_kind=request.get("kind"),
-            )
-            log_event(
-                self.log_dir,
-                "llm_request_failed",
-                request_id=request["request_id"],
-                request_kind=request["kind"],
-                error=error["message"],
-            )
-            return
+                self.state["blackboard"]["local_llm_error"] = _timed(
+                    error, error["timestamp_ns"], producer="local_llm"
+                )
+                self.memorizer.enqueue(
+                    error, "local_llm_error", priority="critical"
+                )
+                debug_log(
+                    self.log_dir,
+                    "llm_output_error",
+                    error,
+                    request_kind=request.get("kind"),
+                )
+                log_event(
+                    self.log_dir,
+                    "llm_request_failed",
+                    request_id=request["request_id"],
+                    request_kind=request["kind"],
+                    error=error["message"],
+                )
+                return
         finished_ns = time.monotonic_ns()
         duration_ms = (finished_ns - started_ns) / 1_000_000
         completed_count = int(status.get("completed_count", 0)) + 1
@@ -2455,6 +2603,7 @@ class CoreLoop:
                 "state": "ready",
                 "finished_at_ns": finished_ns,
                 "last_duration_ms": duration_ms,
+                "last_latency_ms": duration_ms,
                 "average_duration_ms": previous_average
                 + (duration_ms - previous_average) / completed_count,
                 "completed_count": completed_count,
@@ -2472,44 +2621,113 @@ class CoreLoop:
         )
         stats = self.state["runtime_stats"]
         stats["local_llm_calls"] = stats.get("local_llm_calls", 0) + 1
-        self._adjust_hormones(
-            {"dopamine": 0.002, "acetylcholine": 0.001},
-            "local_llm_success",
-            finished_ns,
-        )
+        status["success_count"] = int(status.get("success_count", 0)) + 1
+        status["last_error"] = None
 
     def _llm_context(self, request: dict[str, Any]) -> dict[str, Any]:
         related_ids = self.memorizer.search(keyword=request["message"][:32])[-5:]
+        now_ns = time.monotonic_ns()
+        blackboard = []
+        for key, item in list(self.state["blackboard"].items())[-30:]:
+            if not isinstance(item, dict):
+                continue
+            valid_until_ns = int(item.get("valid_until_ns", 0) or 0)
+            if valid_until_ns and now_ns > valid_until_ns:
+                continue
+            blackboard.append(
+                {
+                    "key": key,
+                    "value": _value_summary(item.get("value")),
+                    "producer": item.get("producer", ""),
+                    "valid_until_ns": valid_until_ns,
+                }
+            )
+
+        def memory_view(ids: Any, limit: int = 12) -> list[dict[str, Any]]:
+            rows = []
+            for memory_id in list(ids)[-limit:]:
+                unit = self.memorizer.get_unit(memory_id)
+                if unit is None:
+                    continue
+                rows.append(
+                    {
+                        "memory_id": memory_id,
+                        "type": unit.payload_type,
+                        "created_at_ns": unit.created_at_ns,
+                        "summary": _value_summary(self.memorizer.read(memory_id)),
+                    }
+                )
+            return rows
+
+        world = self.state["world"]
+        visual = world.get("perception", {}).get("visual", {})
+        visual_sentences = []
+        for item in visual.get("detections", [])[:20]:
+            if not isinstance(item, dict):
+                continue
+            center = item.get("center", [None, None])
+            bbox = item.get("bbox", [])
+            visual_sentences.append(
+                f"检测到 {item.get('class_name', 'unknown')}，"
+                f"置信度约 {float(item.get('confidence', 0.0)):.2f}，"
+                f"中心坐标 {center}，边界框 {bbox}"
+                + (
+                    f"，区域 {item['region']}"
+                    if item.get("region")
+                    else ""
+                )
+            )
+        visual_summary = "；".join(visual_sentences) or "当前帧未检测到对象"
         return {
+            "protocol_version": LLM_PROTOCOL_VERSION,
             "request_id": request["request_id"],
-            "kind": request["kind"],
+            "trigger_kind": request["kind"],
             "user_message": request["message"],
-            "current_task": self.state["myself"].get("current_task", ""),
-            "world": self.state["world"],
-            "myself": self.state["myself"],
-            "blackboard": {
-                key: _value_summary(value.get("value"))
-                for key, value in list(self.state["blackboard"].items())[-20:]
+            "observation_memory_id": request.get("observation_memory_id"),
+            "world_view": {
+                "perception_facts": world.get("perception", {}),
+                "interpretation": world.get("interpretation", {}),
+                "uncertainty": world.get("uncertainty", {}),
+                "task_state": world.get("task_state", {}),
+                "visual_summary": (
+                    f"当前视觉帧 {visual.get('reference_frame_id')}，"
+                    f"状态 {visual.get('status', 'none')}。{visual_summary}。"
+                ),
             },
+            "self_view": self.state["myself"],
+            "blackboard_view": blackboard,
             "related_memory": [
                 {"memory_id": memory_id, "payload": self.memorizer.read(memory_id)}
                 for memory_id in related_ids
             ],
-            "available_tnn": self.memorizer.list_tnn_artifacts(),
-            "loaded_tnn": sorted(self.state["loaded_tnn"]),
-            "active_tnn": sorted(self.state["active_tnn"]),
-            "hormones": self.state["myself"]["hormones"],
-            "tendencies": self.state["myself"]["tendencies"],
+            "memory_views": {
+                "stm_hot_recent": memory_view(self.memorizer.stm),
+                "mtm_working_set": memory_view(sorted(self.memorizer.mtm)),
+                "ltm_persisted": memory_view(sorted(self.memorizer.ltm)),
+            },
+            "tnn_view": {
+                "available": self.memorizer.list_tnn_artifacts(),
+                "loaded": sorted(self.state["loaded_tnn"]),
+                "active": sorted(self.state["active_tnn"]),
+            },
             "recent_conversation": self.state["conversation"][-8:],
         }
 
+    def _invoke_local_llm(self, context: dict[str, Any]) -> Any:
+        if self.local_llm_backend is not None:
+            return self.local_llm_backend(context)
+        return self._generate_local_llm(context)
+
     def _generate_local_llm(self, context: dict[str, Any]) -> str:
         system = (
-            "你是 EVE 的本地运行模型。只输出一个 JSON 对象，不输出隐藏推理。"
-            "字段必须为 reply, thinking_summary, world_update, myself_update, "
-            "blackboard_updates, active_tnn, memory_candidates。"
-            "可选字段 training_order 只能是 null 或完整的通用训练订单，"
-            "并显式携带模型定义和真实 teacher 语义。"
+            "你是 EVE 的统一 LLM-based self update loop。只输出一个 JSON 对象，"
+            "不得输出隐藏推理。protocol_version 必须为 2。字段为 reply, "
+            "thinking_summary, world_interpretation_update, "
+            "myself_cognition_update, goodness_update, blackboard_updates, "
+            "active_tnn, memory_actions, training_proposal。"
+            "用户触发时 reply 必须是非空字符串。你只能更新 world 的 interpretation、"
+            "uncertainty、task_state，绝不能改 perception。goodness.score 范围 [-1,1]，"
+            "confidence 范围 [0,1]。training_proposal 只是建议，不是可执行训练订单。"
         )
         user = json.dumps(context, ensure_ascii=False, default=_value_summary)
         return self._generate_from_messages(
@@ -2520,36 +2738,6 @@ class CoreLoop:
             max_new_tokens=512,
             suppress_reasoning=True,
         )
-
-    def _generate_local_chat(self, context: dict[str, Any]) -> str:
-        history = []
-        for exchange in self.state["conversation"][-8:]:
-            user = str(exchange.get("user", "")).strip()
-            reply = str(exchange.get("reply", "")).strip()
-            if user:
-                history.append({"role": "user", "content": user})
-            if reply:
-                history.append({"role": "assistant", "content": reply})
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是 EVE 的本地对话模型。直接、清楚地回答用户。"
-                    "不要输出 JSON，不要展示隐藏推理。"
-                ),
-            },
-            *history,
-            {"role": "user", "content": str(context["user_message"])},
-        ]
-        raw = self._generate_from_messages(
-            messages,
-            max_new_tokens=512,
-            suppress_reasoning=True,
-        )
-        reply = self._visible_model_reply(raw)
-        if not reply:
-            raise ValueError("local LLM returned no visible reply")
-        return reply
 
     def _generate_from_messages(
         self,
@@ -2607,57 +2795,6 @@ class CoreLoop:
         text = re.sub(r"^```(?:text)?\s*|\s*```$", "", text.strip())
         return text.strip()
 
-    def _apply_chat_reply(self, request: dict[str, Any], reply: str) -> None:
-        visible_reply = self._visible_model_reply(reply)
-        if not visible_reply:
-            raise ValueError("local LLM returned an empty reply")
-        now_ns = time.monotonic_ns()
-        exchange = {
-            "request_id": request["request_id"],
-            "kind": "user",
-            "user": request["message"],
-            "reply": visible_reply,
-            "thinking_summary": "",
-            "timestamp_ns": now_ns,
-        }
-        with self.state["_state_lock"]:
-            self.state["conversation"].append(exchange)
-            self.state["conversation"] = self.state["conversation"][-100:]
-            self.state["blackboard"]["latest_llm_reply"] = _timed(
-                exchange, now_ns, producer="local_llm"
-            )
-        reply_id = self.memorizer.enqueue(
-            exchange, "llm_reply", priority="critical"
-        )
-        related = [
-            memory_id
-            for memory_id in (request.get("memory_id"), reply_id)
-            if memory_id
-        ]
-        if related:
-            self.memorizer.create_event(
-                related,
-                summary="LLM user conversation",
-                tags=["llm", "chat"],
-            )
-        if self.local_llm_backend is None:
-            try:
-                self._llm_requests.put_nowait(
-                    {
-                        "request_id": f"self_update_{time.time_ns()}",
-                        "kind": "self_update",
-                        "message": request["message"],
-                        "requested_at_ns": now_ns,
-                        "memory_id": reply_id,
-                    }
-                )
-            except queue.Full:
-                self.state["blackboard"]["self_update_queue_warning"] = _timed(
-                    {"message": "self update request queue is full"},
-                    now_ns,
-                    producer="core",
-                )
-
     @staticmethod
     def _parse_model_json(raw: str) -> dict[str, Any]:
         decoder = json.JSONDecoder()
@@ -2678,7 +2815,7 @@ class CoreLoop:
         return redacted[:500]
 
     @classmethod
-    def _parse_teacher_objects(
+    def _parse_visual_objects(
         cls,
         raw: Any,
         *,
@@ -2690,7 +2827,7 @@ class CoreLoop:
             "objects", value.get("verified_detections", ())
         )
         if not isinstance(candidates, list):
-            raise TypeError("teacher objects must be an array")
+            raise TypeError("visual objects must be an array")
         objects: list[dict[str, Any]] = []
         for item in candidates:
             if not isinstance(item, dict):
@@ -2731,68 +2868,161 @@ class CoreLoop:
                 }
             )
         if not objects:
-            raise ValueError("teacher result contains no valid object labels")
+            raise ValueError("visual result contains no valid object labels")
         return objects
+
+    def _coerce_llm_result(
+        self, raw: Any, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        value = raw if isinstance(raw, dict) else self._parse_model_json(str(raw))
+        if int(value.get("protocol_version", LLM_PROTOCOL_VERSION)) != 2:
+            raise ValueError("unsupported LLM protocol_version")
+        reply = self._visible_model_reply(str(value.get("reply", "")))
+        if request.get("kind") == "user" and not reply:
+            raise ValueError("user-triggered LLM result requires reply")
+
+        world_update = value.get(
+            "world_interpretation_update", value.get("world_update", {})
+        )
+        if not isinstance(world_update, dict):
+            world_update = {}
+        world_update = {
+            key: item
+            for key, item in world_update.items()
+            if key in {"interpretation", "uncertainty", "task_state"}
+        }
+
+        cognition_update = value.get(
+            "myself_cognition_update", value.get("myself_update", {})
+        )
+        if not isinstance(cognition_update, dict):
+            cognition_update = {}
+        if "cognition" in cognition_update and isinstance(
+            cognition_update["cognition"], dict
+        ):
+            cognition_update = cognition_update["cognition"]
+
+        goodness_update = value.get("goodness_update", {})
+        if not isinstance(goodness_update, dict):
+            goodness_update = {}
+        goodness: dict[str, Any] = {}
+        for key in (
+            "score", "confidence", "reason", "target",
+            "evidence_memory_ids",
+        ):
+            if key in goodness_update:
+                goodness[key] = goodness_update[key]
+        if "score" in goodness:
+            try:
+                goodness["score"] = max(-1.0, min(1.0, float(goodness["score"])))
+            except (TypeError, ValueError):
+                goodness.pop("score", None)
+        if "confidence" in goodness:
+            try:
+                goodness["confidence"] = max(
+                    0.0, min(1.0, float(goodness["confidence"]))
+                )
+            except (TypeError, ValueError):
+                goodness.pop("confidence", None)
+        if "evidence_memory_ids" in goodness and not isinstance(
+            goodness["evidence_memory_ids"], list
+        ):
+            goodness.pop("evidence_memory_ids", None)
+
+        updates = value.get("blackboard_updates", [])
+        if not isinstance(updates, list):
+            updates = []
+        clean_updates = []
+        for update in updates[:20]:
+            if not isinstance(update, dict) or not str(update.get("key", "")):
+                continue
+            try:
+                ttl_ns = max(0, int(update.get("ttl_ns", 0)))
+            except (TypeError, ValueError):
+                ttl_ns = 0
+            clean_updates.append(
+                {
+                    "key": str(update["key"]),
+                    "value": update.get("value"),
+                    "ttl_ns": ttl_ns,
+                }
+            )
+
+        active_tnn = value.get("active_tnn", sorted(self.state["active_tnn"]))
+        if not isinstance(active_tnn, list):
+            active_tnn = sorted(self.state["active_tnn"])
+        desired = [str(item) for item in active_tnn]
+        if (
+            len(set(desired)) > MAX_LOADED_TNN
+            or set(desired) - set(self.state["loaded_tnn"])
+        ):
+            desired = sorted(self.state["active_tnn"])
+
+        memory_actions = value.get("memory_actions", [])
+        if not isinstance(memory_actions, list):
+            memory_actions = []
+        legacy_candidates = value.get("memory_candidates", [])
+        if isinstance(legacy_candidates, list):
+            memory_actions.extend(
+                {
+                    "action": "create",
+                    "payload": candidate,
+                    "payload_type": "llm_memory_candidate",
+                }
+                for candidate in legacy_candidates[:20]
+            )
+        memory_actions = [
+            item for item in memory_actions[:20] if isinstance(item, dict)
+        ]
+        proposal = value.get("training_proposal")
+        if proposal is None and isinstance(value.get("training_order"), dict):
+            proposal = value["training_order"]
+        if proposal is not None and not isinstance(proposal, dict):
+            proposal = None
+        return {
+            "protocol_version": 2,
+            "reply": reply,
+            "thinking_summary": str(value.get("thinking_summary", ""))[:2000],
+            "world_interpretation_update": world_update,
+            "myself_cognition_update": cognition_update,
+            "goodness_update": goodness,
+            "blackboard_updates": clean_updates,
+            "active_tnn": desired,
+            "memory_actions": memory_actions,
+            "training_proposal": proposal,
+        }
 
     def _apply_llm_result(
         self, request: dict[str, Any], result: dict[str, Any]
     ) -> None:
-        required = {
-            "reply", "thinking_summary", "world_update", "myself_update",
-            "blackboard_updates", "active_tnn", "memory_candidates",
-        }
-        missing = required - set(result)
-        if missing:
-            raise ValueError(f"missing LLM result fields: {sorted(missing)}")
-        if not isinstance(result["world_update"], dict) or not isinstance(
-            result["myself_update"], dict
-        ):
-            raise TypeError("world_update and myself_update must be objects")
-        if not isinstance(result["blackboard_updates"], list):
-            raise TypeError("blackboard_updates must be an array")
-        if not isinstance(result["active_tnn"], list):
-            raise TypeError("active_tnn must be an array")
-        if not isinstance(result["memory_candidates"], list):
-            raise TypeError("memory_candidates must be an array")
-        training_order = result.get("training_order")
-        if training_order is not None and not isinstance(training_order, dict):
-            raise TypeError("training_order must be null or an object")
         desired = {str(item) for item in result["active_tnn"]}
-        if len(desired) > MAX_LOADED_TNN:
-            raise ValueError(f"active_tnn exceeds {MAX_LOADED_TNN}")
-        if desired - set(self.state["loaded_tnn"]):
-            raise ValueError("active_tnn contains unloaded TNN")
-        updates: list[tuple[str, Any, int]] = []
-        for update in result["blackboard_updates"]:
-            if not isinstance(update, dict) or "key" not in update:
-                raise TypeError("blackboard update must contain key")
-            ttl_ns = int(update.get("ttl_ns", 0))
-            if ttl_ns < 0:
-                raise ValueError("blackboard ttl_ns must be non-negative")
-            updates.append((str(update["key"]), update.get("value"), ttl_ns))
         now_ns = time.monotonic_ns()
-        world_keys = sorted(str(key) for key in result["world_update"])
-        self_keys = sorted(str(key) for key in result["myself_update"])
+        world_update = result["world_interpretation_update"]
+        cognition_update = result["myself_cognition_update"]
         exchange = {
             "request_id": request["request_id"],
             "kind": request["kind"],
             "user": request["message"] if request["kind"] == "user" else "",
-            "reply": str(result["reply"]),
+            "reply": result["reply"],
             "thinking_summary": str(result["thinking_summary"]),
             "timestamp_ns": now_ns,
         }
         with self.state["_state_lock"]:
-            self.state["world"].update(result["world_update"])
-            self.state["myself"].update(result["myself_update"])
+            for section, value in world_update.items():
+                if isinstance(value, dict):
+                    self.state["world"][section] = dict(value)
+            self.state["myself"]["cognition"].update(cognition_update)
             self.state["myself"]["what_im_thinking"] = str(
                 result["thinking_summary"]
             )[:1000]
-            for key, value, ttl_ns in updates:
-                self.state["blackboard"][key] = _timed(
-                    value,
-                    now_ns,
-                    ttl_ns,
-                    "local_llm",
+            if result["goodness_update"]:
+                self.state["myself"]["goodness"].update(
+                    result["goodness_update"]
+                )
+                self.state["myself"]["goodness"]["updated_at_ns"] = now_ns
+            for update in result["blackboard_updates"]:
+                self.state["blackboard"][update["key"]] = _timed(
+                    update.get("value"), now_ns, update["ttl_ns"], "local_llm"
                 )
             if not self.set_active_tnn(desired):
                 raise ValueError("active_tnn update rejected")
@@ -2802,24 +3032,17 @@ class CoreLoop:
             self.state["blackboard"]["latest_llm_result"] = _timed(
                 exchange, now_ns, producer="local_llm"
             )
-            if request["kind"] == "self_update":
+            if request["kind"] in {"autonomous", "self_update"}:
                 status = self.state["model_status"]["local_llm"]
-                status["self_update_count"] = (
-                    int(status.get("self_update_count", 0)) + 1
-                )
-                status["last_self_update_at_ns"] = now_ns
-                status["last_self_update_request_id"] = request["request_id"]
-                status["last_self_update_summary"] = str(
-                    result["thinking_summary"]
-                )[:1000]
-                status["last_self_update_error"] = None
-                status["last_world_update_keys"] = world_keys
-                status["last_self_update_keys"] = self_keys
+                status["last_autonomous_at_ns"] = now_ns
+            self.state["model_status"]["local_llm"]["last_summary"] = str(
+                result["thinking_summary"]
+            )[:1000]
         reply_id = self.memorizer.enqueue(
             exchange,
             (
                 "self_update"
-                if request["kind"] == "self_update"
+                if request["kind"] in {"autonomous", "self_update"}
                 else "llm_reply"
             ),
             priority="critical",
@@ -2832,16 +3055,25 @@ class CoreLoop:
             "thinking_summary",
             priority="normal",
         )
-        candidate_ids = []
-        for candidate in result["memory_candidates"][:20]:
-            memory_id = self.memorizer.enqueue(
-                candidate, "llm_memory_candidate", priority="normal"
+        try:
+            action_results = self.memorizer.apply_memory_actions(
+                result["memory_actions"]
             )
-            if memory_id:
-                candidate_ids.append(memory_id)
+        except Exception as exc:
+            action_results = [
+                {"error": f"{type(exc).__name__}: {exc}"}
+            ]
+            self.state["blackboard"]["memory_action_error"] = _timed(
+                action_results[0], now_ns, producer="memorizer"
+            )
         related = [
             memory_id
-            for memory_id in (request.get("memory_id"), reply_id, thought_id, *candidate_ids)
+            for memory_id in (
+                request.get("memory_id"),
+                request.get("observation_memory_id"),
+                reply_id,
+                thought_id,
+            )
             if memory_id
         ]
         if related:
@@ -2850,22 +3082,21 @@ class CoreLoop:
                 summary=f"LLM {request['kind']} exchange",
                 tags=["llm", request["kind"]],
             )
-        if training_order is not None:
-            self.submit_training_order(training_order)
+        proposal = result.get("training_proposal")
+        if proposal is not None:
+            proposal_id = self.memorizer.enqueue(
+                proposal, "training_proposal", priority="normal"
+            )
+            self.state["blackboard"]["latest_training_proposal"] = _timed(
+                {"memory_id": proposal_id, "proposal": proposal},
+                now_ns,
+                producer="local_llm",
+            )
         debug_log(
             self.log_dir,
-            "self_update_output" if request["kind"] == "self_update" else "llm_output",
-            {
-                "request_id": request["request_id"],
-                "kind": request["kind"],
-                "reply": str(result["reply"]),
-                "thinking_summary": str(result["thinking_summary"]),
-                "world_update": result["world_update"],
-                "self_update": result["myself_update"],
-                "blackboard_updates": result["blackboard_updates"],
-                "active_tnn": result["active_tnn"],
-                "memory_candidates": result["memory_candidates"],
-            },
+            "llm_protocol_output",
+            {**result, "request_id": request["request_id"], "kind": request["kind"],
+             "memory_action_results": action_results},
         )
 
     def _vlm_worker(self) -> None:
@@ -2876,9 +3107,9 @@ class CoreLoop:
                 if path:
                     status.update(
                         {
-                            "state": "teacher_idle",
+                            "state": "idle",
                             "path": path,
-                            "role": "teacher",
+                            "role": "visual_interpretation",
                             "error": None,
                         }
                     )
@@ -2929,7 +3160,7 @@ class CoreLoop:
                     )
                     log_event(
                         self.log_dir,
-                        "vlm_teacher_review_failed",
+                        "vlm_interpretation_failed",
                         request_id=request.get("request_id"),
                         error=f"{type(exc).__name__}: {exc}",
                     )
@@ -3021,7 +3252,7 @@ class CoreLoop:
         stale = latest_frame_id != request["frame_id"]
         height, width = request["image"].shape[:2]
         try:
-            objects = self._parse_teacher_objects(
+            objects = self._parse_visual_objects(
                 analysis, width=width, height=height
             )
             label_status = "valid"
@@ -3033,7 +3264,7 @@ class CoreLoop:
         result = {
             "request_id": request["request_id"],
             "model": status.get("model", "injected"),
-            "role": "teacher",
+            "role": "visual_interpretation",
             "reference_frame_id": request["frame_id"],
             "reference_frame_timestamp_ns": request["frame_timestamp_ns"],
             "requested_at_ns": request["requested_at_ns"],
@@ -3052,28 +3283,38 @@ class CoreLoop:
             ),
             "error": None,
         }
-        image_id = self.memorizer.enqueue(
-            request["image"], "screen_image", priority="normal"
+        observation_id = self._remember_observation_bundle(
+            reason="vlm_visual_interpretation",
+            frame=ScreenFrame(
+                frame_id=int(request["frame_id"]),
+                captured_at_ns=int(request["frame_timestamp_ns"]),
+                slot=-1,
+                image=request["image"],
+            ),
+        )
+        image_id = self._remembered_observation_frames.get(
+            int(request["frame_id"])
         )
         result["screen_memory_id"] = image_id
+        result["observation_memory_id"] = observation_id
         result_id = self.memorizer.enqueue(
-            result, "vlm_teacher_result", priority="critical"
+            result, "vlm_visual_interpretation", priority="critical"
         )
         published_result = {**result, "result_memory_id": result_id}
-        self.state["last_teacher_visual_result"] = published_result
+        self.state["last_visual_interpretation_result"] = published_result
         if not stale and label_status == "valid":
-            self.state["teacher_visual_result"] = published_result
-            self.state["blackboard"]["latest_teacher_review"] = _timed(
-                published_result, finished_ns, producer="vlm_teacher"
+            self.state["visual_interpretation_result"] = published_result
+            self.state["blackboard"]["latest_visual_interpretation"] = _timed(
+                published_result, finished_ns, producer="vlm"
             )
-        self.state["blackboard"]["latest_vlm_teacher_result"] = _timed(
-            published_result, finished_ns, producer="vlm_teacher"
+        self.state["blackboard"]["latest_vlm_result"] = _timed(
+            published_result, finished_ns, producer="vlm"
         )
         if image_id and result_id:
             self.memorizer.create_event(
                 [image_id, result_id],
-                summary="VLM teacher screen review",
-                tags=["vlm", "teacher", result["status"]],
+                summary="VLM visual interpretation",
+                tags=["vlm", "visual_interpretation", result["status"]],
             )
         status.update(
             {
@@ -3087,16 +3328,11 @@ class CoreLoop:
         stats["vlm_calls"] = stats.get("vlm_calls", 0) + 1
         log_event(
             self.log_dir,
-            "vlm_teacher_review_completed",
+            "vlm_interpretation_completed",
             request_id=request["request_id"],
             reference_frame_id=request["frame_id"],
             status=result["status"],
             duration_ms=(finished_ns - started_ns) / 1_000_000,
-        )
-        self._adjust_hormones(
-            {"acetylcholine": 0.002},
-            "vlm_success",
-            finished_ns,
         )
 
     def _generate_vlm(self, request: dict[str, Any]) -> str:
@@ -3555,15 +3791,6 @@ class CoreLoop:
                     before_output=self._mark_expected_output,
                 )
                 self._remember_chain(action, result)
-                now_ns = time.monotonic_ns()
-                if result.get("blocked"):
-                    self._adjust_hormones(
-                        {"cortisol": 0.004}, "permission_block", now_ns
-                    )
-                elif result.get("executed") or result.get("simulated"):
-                    self._adjust_hormones(
-                        {"dopamine": 0.002}, "action_success", now_ns
-                    )
             except Exception as exc:
                 self._record_error("output", exc, critical=True)
             finally:
@@ -3609,13 +3836,17 @@ class CoreLoop:
             self.state[name] = input_state[name]
         self.state["resource_status"]["capture"] = input_state["capture"]
         summary = self._input_summary(input_state)
+        perception = self.state["world"]["perception"]
+        perception["cursor"] = dict(summary.get("cursor") or {})
+        perception["keyboard_activity"] = dict(
+            summary.get("keyboard_activity") or {}
+        )
+        perception["updated_at_ns"] = now_ns
         self.state["blackboard"]["latest_input_summary"] = _timed(
             summary, now_ns, producer="input_buffer"
         )
         self._clean_blackboard(now_ns)
-        self._update_hormones(now_ns)
         self._update_resources(now_ns)
-        self._maybe_remember_input(now_ns, summary)
 
         self._collect_tnn_completions()
         self._schedule_due_tnn(now_ns)
@@ -3692,11 +3923,19 @@ class CoreLoop:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         snapshot = {
-            name: self.state[name]
-            for name in (
-                "world", "myself", "tnn_status", "loop_status",
-                "resource_status", "latest_error", "model_config"
-            )
+            "snapshot_version": SNAPSHOT_VERSION,
+            "world": {
+                name: self.state["world"].get(name, {})
+                for name in ("interpretation", "uncertainty", "task_state")
+            },
+            "myself": {
+                name: self.state["myself"].get(name)
+                for name in (
+                    "current_task", "what_im_thinking", "cognition",
+                    "goodness", "tendencies",
+                )
+            },
+            "model_config": dict(self.state["model_config"]),
         }
         snapshot["active_tnn"] = sorted(self.state["active_tnn"])
         snapshot["loaded_tnn"] = [
@@ -3711,9 +3950,6 @@ class CoreLoop:
             }
             for node in self.state["loaded_tnn"].values()
         ]
-        snapshot["blackboard"] = dict(
-            list(self.state["blackboard"].items())[-50:]
-        )
         destination.write_text(
             json.dumps(snapshot, ensure_ascii=False, indent=2, default=repr),
             encoding="utf-8",
@@ -3738,8 +3974,25 @@ class CoreLoop:
             return path
 
         return (
-            write("world.md", "world", self.state["world"]),
-            write("self.md", "self", self.state["myself"]),
+            write(
+                "world.md",
+                "world",
+                {
+                    name: self.state["world"].get(name, {})
+                    for name in ("interpretation", "uncertainty", "task_state")
+                },
+            ),
+            write(
+                "self.md",
+                "self",
+                {
+                    name: self.state["myself"].get(name)
+                    for name in (
+                        "current_task", "what_im_thinking", "cognition",
+                        "goodness", "tendencies",
+                    )
+                },
+            ),
         )
 
     def load_snapshot(self, path: str | Path) -> bool:
@@ -3748,10 +4001,26 @@ class CoreLoop:
         if not source.is_file():
             return False
         snapshot = json.loads(source.read_text(encoding="utf-8"))
-        for name in ("world", "myself", "blackboard"):
-            value = snapshot.get(name)
-            if isinstance(value, dict):
-                self.state[name].update(value)
+        saved_world = snapshot.get("world", {})
+        if isinstance(saved_world, dict):
+            for name in ("interpretation", "uncertainty", "task_state"):
+                value = saved_world.get(name)
+                if isinstance(value, dict):
+                    self.state["world"][name] = dict(value)
+        saved_self = snapshot.get("myself", {})
+        if isinstance(saved_self, dict):
+            for name in (
+                "current_task", "what_im_thinking", "cognition",
+                "goodness", "tendencies",
+            ):
+                value = saved_self.get(name)
+                if name in {"cognition", "goodness", "tendencies"}:
+                    if isinstance(value, dict):
+                        self.state["myself"][name] = dict(value)
+                elif isinstance(value, str):
+                    self.state["myself"][name] = value
+        self.state["myself"].pop("hormones", None)
+        self.state["myself"].pop("last_hormone_change", None)
         saved_model_config = snapshot.get("model_config")
         if isinstance(saved_model_config, dict):
             for name, value in saved_model_config.items():
@@ -3861,71 +4130,6 @@ class CoreLoop:
         for key in expired:
             self.state["blackboard"].pop(key, None)
 
-    def _update_hormones(self, now_ns: int) -> None:
-        elapsed_s = max(0.0, (now_ns - self._last_hormone_ns) / 1_000_000_000)
-        if elapsed_s < 0.25:
-            return
-        hormones = self.state["myself"]["hormones"]
-        recovery = min(1.0, elapsed_s / 300.0)
-        for name in DEFAULT_HORMONES:
-            value = float(hormones.get(name, 0.5))
-            hormones[name] = min(1.0, max(0.0, value + (0.5 - value) * recovery))
-        self._last_hormone_ns = now_ns
-        self._update_tendencies(now_ns)
-
-    def _adjust_hormones(
-        self, deltas: dict[str, float], reason: str, now_ns: int
-    ) -> None:
-        hormones = self.state["myself"]["hormones"]
-        changes = {}
-        for name, delta in deltas.items():
-            old = float(hormones.get(name, 0.5))
-            new = min(1.0, max(0.0, old + float(delta)))
-            hormones[name] = new
-            changes[name] = {"old": old, "new": new, "delta": new - old}
-        record = {
-            "timestamp_ns": now_ns,
-            "reason": reason,
-            "changes": changes,
-        }
-        self.state["myself"]["last_hormone_change"] = record
-        self.state["blackboard"]["hormone_change"] = _timed(
-            record, now_ns, producer="core"
-        )
-        self._update_tendencies(now_ns)
-
-    def _update_tendencies(self, now_ns: int) -> None:
-        hormones = self.state["myself"]["hormones"]
-        values = {
-            "mouse": 0.3 + hormones["dopamine"] * 0.3 - hormones["cortisol"] * 0.2,
-            "keyboard": 0.25 + hormones["dopamine"] * 0.25,
-            "send_text": 0.3 + hormones["oxytocin"] * 0.3,
-            "speak": 0.2 + hormones["oxytocin"] * 0.35,
-            "thinking": 0.3 + hormones["acetylcholine"] * 0.4,
-            "pause": hormones["cortisol"] * 0.5,
-            "sleep": 0.2 + hormones["serotonin"] * 0.3,
-        }
-        permissions = self.state["permissions"]
-        tendencies = self.state["myself"]["tendencies"]
-        for name, raw in values.items():
-            allowed = True
-            if name == "mouse":
-                allowed = any(permissions["mouse"].values())
-            elif name == "keyboard":
-                allowed = any(permissions["keyboard"].values())
-            elif name in {"send_text", "speak"}:
-                allowed = bool(permissions[name])
-            tendencies[name] = {
-                "strength": min(1.0, max(0.0, raw)),
-                "updated_at_ns": now_ns,
-                "suppressed": not allowed or self.state["emergency_stop"],
-                "reason": (
-                    "emergency_stop"
-                    if self.state["emergency_stop"]
-                    else ("permission_disabled" if not allowed else "")
-                ),
-            }
-
     def _update_resources(self, now_ns: int) -> None:
         last_ns = int(self.state["resource_status"].get("updated_at_ns", 0))
         if now_ns - last_ns < 1_000_000_000:
@@ -3960,20 +4164,8 @@ class CoreLoop:
                         "gpu_utilization": int(torch.cuda.utilization(0)),
                     }
                 )
-                if total_vram and free_vram / total_vram < 0.05:
-                    self._adjust_hormones(
-                        {"cortisol": 0.005},
-                        "gpu_memory_pressure",
-                        now_ns,
-                    )
         except Exception as exc:
             resources["gpu_error"] = str(exc)
-        if float(memory.percent) >= 90.0:
-            self._adjust_hormones(
-                {"cortisol": 0.005},
-                "system_memory_pressure",
-                now_ns,
-            )
         resources["tnn_summary"] = {
             "loaded_count": len(self.state["loaded_tnn"]),
             "active_count": len(self.state["active_tnn"]),
@@ -4016,14 +4208,15 @@ class CoreLoop:
             / max((now_ns - self._started_at_ns) / 1_000_000_000, 1e-9),
             "last_error": str(self.memorizer.last_writer_error or ""),
         }
-        promotion = self.memorizer.promotion_status()
-        self.state["node_status"]["memory_promotion"] = {
-            "state": promotion.get("state", "idle"),
-            "last_run_ns": now_ns if self.memorizer.promotion_running else 0,
+        counts = self.memorizer.counts()
+        self.state["node_status"]["memory_views"] = {
+            "state": "explicit",
+            "last_run_ns": now_ns,
             "last_duration_ms": 0.0,
             "average_duration_ms": 0.0,
             "actual_hz": 0.0,
-            "last_error": promotion.get("last_error"),
+            "counts": counts,
+            "last_error": None,
         }
         for name in ("local_llm", "yolo", "vlm", "cloud_llm"):
             model = self.state["model_status"][name]
@@ -4095,18 +4288,18 @@ class CoreLoop:
                 if self.state["paused"] or self.state["emergency_stop"]
                 else llm_status.get("state", "unknown")
             ),
-            "last_run_ns": llm_status.get("last_self_update_at_ns", 0),
+            "last_run_ns": llm_status.get("last_autonomous_at_ns", 0),
             "last_duration_ms": llm_status.get("last_duration_ms", 0.0),
             "average_duration_ms": llm_status.get(
                 "average_duration_ms", 0.0
             ),
-            "actual_hz": int(llm_status.get("self_update_count", 0))
+            "actual_hz": int(llm_status.get("success_count", 0))
             / elapsed_s,
             "queue_size": self._llm_requests.qsize(),
-            "next_due_ns": llm_status.get("next_self_update_due_ns", 0),
-            "run_count": int(llm_status.get("self_update_count", 0)),
-            "failure_count": int(llm_status.get("self_update_failures", 0)),
-            "last_error": llm_status.get("last_self_update_error"),
+            "next_due_ns": llm_status.get("next_thinking_due_ns", 0),
+            "run_count": int(llm_status.get("success_count", 0)),
+            "failure_count": int(llm_status.get("failure_count", 0)),
+            "last_error": llm_status.get("last_error"),
         }
         self.state["node_status"]["tnn_scheduler"] = {
             "state": "running" if self.running else "stopped",
@@ -4143,8 +4336,8 @@ class CoreLoop:
             {"source": "capture", "target": "buffer", "condition": "continuous samples"},
             {"source": "buffer", "target": "core", "condition": "each Core iteration"},
             {"source": "core", "target": "self_update_loop", "condition": "due and LLM ready"},
-            {"source": "self_update_loop", "target": "world", "condition": "validated world_update"},
-            {"source": "self_update_loop", "target": "self", "condition": "validated self_update"},
+            {"source": "self_update_loop", "target": "world", "condition": "validated interpretation update"},
+            {"source": "self_update_loop", "target": "self", "condition": "validated cognition update"},
             {"source": "core", "target": "yolo", "condition": "new screen frame"},
             {"source": "yolo", "target": "blackboard", "condition": "current frame result"},
             {"source": "core", "target": "tnn_scheduler", "condition": "node due and not running"},
@@ -4241,23 +4434,16 @@ class CoreLoop:
             "dropped_screen_frames": input_state["dropped_screen_frames"],
         }
 
-    def _maybe_remember_input(
-        self, now_ns: int, summary: dict[str, Any]
-    ) -> None:
-        if now_ns - self._last_input_snapshot_ns < 1_000_000_000:
-            return
-        memory_id = self.memorizer.enqueue(
-            summary, "input_snapshot", priority="low"
-        )
-        self._last_input_snapshot_ns = now_ns
-        if memory_id is not None:
-            self.state["memory_ids"].append(memory_id)
-
     def _remember_chain(
         self, action: dict[str, Any], result: dict[str, Any]
     ) -> dict[str, str]:
         memory_ids: dict[str, str] = {}
         try:
+            observation_id = self._remember_observation_bundle(
+                reason="action_result"
+            )
+            if observation_id:
+                memory_ids["observation_bundle"] = observation_id
             decision = self.state["blackboard"].get(
                 "latest_permission_result", {}
             ).get("value", {})
@@ -4277,7 +4463,7 @@ class CoreLoop:
                 .get("latest_input_summary", {})
                 .get("value", {})
             )
-            teacher = self.state.get("teacher_visual_result") or {}
+            teacher = self.state.get("visual_interpretation_result") or {}
             screen = input_summary.get("screen") or {}
             cursor = input_summary.get("cursor") or {}
             self.state["pending_experiences"][action["candidate_id"]] = {
@@ -4323,15 +4509,21 @@ class CoreLoop:
             "recovery_action": "runtime_stopped_no_output",
         }
         self.state["latest_error"] = error
-        if "myself" in self.state and "hormones" in self.state["myself"]:
-            self._adjust_hormones(
-                {"cortisol": 0.01},
-                f"{loop_node}_error",
-                time.monotonic_ns(),
-            )
         if critical:
             self._failed_event.set()
         log_event(self.log_dir, "runtime_error", **error)
         debug_log(self.log_dir, "runtime_error", error)
         if loop_node != "memory":
-            self.memorizer.enqueue(error, "runtime_error", priority="critical")
+            error_id = self.memorizer.enqueue(
+                error, "runtime_error", priority="critical"
+            )
+            observation_id = self._remember_observation_bundle(
+                reason=f"runtime_error:{loop_node}"
+            )
+            related = [item for item in (observation_id, error_id) if item]
+            if related:
+                self.memorizer.create_event(
+                    related,
+                    summary=f"Runtime error in {loop_node}",
+                    tags=["runtime_error", loop_node],
+                )

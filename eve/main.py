@@ -71,7 +71,7 @@ class EVEApplication:
             state=self.state,
             log_dir=self.run_dir,
             tnn_id=tnn_id,
-            smoke_node=tnn_id is None,
+            smoke_node=False,
         )
         self.core.load_snapshot(self.run_dir / "state_snapshot.json")
         if profile == "control" and use_default_local_models:
@@ -115,7 +115,7 @@ class EVEApplication:
     def critical_failure(self) -> bool:
         return self._critical_event.is_set() or self.core.failed
 
-    def start(self, *, load_smoke_node: bool = True) -> None:
+    def start(self, *, load_smoke_node: bool = False) -> None:
         if self.running:
             return
         if self.buffer.closed:
@@ -189,22 +189,26 @@ class EVEApplication:
         """Stop Loop and Memory first, then Buffer closes Capture and shared memory."""
         self._stop_requested.set()
         failures: list[Exception] = []
-        try:
-            self.core.save_snapshot(self.run_dir / "state_snapshot.json")
-        except Exception as exc:
-            failures.append(exc)
         for stop_output in (mouse.stop_all, keyboard.stop_all, speak.stop_all):
             try:
                 stop_output()
             except Exception as exc:
                 failures.append(exc)
-        for stop in (self.core.stop, self.memory.stop_writer, self.buffer.close):
+        for stop in (self.core.stop, self.memory.stop_writer):
             try:
                 stop()
             except Exception as exc:
                 failures.append(exc)
         try:
+            self.core.save_snapshot(self.run_dir / "state_snapshot.json")
+        except Exception as exc:
+            failures.append(exc)
+        try:
             self.core.save_readable_snapshots(self.run_dir)
+        except Exception as exc:
+            failures.append(exc)
+        try:
+            self.buffer.close()
         except Exception as exc:
             failures.append(exc)
         self.state["resource_status"].update(
@@ -383,21 +387,20 @@ class EVEApplication:
             or self.memory.writer_running
         )
 
-    def force_memory_promotion(self) -> bool:
-        return self.memory.force_promotion()
-
     def memory_view_snapshot(self) -> dict[str, Any]:
         stm_ids = self.memory.tier_ids("stm")
         latest_id = stm_ids[-1] if stm_ids else None
         latest_unit = self.memory.get_unit(latest_id) if latest_id else None
         latest_event = self.memory.latest_event()
         ltm_ids = self.memory.tier_ids("ltm")
+        mtm_ids = self.memory.tier_ids("mtm")
         latest_ltm_id = ltm_ids[-1] if ltm_ids else None
         return {
             "counts": self.memory.counts(),
-            "promotion": self.memory.promotion_status(),
             "latest_memory": latest_unit.__dict__ if latest_unit else None,
             "latest_event": latest_event.__dict__ if latest_event else None,
+            "stm_memory_ids": stm_ids[-50:],
+            "mtm_memory_ids": mtm_ids[-50:],
             "ltm_memory_ids": ltm_ids[-50:],
             "latest_ltm": (
                 {
@@ -435,6 +438,22 @@ def _conversation_text(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines).strip() or "暂无对话"
 
 
+def _blackboard_preview_text(state: dict[str, Any]) -> str:
+    now_ns = time.monotonic_ns()
+    lines = []
+    for key, item in list(state.get("blackboard", {}).items())[-30:]:
+        if not isinstance(item, dict):
+            continue
+        valid_until_ns = int(item.get("valid_until_ns", 0) or 0)
+        if valid_until_ns and now_ns > valid_until_ns:
+            continue
+        lines.append(
+            f"{key} <- {item.get('producer', '-')}: "
+            f"{json.dumps(item.get('value'), ensure_ascii=False, default=repr)[:240]}"
+        )
+    return "\n".join(lines) or "暂无有效 Blackboard 条目"
+
+
 def _self_state_text(state: dict[str, Any]) -> str:
     visible = state["myself"]
     status = state["model_status"]["local_llm"]
@@ -444,17 +463,16 @@ def _self_state_text(state: dict[str, Any]) -> str:
         if key
         not in {
             "what_im_thinking",
-            "hormones",
             "tendencies",
-            "last_hormone_change",
         }
     }
     return (
         f"Current task: {visible.get('current_task', '') or '-'}\n"
-        f"Self update count: {status.get('self_update_count', 0)}\n"
-        f"Last update: {_format_ns(status.get('last_self_update_at_ns'))}\n"
-        f"World fields: {status.get('last_world_update_keys', [])}\n"
-        f"Self fields: {status.get('last_self_update_keys', [])}\n\n"
+        f"Protocol attempts: {status.get('attempt_count', 0)}\n"
+        f"Successful updates: {status.get('success_count', 0)}\n"
+        f"Last autonomous update: {_format_ns(status.get('last_autonomous_at_ns'))}\n"
+        f"Schema failures/repairs: {status.get('schema_failure_count', 0)} / "
+        f"{status.get('repair_count', 0)}\n\n"
         "Visible self summary\n"
         "--------------------\n"
         f"{visible.get('what_im_thinking', '') or '-'}\n\n"
@@ -576,7 +594,7 @@ class EVEControlWindow:
                 self._build_ui(qt)
                 self._timer = qt["QTimer"](self)
                 self._timer.timeout.connect(self.refresh)
-                self._timer.start(500)
+                self._timer.start(1000)
                 shortcut = qt["QShortcut"](qt["QKeySequence"]("Esc"), self)
                 shortcut.activated.connect(
                     lambda: self._emergency("gui_escape")
@@ -605,7 +623,7 @@ class EVEControlWindow:
                     ("冷启动与急停", self._build_lifecycle_page),
                     ("Memory / Blackboard", self._build_memory_page),
                     ("权限与倾向", self._build_permission_page),
-                    ("设置 / 激素 / 反馈", self._build_settings_page),
+                    ("设置 / 好度 / 反馈", self._build_settings_page),
                     ("TNN", self._build_tnn_page),
                 )
                 for title, builder in builders:
@@ -651,18 +669,18 @@ class EVEControlWindow:
                 self.visual_metrics = qt["QLabel"]("未启动")
                 self.visual_metrics.setWordWrap(True)
                 self.visual_result = self._readonly(qt, 170)
-                self.teacher_visual_result = self._readonly(qt, 130)
+                self.vlm_visual_result = self._readonly(qt, 130)
                 analyze = qt["QPushButton"]("YOLO/TNN 分析当前帧")
                 analyze.clicked.connect(self._request_visual)
-                teacher = qt["QPushButton"]("VLM 教师复核当前帧")
-                teacher.clicked.connect(self._request_teacher_review)
+                vlm = qt["QPushButton"]("VLM 解释当前帧")
+                vlm.clicked.connect(self._request_vlm_interpretation)
                 right.addWidget(self.visual_metrics)
                 right.addWidget(analyze)
                 right.addWidget(qt["QLabel"]("运行时视觉结果"))
                 right.addWidget(self.visual_result)
-                right.addWidget(teacher)
-                right.addWidget(qt["QLabel"]("VLM 教师结果"))
-                right.addWidget(self.teacher_visual_result)
+                right.addWidget(vlm)
+                right.addWidget(qt["QLabel"]("VLM 视觉解释结果"))
+                right.addWidget(self.vlm_visual_result)
                 row.addLayout(right, 2)
                 layout.addLayout(row)
                 note = qt["QLabel"](
@@ -755,21 +773,32 @@ class EVEControlWindow:
                 layout = qt["QVBoxLayout"](page)
                 row = qt["QHBoxLayout"]()
                 self.memory_counts = qt["QLabel"]("STM 0 / MTM 0 / LTM 0")
-                promotion = qt["QPushButton"]("强制记忆晋升")
-                promotion.clicked.connect(self._force_promotion)
                 row.addWidget(self.memory_counts)
-                row.addWidget(promotion)
                 layout.addLayout(row)
-                self.promotion_progress = qt["QProgressBar"]()
-                layout.addWidget(self.promotion_progress)
-                self.promotion_label = qt["QLabel"]("记忆晋升：空闲")
-                layout.addWidget(self.promotion_label)
+                memory_row = qt["QHBoxLayout"]()
+                self.memory_id_input = qt["QLineEdit"]()
+                self.memory_id_input.setPlaceholderText("MemoryID")
+                for label, callback in (
+                    ("装入 MTM", lambda: self._memory_action("load_to_mtm")),
+                    ("移出 MTM", lambda: self._memory_action("unload_from_mtm")),
+                    ("持久化到 LTM", lambda: self._memory_action("persist_to_ltm")),
+                    ("移出 LTM", lambda: self._memory_action("remove_from_ltm")),
+                    ("请求 LLM 复核", self._request_memory_review),
+                ):
+                    button = qt["QPushButton"](label)
+                    button.clicked.connect(callback)
+                    memory_row.addWidget(button)
+                memory_row.insertWidget(0, self.memory_id_input)
+                layout.addLayout(memory_row)
                 self.memory_view = self._readonly(qt, 170)
                 self.blackboard_view = self._readonly(qt, 280)
-                layout.addWidget(qt["QLabel"]("最近 MemoryUnit / Event"))
+                self.blackboard_preview = self._readonly(qt, 180)
+                layout.addWidget(qt["QLabel"]("STM / MTM / LTM 独立视图"))
                 layout.addWidget(self.memory_view)
-                layout.addWidget(qt["QLabel"]("Blackboard 有效条目"))
+                layout.addWidget(qt["QLabel"]("Blackboard 原始有效条目"))
                 layout.addWidget(self.blackboard_view)
+                layout.addWidget(qt["QLabel"]("Blackboard LLM 可读预览"))
+                layout.addWidget(self.blackboard_preview)
 
             def _build_permission_page(self, page: Any, qt: dict[str, Any]) -> None:
                 layout = qt["QHBoxLayout"](page)
@@ -849,7 +878,7 @@ class EVEControlWindow:
                 self.cloud_enabled = qt["QCheckBox"]()
                 self.cloud_enabled.setChecked(bool(config["cloud_enabled"]))
                 form.addRow("本地 LLM 路径（强制 4-bit NF4）", self.local_path)
-                form.addRow("VLM 教师路径（按需 4-bit NF4）", self.vlm_path)
+                form.addRow("VLM 视觉工具路径（按需 4-bit NF4）", self.vlm_path)
                 form.addRow("YOLO 运行时视觉路径", self.yolo_path)
                 form.addRow("云端 base_url", self.cloud_url)
                 form.addRow("云端 model", self.cloud_model)
@@ -860,9 +889,9 @@ class EVEControlWindow:
                 apply_button.clicked.connect(self._apply_settings)
                 layout.addWidget(apply_button)
                 self.model_status_view = self._readonly(qt, 150)
-                self.hormone_view = self._readonly(qt, 180)
+                self.goodness_view = self._readonly(qt, 180)
                 layout.addWidget(self.model_status_view)
-                layout.addWidget(self.hormone_view)
+                layout.addWidget(self.goodness_view)
                 row = qt["QHBoxLayout"]()
                 praise = qt["QPushButton"]("表扬")
                 praise.clicked.connect(lambda: self._feedback("praise"))
@@ -968,9 +997,9 @@ class EVEControlWindow:
                 except Exception as exc:
                     self._background_error = str(exc)
 
-            def _request_teacher_review(self) -> None:
+            def _request_vlm_interpretation(self) -> None:
                 try:
-                    self.application.core.submit_teacher_review()
+                    self.application.core.submit_visual_interpretation()
                 except Exception as exc:
                     self._background_error = str(exc)
 
@@ -1012,12 +1041,25 @@ class EVEControlWindow:
                 except Exception as exc:
                     self._background_error = str(exc)
 
-            def _force_promotion(self) -> None:
-                if not self.application.state["cold_started"]:
-                    self._background_error = "冷启动后才能执行 Memory 整理"
+            def _memory_action(self, action: str) -> None:
+                memory_id = self.memory_id_input.text().strip()
+                if not memory_id:
                     return
-                if not self.application.force_memory_promotion():
-                    self._background_error = "Memory 整理已在运行"
+                try:
+                    self.application.memory.apply_memory_actions(
+                        [{"action": action, "memory_id": memory_id}]
+                    )
+                except Exception as exc:
+                    self._background_error = str(exc)
+
+            def _request_memory_review(self) -> None:
+                try:
+                    self.application.core.submit_user_message(
+                        "请使用当前 STM、MTM、LTM 视图复核记忆，并仅通过 protocol v2 "
+                        "memory_actions 提出必要的显式视图调整。"
+                    )
+                except Exception as exc:
+                    self._background_error = str(exc)
 
             def _load_tnn(self) -> None:
                 tnn_id = self.tnn_id_input.text().strip()
@@ -1121,14 +1163,14 @@ class EVEControlWindow:
                     self.visual_result,
                     _json_text(result) if result else "暂无 YOLO/TNN 结果"
                 )
-                teacher_result = state.get("last_teacher_visual_result")
-                if teacher_result is None:
-                    teacher_result = state.get("teacher_visual_result")
+                vlm_result = state.get("last_visual_interpretation_result")
+                if vlm_result is None:
+                    vlm_result = state.get("visual_interpretation_result")
                 self._set_stable_text(
-                    self.teacher_visual_result,
-                    _json_text(teacher_result)
-                    if teacher_result
-                    else "尚未请求 VLM 教师复核"
+                    self.vlm_visual_result,
+                    _json_text(vlm_result)
+                    if vlm_result
+                    else "尚未请求 VLM 视觉解释"
                 )
 
             def _refresh_text(self, state: dict[str, Any]) -> None:
@@ -1136,12 +1178,15 @@ class EVEControlWindow:
                 node = state["node_status"].get("self_update_loop", {})
                 self.self_update_metrics.setText(
                     f"state={status.get('state')} | "
-                    f"updates={status.get('self_update_count', 0)} | "
-                    f"failures={status.get('self_update_failures', 0)} | "
+                    f"attempts={status.get('attempt_count', 0)} | "
+                    f"success={status.get('success_count', 0)} | "
+                    f"failures={status.get('failure_count', 0)} | "
+                    f"schema={status.get('schema_failure_count', 0)} | "
+                    f"repairs={status.get('repair_count', 0)} | "
                     f"actual={float(node.get('actual_hz', 0.0) or 0.0):.3f} Hz | "
-                    f"interval={float(status.get('self_update_interval_s', 0.0) or 0.0):.2f}s | "
-                    f"last={_format_ns(status.get('last_self_update_at_ns'))} | "
-                    f"next={_format_ns(status.get('next_self_update_due_ns'))}"
+                    f"interval={float(status.get('autonomous_interval_s', 0.0) or 0.0):.2f}s | "
+                    f"last={_format_ns(status.get('last_autonomous_at_ns'))} | "
+                    f"next={_format_ns(status.get('next_thinking_due_ns'))}"
                 )
                 self._set_stable_text(
                     self.conversation_view,
@@ -1177,7 +1222,7 @@ class EVEControlWindow:
                 )
                 required = [
                     "capture", "buffer", "core", "local_llm", "yolo", "vlm",
-                    "cloud_llm", "memory_writer", "memory_promotion", "permission_check",
+                    "cloud_llm", "memory_writer", "permission_check",
                     "mouse_output", "keyboard_output", "speak_output", "dock",
                 ]
                 nodes = state["node_status"]
@@ -1227,23 +1272,14 @@ class EVEControlWindow:
                     f"STM {counts['stm']} | MTM {counts['mtm']} | "
                     f"LTM {counts['ltm']} | Event {counts['events']}"
                 )
-                promotion = snapshot["promotion"]
-                total = int(promotion.get("total", 0))
-                processed = int(promotion.get("processed", 0))
-                self.promotion_progress.setMaximum(max(1, total))
-                self.promotion_progress.setValue(processed)
-                eta = promotion.get("eta_s")
-                eta_text = "正在计算" if eta is None else f"{eta:.2f}s"
-                self.promotion_label.setText(
-                    f"{promotion.get('state')} | {processed}/{total} | ETA {eta_text} | "
-                    f"结果 {promotion.get('last_result')} | 错误 {promotion.get('last_error')}"
-                )
                 self._set_stable_text(
                     self.memory_view,
                     _json_text(
                         {
                             "latest_memory": snapshot["latest_memory"],
                             "latest_event": snapshot["latest_event"],
+                            "stm_memory_ids": snapshot["stm_memory_ids"],
+                            "mtm_memory_ids": snapshot["mtm_memory_ids"],
                             "latest_ltm": snapshot["latest_ltm"],
                             "ltm_memory_ids": snapshot["ltm_memory_ids"],
                         }
@@ -1252,6 +1288,10 @@ class EVEControlWindow:
                 self._set_stable_text(
                     self.blackboard_view,
                     _json_text(state["blackboard"])
+                )
+                self._set_stable_text(
+                    self.blackboard_preview,
+                    _blackboard_preview_text(state),
                 )
 
             def _refresh_permissions(self, state: dict[str, Any]) -> None:
@@ -1282,13 +1322,10 @@ class EVEControlWindow:
                     _json_text(state["model_status"])
                 )
                 self._set_stable_text(
-                    self.hormone_view,
+                    self.goodness_view,
                     _json_text(
                         {
-                            "current": state["myself"]["hormones"],
-                            "last_change": state["myself"].get(
-                                "last_hormone_change"
-                            ),
+                            "goodness": state["myself"]["goodness"],
                             "last_feedback": state.get("last_feedback"),
                         }
                     )

@@ -27,37 +27,38 @@ def wait_until(predicate, timeout_s: float = 3.0) -> None:
     raise AssertionError("condition did not become true")
 
 
-def linear_definition(version: str = "v1") -> dict:
-    return {
-        "mode": "json",
-        "version": version,
-        "structure": {
-            "input_schema": {"features": {"dtype": "float32", "shape": [2]}},
-            "output_schema": {"prediction": {"dtype": "float32", "shape": [1]}},
-            "target_schema": {"prediction": {"dtype": "float32", "shape": [1]}},
-            "nodes": [
-                {
-                    "id": "prediction",
-                    "op": "linear",
-                    "from": ["features"],
-                    "params": {"in_features": 2, "out_features": 1},
-                }
-            ],
-            "outputs": {"prediction": "prediction"},
-            "training": {
-                "batch_size": 2,
-                "optimizer": {"type": "adam", "lr": 0.01},
-                "losses": [
-                    {"type": "mse", "output": "prediction", "target": "prediction"}
-                ],
-            },
-            "runtime": {
-                "input_refs": {"features": "blackboard:features"},
-                "run_frequency_hz": 5.0,
-                "output_ttl_ns": 500_000_000,
-            },
-        },
-    }
+def write_linear_model(directory: Path) -> Path:
+    directory.mkdir(parents=True)
+    path = directory / "model.py"
+    path.write_text(
+        """import torch
+from eve.dock.tinynn import TinyNN
+
+class Model(TinyNN):
+    def __init__(self):
+        super().__init__('generic-regressor', 'v1',
+            {'features': {'dtype': 'float32', 'shape': [2]}},
+            {'prediction': {'dtype': 'float32', 'shape': [1]}})
+        self.layer = torch.nn.Linear(2, 1)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
+    def forward(self, inputs):
+        return {'prediction': self.layer(inputs['features'])}
+    def _metrics(self, batch, train):
+        if train:
+            self.optimizer.zero_grad()
+        prediction = self.forward(batch['inputs'])['prediction']
+        loss = torch.nn.functional.mse_loss(prediction, batch['targets']['prediction'])
+        if train:
+            loss.backward(); self.optimizer.step()
+        return {'loss': float(loss.detach())}
+    def training_step(self, batch): return self._metrics(batch, True)
+    def evaluation_step(self, batch): return self._metrics(batch, False)
+
+def create_tnn(): return Model()
+""",
+        encoding="utf-8",
+    )
+    return path
 
 
 def sample_ids(memory: Memorizer, count: int = 6) -> list[str]:
@@ -76,14 +77,23 @@ def sample_ids(memory: Memorizer, count: int = 6) -> list[str]:
 def test_generic_order_trains_persists_and_core_loads_tnn(tmp_path):
     memory = Memorizer(tmp_path / "memory")
     trainer = Trainer(memory, workspace_root=tmp_path / "dock" / "workspace")
+    ids = sample_ids(memory)
     result = trainer.process_order(
         TrainingOrder(
             order_id="generic-order",
             target_tnn_id="generic-regressor",
-            training_data=sample_ids(memory),
+            model_path=str(write_linear_model(tmp_path / "source")),
+            version="v1",
+            training_data=ids,
+            evaluation_data=ids,
             minimum_samples=4,
             epochs=1,
-            definition=linear_definition(),
+            acceptance={"max_loss": 1_000_000.0},
+            runtime={
+                "input_refs": {"features": "blackboard:features"},
+                "run_frequency_hz": 5.0,
+                "output_ttl_ns": 500_000_000,
+            },
         )
     )
 
@@ -102,55 +112,42 @@ def test_explicit_model_file_can_continue_training(tmp_path):
     memory = Memorizer(tmp_path / "memory")
     trainer = Trainer(memory, workspace_root=tmp_path / "dock" / "workspace")
     ids = sample_ids(memory)
+    model_path = write_linear_model(tmp_path / "source")
     first = trainer.process_order(
         TrainingOrder(
             order_id="first",
             target_tnn_id="portable-model",
+            model_path=str(model_path),
+            version="v1",
             training_data=ids,
+            evaluation_data=ids,
             epochs=1,
-            definition=linear_definition("v1"),
+            acceptance={"max_loss": 1_000_000.0},
         )
-    )
-    structure = json.loads(
-        (Path(first.artifact_path) / "structure.json").read_text(encoding="utf-8")
     )
     continued = trainer.process_order(
         TrainingOrder(
             order_id="continued",
             target_tnn_id="portable-model",
+            model_path=str(Path(first.artifact_path) / "model.py"),
+            weights_path=str(Path(first.artifact_path) / "weights.pt"),
+            version="v2",
             training_data=ids,
+            evaluation_data=ids,
             epochs=1,
             continue_training=True,
-            definition={
-                "mode": "python",
-                "version": "v2",
-                "model_path": str(Path(first.artifact_path) / "model.py"),
-                "weights_path": str(Path(first.artifact_path) / "weights.pt"),
-                "structure": structure,
-            },
+            acceptance={"max_loss": 1_000_000.0},
         )
     )
     assert continued.success and continued.accepted
     assert memory.resolve_tnn_artifact("portable-model", "v2")["version"] == "v2"
 
 
-@pytest.mark.parametrize("teacher_mode", ["vlm", "environment_reward"])
-def test_unimplemented_teacher_modes_fail_explicitly(tmp_path, teacher_mode):
-    memory = Memorizer(tmp_path / teacher_mode)
-    trainer = Trainer(memory, workspace_root=tmp_path / "dock" / teacher_mode)
-    result = trainer.process_order(
-        TrainingOrder(
-            order_id=f"unsupported-{teacher_mode}",
-            target_tnn_id="generic-model",
-            training_data=sample_ids(memory),
-            teacher_mode=teacher_mode,
-            teacher_prompt="produce labels",
-            definition=linear_definition(),
-        )
-    )
-    assert not result.success
-    assert "unsupported" in str(result.error)
-    assert memory.list_tnn_artifacts() == []
+def test_executable_order_requires_concrete_model_and_acceptance(tmp_path):
+    memory = Memorizer(tmp_path / "memory")
+    trainer = Trainer(memory, workspace_root=tmp_path / "dock")
+    with pytest.raises(ValueError, match="exactly one"):
+        trainer.enqueue(TrainingOrder(order_id="bad", target_tnn_id="bad"))
 
 
 def test_runtime_has_no_qnn_surface_and_enforces_five_tnn_limit():
@@ -232,27 +229,21 @@ def test_due_scheduler_prevents_reentry_and_slow_node_does_not_block_fast_node(
         core.stop()
 
 
-def test_memory_units_always_have_exactly_one_tier(tmp_path):
+def test_memory_catalog_and_semantic_views_are_independent(tmp_path):
     memory = Memorizer(tmp_path / "memory", stm_limit=2)
     ids = [memory.create({"index": index}) for index in range(5)]
-    assert set(ids) == set(memory.stm) | memory.mtm | memory.ltm
-    assert not (set(memory.stm) & memory.mtm)
-    assert not (set(memory.stm) & memory.ltm)
-    assert not (memory.mtm & memory.ltm)
+    assert set(ids) == set(memory.catalog)
     assert memory.counts()["stm"] == 2
-    assert memory.counts()["mtm"] == 3
-
-    assert memory.force_promotion()
-    wait_until(lambda: memory.promotion_status()["state"] == "completed")
-    assert set(ids) == set(memory.stm) | memory.mtm | memory.ltm
-    assert not (set(memory.stm) & memory.mtm)
-    assert not (memory.mtm & memory.ltm)
+    assert memory.counts()["mtm"] == 0
+    memory.load_to_mtm(ids[-1])
+    memory.persist_to_ltm(ids[-1])
+    assert ids[-1] in memory.stm
+    assert ids[-1] in memory.mtm
+    assert ids[-1] in memory.ltm
 
     reloaded = Memorizer(tmp_path / "memory", stm_limit=2)
-    assert set(reloaded.catalog) == set(reloaded.stm) | reloaded.mtm | reloaded.ltm
-    assert not (set(reloaded.stm) & reloaded.mtm)
-    assert not (set(reloaded.stm) & reloaded.ltm)
-    assert not (reloaded.mtm & reloaded.ltm)
+    assert set(reloaded.catalog) == set(ids)
+    assert ids[-1] in set(reloaded.stm) & reloaded.mtm & reloaded.ltm
 
 
 def test_feedback_requires_exact_candidate_action_time_and_environment_event(tmp_path):

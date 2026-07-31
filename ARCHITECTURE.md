@@ -21,10 +21,16 @@ main + input + output + memory + core + dock
 ## 2. 输入与状态
 
 屏幕、光标、键盘活动、文本输入和本地 LLM 小/慢循环在冷启动后自动运行。
-LLM-based self update loop 首轮立即调度；一次更新完成后按激素状态保留
-1–3 秒空闲，再进入下一轮。模型推理时间较长时，它因此基本保持连续工作。
+LLM-based self update loop 首轮立即调度，用户提问与自主更新共用 protocol
+v2；默认约每 2 秒触发一轮，模型推理期间不会重入。用户触发时必须返回
+可见 reply；可选状态增量不合法时不得丢失有效 reply。
 快速状态进入 Buffer；Core 只从 Buffer 读取。Blackboard 是带时间与有效期的
 运行交换区，不是长期 Memory。
+
+`world.perception` 只由代码写入，保存当前屏幕帧的视觉类别、置信度、边界框、
+中心点和状态；LLM 只能更新 `interpretation`、`uncertainty` 与 `task_state`。
+`self.goodness` 是范围为 [-1, 1] 的评价标量及其证据说明；倾向只是数值，
+不代替权限。用户表扬/批评作为显式反馈记忆保存，不直接改写 goodness。
 
 用户界面使用 `self`。内部 `myself` 暂时只作为兼容键存在。LLM-based self
 update loop 可写简短可见摘要，但不得请求、展示或持久化隐藏思维链。
@@ -85,29 +91,28 @@ Core 同时验证候选存在且未消费、动作 ID、动作类型、坐标、
 
 ## 6. Memory 生命周期
 
-每个 Catalog 中的 MemoryID 必须恰好位于 STM、MTM 或 LTM 之一：
+Catalog 是完整不可变记录，STM、MTM、LTM 是彼此独立的语义视图：
 
 ```text
-create -> STM
-STM 容量溢出或显式晋升 -> MTM
-再次晋升 -> LTM
+create -> Catalog + STM hot view
+load_to_mtm / unload_from_mtm -> 显式工作集
+persist_to_ltm / remove_from_ltm -> 显式持久语义集
+STM overflow -> 仅从 hot view 驱逐，Catalog 记录仍保留
 ```
 
-本轮的 `force_promotion()` 只做层级晋升，不冒充摘要、合并、索引更新或
-遗忘。真正的睡眠整理后续独立设计。正常停机生成可读的 `world.md` 与
-`self.md`。
+不存在后台自动晋升线程或 `force_promotion()`。LLM 可通过显式 memory_actions
+请求调整视图。正常停机生成 Snapshot v2 及可读的 `world.md`、`self.md`；
+运行期 perception、Blackboard、资源状态和错误不进入耐久快照。
 
 ## 7. Dock
 
-Dock 只接受两种通用 TNN 来源：
+Dock 只接受 TrainingOrder 显式指向的具体 `model.py` 或已有模型 MemoryID；
+具体模型自行实现 forward、training_step 和特殊梯度语义。LLM 的
+`training_proposal` 只是建议，不能直接作为可执行 TrainingOrder。
 
-1. `TrainingOrder.definition` 中的 JSON 结构，使用允许的通用算子生成模型。
-2. TrainingOrder 显式指向具体 `model.py`；特殊模型自行实现 forward、
-   training_step 和特殊梯度语义。
-
-Dock 不按任务名选择模型。`teacher_mode` 与 `teacher_prompt` 只有在真正连接
-到标签生成流程时才可声明；当前不能实现的模式必须明确失败。候选通过验收
-后才写入正式 TNNweights 和 Memory TNN 列表，并由 Core 加载。
+Dock 不按任务名选择模型，也不包含 JSON 算子编译器或模型源码生成器。
+订单必须携带训练数据与明确验收条件；候选通过验收后才写入正式 TNNweights
+和 Memory TNN 列表，并由 Core 加载。
 
 QNN 若未来用于扩展训练数据，只能在 `dock/workspace/<order_id>/` 中临时
 创建、估值并删除；它不写入正式 TNNweights、不注册 Memory TNN、不由

@@ -12,8 +12,11 @@ def test_memory_crud_and_minimal_retrieval(tmp_path):
     assert memory.read(first) == {"text": "red ball"}
     assert memory.search(payload_type="output_result") == [result]
     assert memory.search(keyword="blue") == [second]
-    memory.promote_to_mtm(first)
+    memory.load_to_mtm(first)
+    memory.persist_to_ltm(first)
     assert memory.mtm == {first}
+    assert memory.ltm == {first}
+    assert first in memory.stm
     assert memory.delete(second)
     assert memory.read(second) is None
 

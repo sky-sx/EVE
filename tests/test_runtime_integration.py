@@ -126,7 +126,7 @@ def test_profiles_are_mock_and_observe_completes_full_chain(tmp_path, monkeypatc
         input_buffer=synthetic_buffer("observe"),
         allow_mock_actions=False,
     )
-    application.start()
+    application.start(load_smoke_node=True)
     assert application.wait(0.25)
     active_while_running = set(application.state["active_tnn"])
     loaded_while_running = set(application.state["loaded_tnn"])
@@ -242,6 +242,7 @@ def test_memory_writer_failure_becomes_critical_runtime_failure(tmp_path, monkey
 
     monkeypatch.setattr(application.memory, "_create_with_id", fail_write)
     application.start()
+    application.memory.enqueue({"trigger": True}, "writer_failure", priority="critical")
     assert not application.wait(1.0)
     with pytest.raises(RuntimeError, match="shutdown failure"):
         application.stop()

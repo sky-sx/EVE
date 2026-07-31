@@ -104,7 +104,7 @@ def test_formal_entry_starts_child_capture_and_stops_cleanly(tmp_path):
         run_dir=tmp_path,
         allow_mock_actions=True,
     )
-    app.start()
+    app.start(load_smoke_node=True)
     capture_pid = app.buffer.capture_process_id
     time.sleep(0.25)
     app.stop()

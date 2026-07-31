@@ -199,29 +199,37 @@ def test_control_cold_start_pause_emergency_reset_and_clean_stop(
     assert not restarted.state["permissions"]["mouse"]["move"]
 
 
-def test_llm_queue_valid_json_updates_and_invalid_result_is_atomic(tmp_path):
+def test_llm_protocol_keeps_reply_when_optional_updates_are_invalid(tmp_path):
     calls = []
 
     def backend(context):
         calls.append(context)
         if len(calls) == 1:
             return {
+                "protocol_version": 2,
                 "reply": "ok",
                 "thinking_summary": "visible summary",
-                "world_update": {"room": "desktop"},
-                "myself_update": {"current_task": "test"},
+                "world_interpretation_update": {
+                    "interpretation": {"room": "desktop"}
+                },
+                "myself_cognition_update": {"current_understanding": "test"},
+                "goodness_update": {},
                 "blackboard_updates": [{"key": "answer", "value": 42}],
                 "active_tnn": [],
-                "memory_candidates": [{"candidate": "remember"}],
+                "memory_actions": [],
+                "training_proposal": None,
             }
         return {
+            "protocol_version": 2,
             "reply": "bad",
             "thinking_summary": "bad",
-            "world_update": {"must_not_apply": True},
-            "myself_update": {},
+            "world_interpretation_update": {"perception": {"forbidden": True}},
+            "myself_cognition_update": "invalid optional delta",
+            "goodness_update": {"score": "invalid"},
             "blackboard_updates": [{"value": "missing key"}],
             "active_tnn": [],
-            "memory_candidates": [],
+            "memory_actions": [],
+            "training_proposal": None,
         }
 
     state = create_runtime_state()
@@ -240,20 +248,19 @@ def test_llm_queue_valid_json_updates_and_invalid_result_is_atomic(tmp_path):
         wait_until(lambda: state["model_status"]["local_llm"]["state"] == "ready")
         core.submit_user_message("hello")
         wait_until(lambda: len(state["conversation"]) == 1)
-        assert state["world"]["room"] == "desktop"
+        assert state["world"]["interpretation"]["room"] == "desktop"
         assert state["blackboard"]["answer"]["value"] == 42
 
-        before_world = dict(state["world"])
+        before_perception = dict(state["world"]["perception"])
         core.submit_user_message("invalid")
+        wait_until(lambda: len(state["conversation"]) == 2)
         wait_until(
-            lambda: state["model_status"]["local_llm"].get(
-                "last_request_state"
-            )
-            == "error"
+            lambda: state["model_status"]["local_llm"]["state"] == "ready"
         )
         assert state["model_status"]["local_llm"]["state"] == "ready"
-        assert state["world"] == before_world
-        assert "must_not_apply" not in state["world"]
+        assert state["conversation"][-1]["reply"] == "bad"
+        assert state["world"]["perception"] == before_perception
+        assert state["model_status"]["local_llm"]["failure_count"] == 0
     finally:
         core.stop()
         memory.stop_writer()
@@ -266,13 +273,18 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
         calls.append(context)
         count = len(calls)
         return {
+            "protocol_version": 2,
             "reply": "",
             "thinking_summary": f"visible self update {count}",
-            "world_update": {"update_count": count},
-            "myself_update": {"last_self_tick": count},
+            "world_interpretation_update": {
+                "interpretation": {"update_count": count}
+            },
+            "myself_cognition_update": {"last_self_tick": count},
+            "goodness_update": {},
             "blackboard_updates": [],
             "active_tnn": [],
-            "memory_candidates": [],
+            "memory_actions": [],
+            "training_proposal": None,
         }
 
     state = create_runtime_state()
@@ -289,11 +301,11 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
     try:
         core.start()
         wait_until(
-            lambda: state["model_status"]["local_llm"]["self_update_count"] >= 3
+            lambda: state["model_status"]["local_llm"]["success_count"] >= 3
         )
-        assert state["world"]["update_count"] >= 3
-        assert state["myself"]["last_self_tick"] >= 3
-        assert state["model_status"]["local_llm"]["self_update_failures"] == 0
+        assert state["world"]["interpretation"]["update_count"] >= 3
+        assert state["myself"]["cognition"]["last_self_tick"] >= 3
+        assert state["model_status"]["local_llm"]["failure_count"] == 0
         assert state["conversation"] == []
         wait_until(
             lambda: state["node_status"]
@@ -304,7 +316,7 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
         assert state["node_status"]["self_update_loop"]["actual_hz"] > 0
         assert state["loop_graph"]["edges"]
         wait_until(
-            lambda: '"channel": "self_update_output"'
+            lambda: '"channel": "llm_protocol_output"'
             in (tmp_path / "debug.jsonl").read_text(encoding="utf-8")
         )
         channels = {
@@ -313,20 +325,34 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
                 encoding="utf-8"
             ).splitlines()
         }
-        assert {"self_update_output", "loop_snapshot"} <= channels
+        assert {"llm_protocol_output", "loop_snapshot"} <= channels
     finally:
         core.stop()
         memory.stop_writer()
 
 
-def test_real_llm_user_request_accepts_plain_text_reply(tmp_path, monkeypatch):
+def test_real_llm_user_request_uses_protocol_v2(tmp_path, monkeypatch):
     state = create_runtime_state()
     memory = Memorizer(tmp_path / "memory")
     core = CoreLoop(InputBuffer(), memory, state=state, log_dir=tmp_path)
     monkeypatch.setattr(
         core,
-        "_generate_local_chat",
-        lambda context: f"直接回复：{context['user_message']}",
+        "_generate_local_llm",
+        lambda context: json.dumps(
+            {
+                "protocol_version": 2,
+                "reply": f"直接回复：{context['user_message']}",
+                "thinking_summary": "",
+                "world_interpretation_update": {},
+                "myself_cognition_update": {},
+                "goodness_update": {},
+                "blackboard_updates": [],
+                "active_tnn": [],
+                "memory_actions": [],
+                "training_proposal": None,
+            },
+            ensure_ascii=False,
+        ),
     )
     state["model_status"]["local_llm"]["state"] = "ready"
     memory.start_writer()
@@ -341,7 +367,7 @@ def test_real_llm_user_request_accepts_plain_text_reply(tmp_path, monkeypatch):
         core._process_llm_request(request)
         assert state["conversation"][-1]["reply"] == "直接回复：你好"
         assert state["model_status"]["local_llm"]["state"] == "ready"
-        assert "latest_llm_reply" in state["blackboard"]
+        assert "latest_llm_result" in state["blackboard"]
     finally:
         memory.stop_writer()
 
@@ -399,18 +425,19 @@ def test_vlm_stale_result_is_bound_but_not_current(tmp_path):
         buffer.store("screen", second, timestamp_ns=second.captured_at_ns)
         release.set()
         wait_until(
-            lambda: state.get("last_teacher_visual_result") is not None
+            lambda: state.get("last_visual_interpretation_result") is not None
         )
 
-        assert state["last_teacher_visual_result"]["reference_frame_id"] == 1
-        assert state["last_teacher_visual_result"]["status"] == "stale"
+        result = state["last_visual_interpretation_result"]
+        assert result["reference_frame_id"] == 1
+        assert result["status"] == "stale"
         assert (
-            state["last_teacher_visual_result"]["reviewed_runtime_visual"][
+            result["reviewed_runtime_visual"][
                 "detection_count"
             ]
             == 1
         )
-        assert state["teacher_visual_result"] is None
+        assert state["visual_interpretation_result"] is None
         assert state["visual_result"]["source"] == "yolo"
     finally:
         release.set()
@@ -461,7 +488,10 @@ def test_yolo_runtime_visual_writes_blackboard_without_vlm(tmp_path):
         assert result["reference_frame_id"] == 7
         assert result["detection_count"] == 1
         assert state["blackboard"]["current_visual_result"]["producer"] == "yolo"
-        assert state["teacher_visual_result"] is None
+        assert state["visual_interpretation_result"] is None
+        visual = state["world"]["perception"]["visual"]
+        assert visual["reference_frame_id"] == 7
+        assert visual["detections"][0]["class_name"] == "object"
 
         request_id = core.submit_runtime_visual_analysis()
         wait_until(
@@ -585,7 +615,7 @@ def _json_dump(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=repr)
 
 
-def test_keyboard_activity_excludes_window_metadata_and_memory_promotion(tmp_path):
+def test_keyboard_activity_excludes_window_metadata_and_memory_views(tmp_path):
     buffer = InputBuffer(
         profile="control",
         capture_options={
@@ -606,17 +636,11 @@ def test_keyboard_activity_excludes_window_metadata_and_memory_promotion(tmp_pat
     finally:
         buffer.close()
 
-    memory = Memorizer(tmp_path / "promotion-memory")
-    for index in range(12):
-        memory.create({"index": index}, "promotion-item")
-    assert memory.force_promotion()
-    wait_until(lambda: memory.promotion_status()["state"] == "completed")
-    promotion = memory.promotion_status()
-    assert promotion["processed"] == 12
-    assert promotion["remaining"] == 0
-    assert promotion["eta_s"] == 0.0
-    assert memory.counts()["mtm"] == 12
-    assert memory.counts()["ltm"] == 0
-    assert memory.force_promotion()
-    wait_until(lambda: memory.promotion_status()["state"] == "completed")
-    assert memory.counts()["ltm"] == 12
+    memory = Memorizer(tmp_path / "memory-views")
+    ids = [memory.create({"index": index}, "view-item") for index in range(12)]
+    memory.load_to_mtm(ids[0])
+    memory.persist_to_ltm(ids[0])
+    assert ids[0] in memory.stm
+    assert ids[0] in memory.mtm
+    assert ids[0] in memory.ltm
+    assert memory.counts()["catalog"] == 12

@@ -1,6 +1,6 @@
 # EVE 当前实现状态
 
-更新时间：2026-07-30。
+更新时间：2026-07-31。
 
 本轮只收拢架构与错误语义，不扩展新能力。正式运行时保持
 `main + input + output + memory + core + dock` 六个边界。
@@ -10,15 +10,17 @@
 - Capture 仅由 Buffer 启停和读取；Core 不直接访问 Capture。
 - 控制模式冷启动时 YOLO 默认启用并优先取得模型加载顺序；其当前识别质量
   仍是已记录的后续问题。
-- LLM-based self update loop 冷启动后立即进入自主更新，每次完成后只保留
-  1–3 秒空闲；更新次数、失败数、实际频率、最近 world/self 字段均可见。
+- LLM-based self update loop 冷启动后进入自主更新，用户提问与自主触发共用
+  protocol v2；尝试数、成功数、失败数、schema 失败、修复次数、延迟和下一
+  次触发时间均可见。
+- 当前 YOLO/TNN 视觉事实会确定性投影到 code-owned `world.perception.visual`，
+  并随用户对话上下文送入 LLM；LLM 不能覆盖 perception。
 - GUI 高频文本窗口只在内容变化时更新并保留滚动位置；所有运行事件、
   LLM/self、YOLO、TNN、Output 结果及每秒循环快照写入 `debug.jsonl`。
 - 资源页显示带状态、实际频率、耗时、队列深度和触发条件的运行循环图。
-- Core 接收通用 `TrainingOrder`，Dock 只按显式 JSON 结构或具体
-  `model.py` 训练 TNN，不按任务名选择网络。
-- 未接入真实标签生成链路的 teacher 模式会明确失败，不会静默使用已有
-  target 冒充教师输出。
+- Core 仅接收带具体 `model.py`/模型 MemoryID、数据和验收条件的可执行
+  `TrainingOrder`；Dock 不包含 JSON 模型编译器。LLM training proposal 只记录，
+  不自动执行。
 - 正式 TNN 只有通过验收后才保存到 Memory 并由 Core 加载，最多同时加载
   5 个。
 - 各 TNN 由共享执行池按各自到期时间提交，同一节点不会重入；状态记录目标
@@ -28,15 +30,15 @@
 - 鼠标长距离移动与拖拽拆成可中断短步。
 - Output 反馈同时返回 `candidate_id` 与 `action_id`；正向 Experience 只接受
   与候选、动作、执行时间和环境事件精确绑定的反馈。
-- Memory 层级互斥，STM 溢出会晋升 MTM，不会留下无层级 MemoryUnit；原
-  “强制睡眠整理”已按真实行为改名为“强制记忆晋升”。
-- 正常停机继续生成 `world.md` 与 `self.md`。
+- Memory 使用完整 Catalog 与独立 STM/MTM/LTM 视图；STM 溢出只驱逐热视图，
+  MTM/LTM 只通过显式操作变化，不存在自动晋升线程。
+- 正常停机生成 Snapshot v2、`world.md` 与 `self.md`；只持久化耐久语义。
 
 ## 明确未实现
 
 - 麦克风听觉与注意力/焦点机制。
 - 真正的睡眠摘要、合并、索引更新与遗忘。
-- 未配置 teacher 后端时的自动标签生成。
+- VLM 视觉解释质量与 YOLO 类别覆盖仍需后续专项改进。
 - 通用 QNN 扩展训练流程。
 
 以上未实现项不得在界面、文档或验收结果中表述为已完成。

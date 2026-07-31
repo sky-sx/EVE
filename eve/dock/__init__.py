@@ -1,1 +1,1 @@
-"""Dock is paused until a concrete dataset, teacher and held-out contract exist."""
+"""Dock executes concrete models only when data and acceptance evidence exist."""

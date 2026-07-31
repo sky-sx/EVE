@@ -62,7 +62,7 @@ Output worker 在执行前复检。Mock 结果不能表述为真实桌面动作�
 
 ## 开发原则
 
-- 快速输入和动作路径不得等待 LLM、Memory 晋升或 Dock 训练。
+- 快速输入和动作路径不得等待 LLM、Memory 视图操作或 Dock 训练。
 - 一个主要本地 LLM 承担日常通用的 LLM-based self update loop，不展示或
   保存隐藏推理。
 - TNN 始终指 Tiny Neural Network；LLM、VLM 和 Memory 检索不改名为 TNN。
