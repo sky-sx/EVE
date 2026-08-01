@@ -300,7 +300,12 @@ def test_feedback_requires_exact_candidate_action_time_and_environment_event(tmp
     )
     memory.flush()
     experience = memory.read(experience_id)
+    assert experience["experience_version"] == 2
     assert experience["environment"]["environment_event_id"] == event.event_id
+    facts = {item["name"]: item["value"] for item in experience["environment"]["facts"]}
+    assert facts["hit"] is True
+    assert "reward" not in facts
+    assert "reward" not in experience["environment"]
     assert "candidate-1" not in state["pending_experiences"]
 
     state["pending_experiences"]["candidate-2"] = {

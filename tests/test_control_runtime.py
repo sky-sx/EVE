@@ -251,7 +251,10 @@ def test_llm_protocol_keeps_reply_when_optional_updates_are_invalid(tmp_path):
         assert state["world"]["interpretation"]["room"] == "desktop"
         assert state["blackboard"]["answer"]["value"] == 42
 
-        before_perception = dict(state["world"]["perception"])
+        before_perception = {
+            key: value for key, value in state["world"]["perception"].items()
+            if key != "updated_at_ns"
+        }
         core.submit_user_message("invalid")
         wait_until(lambda: len(state["conversation"]) == 2)
         wait_until(
@@ -259,7 +262,12 @@ def test_llm_protocol_keeps_reply_when_optional_updates_are_invalid(tmp_path):
         )
         assert state["model_status"]["local_llm"]["state"] == "ready"
         assert state["conversation"][-1]["reply"] == "bad"
-        assert state["world"]["perception"] == before_perception
+        after_perception = {
+            key: value for key, value in state["world"]["perception"].items()
+            if key != "updated_at_ns"
+        }
+        assert after_perception == before_perception
+        assert "forbidden" not in state["world"]["perception"]
         assert state["model_status"]["local_llm"]["failure_count"] == 0
     finally:
         core.stop()

@@ -114,7 +114,7 @@ Dock 不按任务名选择模型，也不包含 JSON 算子编译器或模型源
 订单必须携带训练数据与明确验收条件；候选通过验收后才写入正式 TNNweights
 和 Memory TNN 列表，并由 Core 加载。
 
-QNN 若未来用于扩展训练数据，只能在 `dock/workspace/<order_id>/` 中临时
+QNN 用于扩展训练数据时，只能在 `dock/workspace/<order_id>/` 中临时
 创建、估值并删除；它不写入正式 TNNweights、不注册 Memory TNN、不由
 Core 加载，也不进入运行图。
 
@@ -126,3 +126,24 @@ Core 加载，也不进入运行图。
 - 独立大型调度器、Graph Manager 或每 TNN 永久线程。
 - 麦克风或注意力/焦点的占位伪实现。
 - 前台窗口标题、进程名等 OS 语义捷径。
+
+## 9. 统一好度数据流
+
+```text
+环境/VLM冻结帧/人工事实
+  -> ValueDefinition（价值版本、输入、标尺、约束）
+  -> 教师直接评价或安全数值函数
+  -> 独立 GoodnessRecord
+  -> 可选的 Dock 临时 QNN 对已有候选排序
+  -> Actor top-k 训练样本
+  -> Actor evaluation.goodness / regression.goodness
+  -> 硬边界通过后才保存正式 Actor artifact
+```
+
+事实、损失、命中、reward、延迟和安全事件都不是好度本身。GoodnessRecord 的分数在 `[-1,1]`，并携带 target、value version、方法、事实、原因、置信度与真实证据 MemoryID。`self.goodness` 只保存当前总体摘要及最近记录指针，不复制全部历史记录。
+
+Experience v2 把环境信息保存为 `GoodnessFact[]`，并用 `goodness_memory_ids` 或 Event 关联后续评价。历史 v1 payload 保持只读兼容。blocked candidate 可以形成 `awaiting_goodness` Experience，但因为没有执行，不能接受正向环境执行反馈。
+
+安全数值函数只在 Dock 内解析白名单 AST：数字、声明变量、四则运算、比较、条件表达式和 `min/max/abs/clip`。属性访问、任意函数、import、文件/网络操作、循环与推导均不允许；缺少必需事实或出现 NaN/Inf 时等待教师评价，不产生默认好度。
+
+临时 QNN 仍是作者提供的 concrete `model.py`/TinyNN。其权重和临时数据只进入订单 workspace；报告保留结构、来源、误差、排序一致性、价值版本、教师来源与清理状态。QNN 不进入 Memory/TNNweights、Core、运行图或输出控制链。

@@ -375,6 +375,31 @@ class Memorizer:
         missing = required - set(experience)
         if missing:
             raise ValueError(f"incomplete experience: {sorted(missing)}")
+        version = int(experience.get("experience_version", 0))
+        if version not in {1, 2}:
+            raise ValueError("unsupported experience_version")
+        if version == 2:
+            if experience.get("status") not in {
+                "observed", "teacher_labeled", "executed", "complete",
+                "awaiting_goodness", "valued",
+            }:
+                raise ValueError("invalid Experience v2 status")
+            environment = experience.get("environment")
+            if not isinstance(environment, dict) or not isinstance(
+                environment.get("facts"), list
+            ):
+                raise ValueError("Experience v2 environment.facts is required")
+            goodness_ids = experience.get("goodness_memory_ids")
+            if not isinstance(goodness_ids, list):
+                raise ValueError("Experience v2 goodness_memory_ids is required")
+            unknown_goodness = [
+                str(item) for item in goodness_ids
+                if self.get_unit(str(item)) is None
+            ]
+            if unknown_goodness:
+                raise KeyError(
+                    f"unknown GoodnessRecord MemoryID(s): {unknown_goodness}"
+                )
         memory_id = self.enqueue(
             experience, "experience", priority="critical"
         )
@@ -405,6 +430,34 @@ class Memorizer:
                     "finished_at_ns", time.time_ns()
                 )
             ),
+        )
+        return memory_id
+
+    def record_goodness(
+        self,
+        record: dict[str, Any],
+        *,
+        related_memory_ids: list[str] | tuple[str, ...] = (),
+    ) -> str:
+        """Persist one already-evaluated goodness record and its evidence links.
+
+        Value interpretation deliberately stays outside Memory; this helper only
+        stores the immutable payload and records the supplied relationships.
+        """
+        memory_id = self.create(record, "goodness_record")
+        related = list(dict.fromkeys(
+            str(item) for item in (*related_memory_ids, memory_id) if item
+        ))
+        self.create_event(
+            related,
+            summary=f"goodness for {record.get('target', {}).get('id', '')}",
+            tags=[
+                "goodness",
+                str(record.get("target", {}).get("kind", "")),
+                str(record.get("value_basis", {}).get("value_version", "")),
+            ],
+            started_at_ns=int(record.get("created_at_ns", time.time_ns())),
+            ended_at_ns=int(record.get("created_at_ns", time.time_ns())),
         )
         return memory_id
 

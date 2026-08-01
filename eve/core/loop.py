@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import queue
 import re
@@ -78,9 +79,32 @@ def default_goodness() -> dict[str, Any]:
         "score": 0.0,
         "confidence": 0.0,
         "reason": "",
-        "target": "",
+        "target": {"kind": "self", "id": "myself"},
+        "value_version": "",
+        "latest_record_memory_id": "",
         "evidence_memory_ids": [],
         "updated_at_ns": 0,
+    }
+
+
+def _goodness_fact(
+    name: str,
+    value: Any,
+    *,
+    source: str,
+    source_id: str = "",
+    timestamp_ns: int,
+    confidence: float = 1.0,
+    unit: str = "",
+) -> dict[str, Any]:
+    return {
+        "name": str(name),
+        "value": value,
+        "unit": str(unit),
+        "source": str(source),
+        "source_id": str(source_id),
+        "timestamp_ns": int(timestamp_ns),
+        "confidence": max(0.0, min(1.0, float(confidence))),
     }
 
 
@@ -1112,6 +1136,107 @@ class CoreLoop:
         )
         return request_id
 
+    def create_value_definition(self, definition: dict[str, Any]) -> str:
+        """Validate and persist one explicit value interpretation definition."""
+        if not isinstance(definition, dict):
+            raise TypeError("value definition must be an object")
+        value = dict(definition)
+        value.setdefault("value_definition_version", 1)
+        value.setdefault("definition_id", f"value_{time.time_ns()}_{uuid.uuid4().hex[:8]}")
+        value.setdefault("created_at_ns", time.time_ns())
+        if int(value["value_definition_version"]) != 1:
+            raise ValueError("unsupported value_definition_version")
+        if not str(value.get("value_version", "")).strip():
+            raise ValueError("value_version is required")
+        if not isinstance(value.get("scope"), dict):
+            raise ValueError("value definition scope is required")
+        if not str(value.get("goal", "")).strip():
+            raise ValueError("value definition goal is required")
+        inputs = value.get("inputs")
+        if not isinstance(inputs, list) or any(
+            not isinstance(item, dict) or not str(item.get("name", "")).strip()
+            for item in inputs
+        ):
+            raise ValueError("value definition inputs must name declared facts")
+        value["inputs"] = [
+            {
+                "name": str(item["name"]),
+                "description": str(item.get("description", "")),
+                "required": bool(item.get("required", False)),
+                "source_hint": str(item.get("source_hint", "")),
+            }
+            for item in inputs
+        ]
+        mode = str(value.get("mode", ""))
+        if mode not in {"teacher_direct", "generated_function", "qnn"}:
+            raise ValueError("unsupported value definition mode")
+        function = value.get("function")
+        if mode == "generated_function" and not (
+            isinstance(function, dict)
+            and str(function.get("expression", "")).strip()
+            and isinstance(function.get("variables"), list)
+        ):
+            raise ValueError("generated_function requires expression and variables")
+        if mode != "generated_function":
+            value["function"] = None
+        anchors = value.setdefault(
+            "anchors", {"negative": -1.0, "neutral": 0.0, "positive": 1.0}
+        )
+        if not isinstance(anchors, dict) or not {
+            "negative", "neutral", "positive"
+        }.issubset(anchors):
+            raise ValueError("value definition anchors are incomplete")
+        constraints = value.setdefault("constraints", [])
+        if not isinstance(constraints, list):
+            raise ValueError("value definition constraints must be an array")
+        if str(value.get("created_by", "")) not in {
+            "local_llm", "human", "imported_teacher"
+        }:
+            raise ValueError("value definition created_by is invalid")
+        evidence = value.get("evidence_memory_ids", [])
+        if not isinstance(evidence, list):
+            raise ValueError("evidence_memory_ids must be an array")
+        missing = [item for item in evidence if self.memorizer.get_unit(str(item)) is None]
+        if missing:
+            raise KeyError(f"unknown evidence MemoryID(s): {missing}")
+        return self.memorizer.create(value, "value_definition")
+
+    def request_goodness_evaluation(
+        self,
+        target_memory_id: str,
+        *,
+        target_kind: str = "memory",
+        value_definition_memory_id: str = "",
+        evidence_memory_ids: list[str] | tuple[str, ...] = (),
+        instruction: str = "Evaluate this target under the supplied value definition.",
+    ) -> str:
+        """Queue a target-specific value judgment on the existing slow LLM path."""
+        target_id = str(target_memory_id)
+        if self.memorizer.get_unit(target_id) is None:
+            raise KeyError(f"unknown target MemoryID: {target_id}")
+        related = [target_id, *(str(item) for item in evidence_memory_ids)]
+        if value_definition_memory_id:
+            related.append(str(value_definition_memory_id))
+        missing = [item for item in related if self.memorizer.get_unit(item) is None]
+        if missing:
+            raise KeyError(f"unknown related MemoryID(s): {missing}")
+        request_id = f"goodness_{time.time_ns()}_{uuid.uuid4().hex[:8]}"
+        request = {
+            "request_id": request_id,
+            "kind": "goodness_evaluation",
+            "message": str(instruction),
+            "requested_at_ns": time.monotonic_ns(),
+            "memory_id": target_id,
+            "target": {"kind": str(target_kind), "id": target_id},
+            "value_definition_memory_id": str(value_definition_memory_id),
+            "evidence_memory_ids": list(dict.fromkeys(related)),
+        }
+        try:
+            self._llm_requests.put_nowait(request)
+        except queue.Full as exc:
+            raise RuntimeError("local LLM request queue is full") from exc
+        return request_id
+
     def cancel_generation(self) -> None:
         self._cancel_generation.set()
         self._cancel_vlm.set()
@@ -1498,15 +1623,64 @@ class CoreLoop:
                 for item in experience.get("teacher", {}).get("objects", [])
             ):
                 continue
-            if (
-                outcome is not None
-                and experience.get("environment", {}).get("hit") is not bool(outcome)
-            ):
-                continue
+            if outcome is not None:
+                environment = experience.get("environment", {})
+                observed = environment.get("hit")
+                if experience.get("experience_version") == 2:
+                    observed = next(
+                        (
+                            fact.get("value")
+                            for fact in environment.get("facts", [])
+                            if isinstance(fact, dict) and fact.get("name") == "hit"
+                        ),
+                        None,
+                    )
+                if observed is not bool(outcome):
+                    continue
             if experience.get("status") not in {"complete", "teacher_labeled"}:
                 continue
             results.append(memory_id)
         return results
+
+    @staticmethod
+    def _environment_facts(
+        feedback: dict[str, Any],
+        *,
+        source: str,
+        source_id: str,
+        timestamp_ns: int,
+    ) -> list[dict[str, Any]]:
+        facts: list[dict[str, Any]] = []
+        supplied = feedback.get("facts", [])
+        if supplied is not None and not isinstance(supplied, list):
+            raise TypeError("environment facts must be an array")
+        for item in supplied or []:
+            if not isinstance(item, dict) or not str(item.get("name", "")):
+                raise ValueError("each environment fact requires a name")
+            fact = _goodness_fact(
+                str(item["name"]),
+                item.get("value"),
+                source=str(item.get("source", source)),
+                source_id=str(item.get("source_id", source_id)),
+                timestamp_ns=int(item.get("timestamp_ns", timestamp_ns)),
+                confidence=float(item.get("confidence", 1.0)),
+                unit=str(item.get("unit", "")),
+            )
+            facts.append(fact)
+        units = {"score_delta": "points", "score_total": "points", "reward": "external"}
+        for name in ("hit", "target_id", "score_delta", "score_total", "reward"):
+            if name in feedback:
+                facts.append(
+                    _goodness_fact(
+                        name,
+                        feedback[name],
+                        source=source,
+                        source_id=source_id,
+                        timestamp_ns=timestamp_ns,
+                        unit=units.get(name, ""),
+                    )
+                )
+        return facts
 
     def _refresh_waiting_training_orders(self) -> None:
         for order_id, order in list(self._waiting_training_orders.items()):
@@ -1603,7 +1777,7 @@ class CoreLoop:
             "target_classes": list(feedback.get("target_classes", ())),
         }
         experience = {
-            "experience_version": 1,
+            "experience_version": 2,
             "status": "complete",
             "task": task,
             "state": pending["state"],
@@ -1612,15 +1786,11 @@ class CoreLoop:
             "output": pending["output"],
             "environment": {
                 "environment_event_id": environment_event_id,
-                "hit": bool(feedback.get("hit", False)),
-                "target_id": feedback.get("target_id"),
-                "score_delta": float(feedback.get("score_delta", 0.0)),
-                "score_total": float(feedback.get("score_total", 0.0)),
-                "reward": float(
-                    feedback.get(
-                        "reward",
-                        1.0 if feedback.get("hit", False) else -1.0,
-                    )
+                "facts": self._environment_facts(
+                    feedback,
+                    source="external_environment",
+                    source_id=environment_event_id,
+                    timestamp_ns=int(event.ended_at_ns),
                 ),
             },
             "timestamps": {
@@ -1628,6 +1798,7 @@ class CoreLoop:
                 "executed_at_ns": executed_at_ns,
                 "finished_at_ns": int(event.ended_at_ns),
             },
+            "goodness_memory_ids": [],
         }
         related = list(pending.get("related_memory_ids", ()))
         for key in ("screen_memory_id", "result_memory_id"):
@@ -1663,8 +1834,25 @@ class CoreLoop:
             )
         )
         target_classes = list(feedback.get("target_classes", ()))
+        visual_facts = [
+            _goodness_fact(
+                "visual_objects",
+                list(teacher.get("objects", ())),
+                source="vlm_frozen_frame",
+                source_id=str(teacher.get("result_memory_id", "")),
+                timestamp_ns=int(teacher.get("reference_frame_timestamp_ns", now_ns)),
+                confidence=1.0,
+            ),
+            _goodness_fact(
+                "reference_frame_id",
+                teacher.get("reference_frame_id"),
+                source="frozen_screen_frame",
+                source_id=str(teacher.get("screen_memory_id", "")),
+                timestamp_ns=int(teacher.get("reference_frame_timestamp_ns", now_ns)),
+            ),
+        ]
         experience = {
-            "experience_version": 1,
+            "experience_version": 2,
             "status": "teacher_labeled",
             "task": {
                 "task_id": task_id,
@@ -1714,15 +1902,12 @@ class CoreLoop:
                 "reason": "human_demonstration",
             },
             "environment": {
-                "hit": bool(feedback.get("hit", False)),
-                "target_id": feedback.get("target_id"),
-                "score_delta": float(feedback.get("score_delta", 0.0)),
-                "score_total": float(feedback.get("score_total", 0.0)),
-                "reward": float(
-                    feedback.get(
-                        "reward",
-                        1.0 if feedback.get("hit", False) else -1.0,
-                    )
+                "environment_event_id": str(feedback.get("environment_event_id", "")),
+                "facts": visual_facts + self._environment_facts(
+                    feedback,
+                    source="human_demonstration",
+                    source_id=str(teacher.get("result_memory_id", "")),
+                    timestamp_ns=now_ns,
                 ),
             },
             "timestamps": {
@@ -1731,6 +1916,9 @@ class CoreLoop:
                 ),
                 "finished_at_ns": now_ns,
             },
+            "goodness_memory_ids": [
+                str(item) for item in feedback.get("goodness_memory_ids", [])
+            ],
         }
         related = [
             str(value)
@@ -1740,6 +1928,7 @@ class CoreLoop:
             )
             if value
         ]
+        related.extend(experience["goodness_memory_ids"])
         memory_id = self.memorizer.record_experience(
             experience, related_memory_ids=related
         )
@@ -2626,6 +2815,11 @@ class CoreLoop:
 
     def _llm_context(self, request: dict[str, Any]) -> dict[str, Any]:
         related_ids = self.memorizer.search(keyword=request["message"][:32])[-5:]
+        related_ids.extend(str(item) for item in request.get("evidence_memory_ids", ()))
+        for key in ("memory_id", "value_definition_memory_id"):
+            if request.get(key):
+                related_ids.append(str(request[key]))
+        related_ids = list(dict.fromkeys(related_ids))[-20:]
         now_ns = time.monotonic_ns()
         blackboard = []
         for key, item in list(self.state["blackboard"].items())[-30:]:
@@ -2684,6 +2878,15 @@ class CoreLoop:
             "trigger_kind": request["kind"],
             "user_message": request["message"],
             "observation_memory_id": request.get("observation_memory_id"),
+            "goodness_evaluation": {
+                "target": request.get("target"),
+                "value_definition_memory_id": request.get(
+                    "value_definition_memory_id", ""
+                ),
+                "evidence_memory_ids": list(
+                    request.get("evidence_memory_ids", ())
+                ),
+            },
             "world_view": {
                 "perception_facts": world.get("perception", {}),
                 "interpretation": world.get("interpretation", {}),
@@ -2728,6 +2931,17 @@ class CoreLoop:
             "用户触发时 reply 必须是非空字符串。你只能更新 world 的 interpretation、"
             "uncertainty、task_state，绝不能改 perception。goodness.score 范围 [-1,1]，"
             "confidence 范围 [0,1]。training_proposal 只是建议，不是可执行训练订单。"
+        )
+        system += (
+            " goodness_update is only the current overall self summary. "
+            "goodness_records is an optional array of target-specific judgments; "
+            "each item requires target(kind,id), score, confidence, value_basis with "
+            "value_version, method, reason, and real evidence_memory_ids. Facts such "
+            "as reward, hit, score, loss, latency, or unsafe_count are evidence, not "
+            "goodness by themselves. Use the supplied ValueDefinition, task, frozen "
+            "world facts, self, and memory evidence. Never expose hidden reasoning. "
+            "A goodness score cannot override permissions, safety, or training hard "
+            "boundaries. Do not use LLM/VLM inference latency as the target TNN horizon."
         )
         user = json.dumps(context, ensure_ascii=False, default=_value_summary)
         return self._generate_from_messages(
@@ -2871,6 +3085,103 @@ class CoreLoop:
             raise ValueError("visual result contains no valid object labels")
         return objects
 
+    def _coerce_goodness_record(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise TypeError("goodness record must be an object")
+        if int(value.get("goodness_version", 1)) != 1:
+            raise ValueError("unsupported goodness_version")
+        target = value.get("target")
+        if not isinstance(target, dict) or not str(target.get("kind", "")) or not str(
+            target.get("id", "")
+        ):
+            raise ValueError("goodness record target(kind,id) is required")
+        target = {"kind": str(target["kind"]), "id": str(target["id"])}
+        if target["kind"] not in {
+            "action", "candidate_output", "experience", "episode",
+            "tnn_version", "training_result", "memory",
+        }:
+            raise ValueError("unsupported goodness target kind")
+        if target["kind"] in {"memory", "experience", "training_result"} and (
+            self.memorizer.get_unit(target["id"]) is None
+        ):
+            raise KeyError(f"unknown goodness target MemoryID: {target['id']}")
+        try:
+            score = float(value["score"])
+            confidence = float(value["confidence"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("goodness score and confidence are required numbers") from exc
+        if not math.isfinite(score) or not math.isfinite(confidence):
+            raise ValueError("goodness score and confidence must be finite")
+        value_basis = value.get("value_basis")
+        if not isinstance(value_basis, dict) or not str(
+            value_basis.get("value_version", "")
+        ):
+            raise ValueError("goodness value_basis.value_version is required")
+        anchors = value_basis.get("anchors", {})
+        if not isinstance(anchors, dict):
+            raise ValueError("goodness anchors must be an object")
+        method = value.get("method")
+        if not isinstance(method, dict) or str(method.get("type", "")) not in {
+            "teacher_direct", "generated_function", "qnn"
+        }:
+            raise ValueError("goodness method.type is invalid")
+        evidence = value.get("evidence_memory_ids", [])
+        if not isinstance(evidence, list):
+            raise ValueError("goodness evidence_memory_ids must be an array")
+        evidence = list(dict.fromkeys(str(item) for item in evidence if item))
+        missing = [item for item in evidence if self.memorizer.get_unit(item) is None]
+        if missing:
+            raise KeyError(f"unknown goodness evidence MemoryID(s): {missing}")
+        definition_id = str(method.get("definition_memory_id", ""))
+        if definition_id and self.memorizer.get_unit(definition_id) is None:
+            raise KeyError(f"unknown ValueDefinition MemoryID: {definition_id}")
+        facts = value.get("facts", [])
+        if not isinstance(facts, list) or any(
+            not isinstance(item, dict) or not str(item.get("name", ""))
+            for item in facts
+        ):
+            raise ValueError("goodness facts must be named objects")
+        fact_memory_ids = [
+            str(item.get("memory_id"))
+            for item in facts
+            if item.get("memory_id")
+        ]
+        unknown_fact_ids = [
+            item for item in fact_memory_ids
+            if self.memorizer.get_unit(item) is None
+        ]
+        if unknown_fact_ids:
+            raise KeyError(f"unknown goodness fact MemoryID(s): {unknown_fact_ids}")
+        return {
+            "goodness_version": 1,
+            "record_id": str(
+                value.get("record_id")
+                or f"goodness_{time.time_ns()}_{uuid.uuid4().hex[:8]}"
+            ),
+            "target": target,
+            "score": max(-1.0, min(1.0, score)),
+            "confidence": max(0.0, min(1.0, confidence)),
+            "value_basis": {
+                "value_version": str(value_basis["value_version"]),
+                "scope": dict(value_basis.get("scope", {})),
+                "anchors": {
+                    "negative": anchors.get("negative", -1.0),
+                    "neutral": anchors.get("neutral", 0.0),
+                    "positive": anchors.get("positive", 1.0),
+                },
+            },
+            "method": {
+                "type": str(method["type"]),
+                "producer": str(method.get("producer", "local_llm")),
+                "definition_memory_id": definition_id,
+                "qnn_job_id": str(method.get("qnn_job_id", "")),
+            },
+            "facts": [dict(item) for item in facts],
+            "reason": str(value.get("reason", ""))[:2000],
+            "evidence_memory_ids": evidence,
+            "created_at_ns": int(value.get("created_at_ns", time.time_ns())),
+        }
+
     def _coerce_llm_result(
         self, raw: Any, request: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2929,6 +3240,22 @@ class CoreLoop:
         ):
             goodness.pop("evidence_memory_ids", None)
 
+        records = value.get("goodness_records", [])
+        if not isinstance(records, list):
+            records = []
+        clean_records: list[dict[str, Any]] = []
+        for item in records[:20]:
+            try:
+                clean_records.append(self._coerce_goodness_record(item))
+            except (KeyError, TypeError, ValueError):
+                status = self.state["model_status"]["local_llm"]
+                status["goodness_record_schema_failure_count"] = int(
+                    status.get("goodness_record_schema_failure_count", 0)
+                ) + 1
+                status["schema_failure_count"] = int(
+                    status.get("schema_failure_count", 0)
+                ) + 1
+
         updates = value.get("blackboard_updates", [])
         if not isinstance(updates, list):
             updates = []
@@ -2986,6 +3313,7 @@ class CoreLoop:
             "world_interpretation_update": world_update,
             "myself_cognition_update": cognition_update,
             "goodness_update": goodness,
+            "goodness_records": clean_records,
             "blackboard_updates": clean_updates,
             "active_tnn": desired,
             "memory_actions": memory_actions,
@@ -3007,6 +3335,31 @@ class CoreLoop:
             "thinking_summary": str(result["thinking_summary"]),
             "timestamp_ns": now_ns,
         }
+        stored_goodness: list[dict[str, Any]] = []
+        for record in result.get("goodness_records", []):
+            related = list(record["evidence_memory_ids"])
+            definition_id = record.get("method", {}).get("definition_memory_id")
+            if definition_id:
+                related.append(str(definition_id))
+            target_id = str(record["target"]["id"])
+            if self.memorizer.get_unit(target_id) is not None:
+                related.append(target_id)
+            goodness_memory_id = self.memorizer.record_goodness(
+                record,
+                related_memory_ids=related,
+            )
+            stored_goodness.append(
+                {
+                    "memory_id": goodness_memory_id,
+                    "record_id": record["record_id"],
+                    "target": record["target"],
+                    "score": record["score"],
+                    "confidence": record["confidence"],
+                    "value_version": record["value_basis"]["value_version"],
+                    "reason": record["reason"],
+                }
+            )
+        exchange["goodness_records"] = stored_goodness
         with self.state["_state_lock"]:
             for section, value in world_update.items():
                 if isinstance(value, dict):
@@ -3020,6 +3373,14 @@ class CoreLoop:
                     result["goodness_update"]
                 )
                 self.state["myself"]["goodness"]["updated_at_ns"] = now_ns
+            if stored_goodness:
+                latest = stored_goodness[-1]
+                self.state["myself"]["goodness"]["latest_record_memory_id"] = latest[
+                    "memory_id"
+                ]
+                self.state["blackboard"]["latest_goodness"] = _timed(
+                    latest, now_ns, producer="local_llm"
+                )
             for update in result["blackboard_updates"]:
                 self.state["blackboard"][update["key"]] = _timed(
                     update.get("value"), now_ns, update["ttl_ns"], "local_llm"
@@ -3073,6 +3434,7 @@ class CoreLoop:
                 request.get("observation_memory_id"),
                 reply_id,
                 thought_id,
+                *(item["memory_id"] for item in stored_goodness),
             )
             if memory_id
         ]
@@ -4490,6 +4852,62 @@ class CoreLoop:
                 ),
                 "related_memory_ids": list(memory_ids.values()),
             }
+            if result.get("blocked"):
+                finished_at_ns = int(result.get("finished_at_ns", time.monotonic_ns()))
+                blocked_experience = {
+                    "experience_version": 2,
+                    "status": "awaiting_goodness",
+                    "task": {
+                        "task_id": str(self.state["myself"].get("current_task", "")),
+                        "instruction": str(self.state["myself"].get("current_task", "")),
+                        "target_classes": [],
+                    },
+                    "state": self.state["pending_experiences"][action["candidate_id"]]["state"],
+                    "teacher": self.state["pending_experiences"][action["candidate_id"]]["teacher"],
+                    "action": action,
+                    "output": result,
+                    "environment": {
+                        "environment_event_id": "",
+                        "facts": [
+                            _goodness_fact(
+                                "action_allowed",
+                                False,
+                                source="permission_gate",
+                                source_id=str(memory_ids.get("permission_result", "")),
+                                timestamp_ns=finished_at_ns,
+                            ),
+                            _goodness_fact(
+                                "blocked_reason",
+                                str(result.get("reason", "")),
+                                source="permission_gate",
+                                source_id=str(memory_ids.get("permission_result", "")),
+                                timestamp_ns=finished_at_ns,
+                            ),
+                            _goodness_fact(
+                                "blocked_atoms",
+                                list(decision.get("blocked_atoms", ())),
+                                source="permission_gate",
+                                source_id=str(memory_ids.get("permission_result", "")),
+                                timestamp_ns=finished_at_ns,
+                            ),
+                        ],
+                    },
+                    "timestamps": {
+                        "started_at_ns": int(action.get("generated_at_ns", finished_at_ns)),
+                        "finished_at_ns": finished_at_ns,
+                    },
+                    "goodness_memory_ids": [],
+                }
+                blocked_id = self.memorizer.record_experience(
+                    blocked_experience,
+                    related_memory_ids=list(memory_ids.values()),
+                )
+                self.state["blackboard"]["latest_experience"] = _timed(
+                    {"memory_id": blocked_id, **blocked_experience},
+                    finished_at_ns,
+                    producer="permission_gate",
+                )
+                self.state["pending_experiences"].pop(action["candidate_id"], None)
             while len(self.state["pending_experiences"]) > 100:
                 oldest = next(iter(self.state["pending_experiences"]))
                 self.state["pending_experiences"].pop(oldest, None)
