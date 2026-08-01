@@ -46,9 +46,9 @@
 ## 2026-08-01：统一好度与训练闭环第一版
 
 - `GoodnessRecord` 与 `ValueDefinition` 已作为独立、不可变 MemoryUnit 保存；重估会新增记录，并通过 Event 关联 target、证据和价值定义。
-- protocol v2 保持版本号不变，新增可选 `goodness_records`；旧 backend 不返回该字段仍兼容。`goodness_update` 只表示当前 `self.goodness` 总体摘要。
-- 新 Experience 写入使用 v2：环境的 `hit`、外部 `reward`、分数、延迟等只作为事实，不再自动把命中换算为 `reward = ±1`；读取仍兼容 v1。
+- protocol v2 只有一套完整字段；`goodness_records` 必须存在，无具体评价时使用空数组。旧字段名、缺字段 backend 和迁移别名不接受。`goodness_update` 只表示当前 `self.goodness` 总体摘要。
+- Experience 第一版只接受 v2：环境的 `hit`、外部 `reward`、分数、延迟等只作为事实，不再自动把命中换算为 `reward = ±1`；v1 不读取、不迁移。
 - 冻结帧 VLM 结果只产生带原始帧 ID、时间和证据 MemoryID 的事实，不独立决定好度、动作或训练验收。
 - Dock 支持 ValueDefinition 的最小安全数值表达式，以及只在 `dock/workspace/<order_id>/` 内存在的临时 QNN。QNN 仅评价已有候选、产生 Actor top-k 样本，随后删除；不会注册为正式 TNN，也不会被 Core 加载。
-- 新式验收以 `evaluation.goodness` 和 `regression.goodness` 为正式比较值，支持 `mean`/`minimum` 聚合；旧 `max_loss` 等技术验收仍兼容。权限、急停、接口和 artifact 完整性仍是不可由高好度绕过的硬边界。
+- 训练验收只接受 `min_goodness` 和 `min_regression_goodness`，支持 `mean`/`minimum` 聚合；loss 等指标仅作诊断事实。权限、急停、接口和 artifact 完整性仍是不可由高好度绕过的硬边界。
 - 本轮验证是合成数据和单元/集成测试证据，不代表真实桌面成长实验、任意连续动作搜索、通用视觉理解或长期价值观已经完成。

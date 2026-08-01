@@ -29,7 +29,7 @@ class Model(TinyNN):
     def evaluation_step(self, batch):
         with torch.no_grad():
             loss = torch.nn.functional.mse_loss(self.forward(batch['inputs'])['y'], batch['targets']['y'])
-        return {'loss': float(loss)}
+        return {'loss': float(loss), 'goodness': 1.0}
 
 def create_tnn(): return Model()
 """,
@@ -52,7 +52,8 @@ def test_dock_uses_exact_model_py_and_persists_uniform_artifact(tmp_path):
             model_path=str(write_model(tmp_path / "source")),
             training_data=[sample],
             evaluation_data=[sample],
-            acceptance={"max_loss": 100.0},
+            regression_data=[sample],
+            acceptance={"min_goodness": 0.5, "min_regression_goodness": 0.5},
         )
     )
     assert result.success and result.accepted

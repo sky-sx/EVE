@@ -52,7 +52,8 @@ class Model(TinyNN):
             loss.backward(); self.optimizer.step()
         return {'loss': float(loss.detach())}
     def training_step(self, batch): return self._metrics(batch, True)
-    def evaluation_step(self, batch): return self._metrics(batch, False)
+    def evaluation_step(self, batch):
+        metrics = self._metrics(batch, False); metrics['goodness'] = 1.0; return metrics
 
 def create_tnn(): return Model()
 """,
@@ -86,9 +87,10 @@ def test_generic_order_trains_persists_and_core_loads_tnn(tmp_path):
             version="v1",
             training_data=ids,
             evaluation_data=ids,
+            regression_data=ids,
             minimum_samples=4,
             epochs=1,
-            acceptance={"max_loss": 1_000_000.0},
+            acceptance={"min_goodness": 0.5, "min_regression_goodness": 0.5},
             runtime={
                 "input_refs": {"features": "blackboard:features"},
                 "run_frequency_hz": 5.0,
@@ -121,8 +123,9 @@ def test_explicit_model_file_can_continue_training(tmp_path):
             version="v1",
             training_data=ids,
             evaluation_data=ids,
+            regression_data=ids,
             epochs=1,
-            acceptance={"max_loss": 1_000_000.0},
+            acceptance={"min_goodness": 0.5, "min_regression_goodness": 0.5},
         )
     )
     continued = trainer.process_order(
@@ -134,9 +137,10 @@ def test_explicit_model_file_can_continue_training(tmp_path):
             version="v2",
             training_data=ids,
             evaluation_data=ids,
+            regression_data=ids,
             epochs=1,
             continue_training=True,
-            acceptance={"max_loss": 1_000_000.0},
+            acceptance={"min_goodness": 0.5, "min_regression_goodness": 0.5},
         )
     )
     assert continued.success and continued.accepted

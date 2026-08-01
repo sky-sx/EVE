@@ -1625,16 +1625,14 @@ class CoreLoop:
                 continue
             if outcome is not None:
                 environment = experience.get("environment", {})
-                observed = environment.get("hit")
-                if experience.get("experience_version") == 2:
-                    observed = next(
-                        (
-                            fact.get("value")
-                            for fact in environment.get("facts", [])
-                            if isinstance(fact, dict) and fact.get("name") == "hit"
-                        ),
-                        None,
-                    )
+                observed = next(
+                    (
+                        fact.get("value")
+                        for fact in environment.get("facts", [])
+                        if isinstance(fact, dict) and fact.get("name") == "hit"
+                    ),
+                    None,
+                )
                 if observed is not bool(outcome):
                     continue
             if experience.get("status") not in {"complete", "teacher_labeled"}:
@@ -2934,7 +2932,8 @@ class CoreLoop:
         )
         system += (
             " goodness_update is only the current overall self summary. "
-            "goodness_records is an optional array of target-specific judgments; "
+            "goodness_records is a required array (use [] when there is no "
+            "target-specific judgment); no alternate field names are accepted. "
             "each item requires target(kind,id), score, confidence, value_basis with "
             "value_version, method, reason, and real evidence_memory_ids. Facts such "
             "as reward, hit, score, loss, latency, or unsafe_count are evidence, not "
@@ -3186,36 +3185,41 @@ class CoreLoop:
         self, raw: Any, request: dict[str, Any]
     ) -> dict[str, Any]:
         value = raw if isinstance(raw, dict) else self._parse_model_json(str(raw))
-        if int(value.get("protocol_version", LLM_PROTOCOL_VERSION)) != 2:
+        required_fields = {
+            "protocol_version", "reply", "thinking_summary",
+            "world_interpretation_update", "myself_cognition_update",
+            "goodness_update", "goodness_records", "blackboard_updates",
+            "active_tnn", "memory_actions", "training_proposal",
+        }
+        missing_fields = required_fields - set(value)
+        unknown_fields = set(value) - required_fields
+        if missing_fields or unknown_fields:
+            raise ValueError(
+                f"protocol v2 fields mismatch; missing={sorted(missing_fields)}, "
+                f"unknown={sorted(unknown_fields)}"
+            )
+        if int(value["protocol_version"]) != LLM_PROTOCOL_VERSION:
             raise ValueError("unsupported LLM protocol_version")
-        reply = self._visible_model_reply(str(value.get("reply", "")))
+        reply = self._visible_model_reply(str(value["reply"]))
         if request.get("kind") == "user" and not reply:
             raise ValueError("user-triggered LLM result requires reply")
 
-        world_update = value.get(
-            "world_interpretation_update", value.get("world_update", {})
-        )
+        world_update = value["world_interpretation_update"]
         if not isinstance(world_update, dict):
-            world_update = {}
+            raise TypeError("world_interpretation_update must be an object")
         world_update = {
             key: item
             for key, item in world_update.items()
             if key in {"interpretation", "uncertainty", "task_state"}
         }
 
-        cognition_update = value.get(
-            "myself_cognition_update", value.get("myself_update", {})
-        )
+        cognition_update = value["myself_cognition_update"]
         if not isinstance(cognition_update, dict):
-            cognition_update = {}
-        if "cognition" in cognition_update and isinstance(
-            cognition_update["cognition"], dict
-        ):
-            cognition_update = cognition_update["cognition"]
+            raise TypeError("myself_cognition_update must be an object")
 
-        goodness_update = value.get("goodness_update", {})
+        goodness_update = value["goodness_update"]
         if not isinstance(goodness_update, dict):
-            goodness_update = {}
+            raise TypeError("goodness_update must be an object")
         goodness: dict[str, Any] = {}
         for key in (
             "score", "confidence", "reason", "target",
@@ -3225,48 +3229,41 @@ class CoreLoop:
                 goodness[key] = goodness_update[key]
         if "score" in goodness:
             try:
-                goodness["score"] = max(-1.0, min(1.0, float(goodness["score"])))
-            except (TypeError, ValueError):
-                goodness.pop("score", None)
+                score = float(goodness["score"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("goodness_update.score must be numeric") from exc
+            if not math.isfinite(score):
+                raise ValueError("goodness_update.score must be finite")
+            goodness["score"] = max(-1.0, min(1.0, score))
         if "confidence" in goodness:
             try:
-                goodness["confidence"] = max(
-                    0.0, min(1.0, float(goodness["confidence"]))
-                )
-            except (TypeError, ValueError):
-                goodness.pop("confidence", None)
+                confidence = float(goodness["confidence"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("goodness_update.confidence must be numeric") from exc
+            if not math.isfinite(confidence):
+                raise ValueError("goodness_update.confidence must be finite")
+            goodness["confidence"] = max(0.0, min(1.0, confidence))
         if "evidence_memory_ids" in goodness and not isinstance(
             goodness["evidence_memory_ids"], list
         ):
-            goodness.pop("evidence_memory_ids", None)
+            raise TypeError("goodness_update.evidence_memory_ids must be an array")
 
-        records = value.get("goodness_records", [])
+        records = value["goodness_records"]
         if not isinstance(records, list):
-            records = []
-        clean_records: list[dict[str, Any]] = []
-        for item in records[:20]:
-            try:
-                clean_records.append(self._coerce_goodness_record(item))
-            except (KeyError, TypeError, ValueError):
-                status = self.state["model_status"]["local_llm"]
-                status["goodness_record_schema_failure_count"] = int(
-                    status.get("goodness_record_schema_failure_count", 0)
-                ) + 1
-                status["schema_failure_count"] = int(
-                    status.get("schema_failure_count", 0)
-                ) + 1
+            raise TypeError("goodness_records must be an array")
+        clean_records = [self._coerce_goodness_record(item) for item in records[:20]]
 
-        updates = value.get("blackboard_updates", [])
+        updates = value["blackboard_updates"]
         if not isinstance(updates, list):
-            updates = []
+            raise TypeError("blackboard_updates must be an array")
         clean_updates = []
         for update in updates[:20]:
             if not isinstance(update, dict) or not str(update.get("key", "")):
-                continue
+                raise ValueError("each blackboard update requires a key")
             try:
                 ttl_ns = max(0, int(update.get("ttl_ns", 0)))
-            except (TypeError, ValueError):
-                ttl_ns = 0
+            except (TypeError, ValueError) as exc:
+                raise ValueError("blackboard ttl_ns must be an integer") from exc
             clean_updates.append(
                 {
                     "key": str(update["key"]),
@@ -3275,37 +3272,25 @@ class CoreLoop:
                 }
             )
 
-        active_tnn = value.get("active_tnn", sorted(self.state["active_tnn"]))
+        active_tnn = value["active_tnn"]
         if not isinstance(active_tnn, list):
-            active_tnn = sorted(self.state["active_tnn"])
+            raise TypeError("active_tnn must be an array")
         desired = [str(item) for item in active_tnn]
         if (
             len(set(desired)) > MAX_LOADED_TNN
             or set(desired) - set(self.state["loaded_tnn"])
         ):
-            desired = sorted(self.state["active_tnn"])
+            raise ValueError("active_tnn exceeds the loaded bounded set")
 
-        memory_actions = value.get("memory_actions", [])
+        memory_actions = value["memory_actions"]
         if not isinstance(memory_actions, list):
-            memory_actions = []
-        legacy_candidates = value.get("memory_candidates", [])
-        if isinstance(legacy_candidates, list):
-            memory_actions.extend(
-                {
-                    "action": "create",
-                    "payload": candidate,
-                    "payload_type": "llm_memory_candidate",
-                }
-                for candidate in legacy_candidates[:20]
-            )
-        memory_actions = [
-            item for item in memory_actions[:20] if isinstance(item, dict)
-        ]
-        proposal = value.get("training_proposal")
-        if proposal is None and isinstance(value.get("training_order"), dict):
-            proposal = value["training_order"]
+            raise TypeError("memory_actions must be an array")
+        if any(not isinstance(item, dict) for item in memory_actions[:20]):
+            raise TypeError("each memory action must be an object")
+        memory_actions = memory_actions[:20]
+        proposal = value["training_proposal"]
         if proposal is not None and not isinstance(proposal, dict):
-            proposal = None
+            raise TypeError("training_proposal must be an object or null")
         return {
             "protocol_version": 2,
             "reply": reply,
@@ -4363,41 +4348,58 @@ class CoreLoop:
         if not source.is_file():
             return False
         snapshot = json.loads(source.read_text(encoding="utf-8"))
-        saved_world = snapshot.get("world", {})
-        if isinstance(saved_world, dict):
-            for name in ("interpretation", "uncertainty", "task_state"):
-                value = saved_world.get(name)
-                if isinstance(value, dict):
-                    self.state["world"][name] = dict(value)
-        saved_self = snapshot.get("myself", {})
-        if isinstance(saved_self, dict):
-            for name in (
-                "current_task", "what_im_thinking", "cognition",
-                "goodness", "tendencies",
-            ):
-                value = saved_self.get(name)
-                if name in {"cognition", "goodness", "tendencies"}:
-                    if isinstance(value, dict):
-                        self.state["myself"][name] = dict(value)
-                elif isinstance(value, str):
-                    self.state["myself"][name] = value
-        self.state["myself"].pop("hormones", None)
-        self.state["myself"].pop("last_hormone_change", None)
-        saved_model_config = snapshot.get("model_config")
-        if isinstance(saved_model_config, dict):
-            for name, value in saved_model_config.items():
-                if name not in self.state["model_config"]:
-                    continue
-                if name in {
-                    "local_llm_path", "vlm_path", "yolo_model_path"
-                } and not value:
-                    continue
-                self.state["model_config"][name] = value
+        required = {
+            "snapshot_version", "world", "myself", "model_config",
+            "active_tnn", "loaded_tnn",
+        }
+        if not isinstance(snapshot, dict) or set(snapshot) != required:
+            return False
+        if snapshot["snapshot_version"] != SNAPSHOT_VERSION:
+            return False
+        saved_world = snapshot["world"]
+        saved_self = snapshot["myself"]
+        saved_model_config = snapshot["model_config"]
+        if not all(
+            (
+                isinstance(saved_world, dict),
+                set(saved_world) == {"interpretation", "uncertainty", "task_state"},
+                all(isinstance(value, dict) for value in saved_world.values()),
+                isinstance(saved_self, dict),
+                set(saved_self) == {
+                    "current_task", "what_im_thinking", "cognition",
+                    "goodness", "tendencies",
+                },
+                isinstance(saved_self.get("current_task"), str),
+                isinstance(saved_self.get("what_im_thinking"), str),
+                all(
+                    isinstance(saved_self.get(name), dict)
+                    for name in ("cognition", "goodness", "tendencies")
+                ),
+                isinstance(saved_model_config, dict),
+                set(saved_model_config) == set(self.state["model_config"]),
+                isinstance(snapshot["active_tnn"], list),
+                isinstance(snapshot["loaded_tnn"], list),
+            )
+        ):
+            return False
+        if any(
+            not saved_model_config[name]
+            for name in ("local_llm_path", "vlm_path", "yolo_model_path")
+        ):
+            return False
+        for name, value in saved_world.items():
+            self.state["world"][name] = dict(value)
+        for name, value in saved_self.items():
+            if name in {"cognition", "goodness", "tendencies"}:
+                self.state["myself"][name] = dict(value)
+            else:
+                self.state["myself"][name] = value
+        self.state["model_config"] = dict(saved_model_config)
         self.state["restored_tnn_descriptions"] = list(
-            snapshot.get("loaded_tnn", [])
+            snapshot["loaded_tnn"]
         )
         self.state["requested_tnn_on_restore"] = [
-            str(item) for item in snapshot.get("active_tnn", [])
+            str(item) for item in snapshot["active_tnn"]
         ][:MAX_LOADED_TNN]
         self.state["emergency_stop"] = False
         self.state["permissions"] = default_permissions(False)

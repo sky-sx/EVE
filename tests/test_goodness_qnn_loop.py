@@ -22,6 +22,7 @@ def protocol_reply() -> dict:
         "world_interpretation_update": {},
         "myself_cognition_update": {},
         "goodness_update": {},
+        "goodness_records": [],
         "blackboard_updates": [],
         "active_tnn": [],
         "memory_actions": [],
@@ -123,7 +124,20 @@ def test_safe_value_expression_is_small_finite_and_clipped():
 
 def test_goodness_records_are_independent_clipped_and_linked(tmp_path):
     memory = Memorizer(tmp_path / "memory")
-    target_id = memory.create({"experience_version": 1, "immutable": True}, "experience")
+    target_payload = {
+        "experience_version": 2,
+        "status": "observed",
+        "task": {},
+        "state": {},
+        "teacher": {},
+        "action": {},
+        "output": {},
+        "environment": {"environment_event_id": "", "facts": []},
+        "timestamps": {"started_at_ns": 1, "finished_at_ns": 1},
+        "goodness_memory_ids": [],
+        "immutable": True,
+    }
+    target_id = memory.create(target_payload, "experience")
     definition_id = memory.create(
         {
             "value_definition_version": 1,
@@ -178,18 +192,18 @@ def test_goodness_records_are_independent_clipped_and_linked(tmp_path):
     records = memory.search(payload_type="goodness_record")
     assert len(records) == 2
     assert records[0] != records[1]
-    assert memory.read(target_id) == {"experience_version": 1, "immutable": True}
+    assert memory.read(target_id) == target_payload
     assert state["myself"]["goodness"]["latest_record_memory_id"] == records[-1]
     assert state["blackboard"]["latest_goodness"]["value"]["target"]["id"] == target_id
     assert any(target_id in event.memory_ids for event in memory.events.values())
     invalid = protocol_reply()
     invalid["goodness_records"] = [{**raw["goodness_records"][0], "evidence_memory_ids": ["missing"]}]
-    assert core._coerce_llm_result(invalid, request)["goodness_records"] == []
-    assert state["model_status"]["local_llm"]["goodness_record_schema_failure_count"] == 1
+    with pytest.raises(KeyError, match="unknown goodness evidence"):
+        core._coerce_llm_result(invalid, request)
     memory.stop_writer()
 
 
-def test_experience_v2_has_facts_not_implicit_reward_and_v1_still_loads(tmp_path):
+def test_experience_v2_has_facts_and_experience_v1_is_rejected(tmp_path):
     memory = Memorizer(tmp_path / "memory")
     experience = {
         "experience_version": 2,
@@ -216,8 +230,12 @@ def test_experience_v2_has_facts_not_implicit_reward_and_v1_still_loads(tmp_path
         "experience",
     )
     trainer = Trainer(memory, workspace_root=tmp_path / "dock")
-    loaded = trainer._load_samples([v1_id, v2_id])
-    assert len(loaded) == 2
+    loaded = trainer._load_samples([v2_id])
+    assert len(loaded) == 1
+    with pytest.raises(ValueError, match="only Experience v2"):
+        trainer._load_samples([v1_id])
+    with pytest.raises(ValueError, match="unsupported experience_version"):
+        memory.record_experience({**experience, "experience_version": 1})
     assert "reward" not in experience["environment"]
     assert experience["goodness_memory_ids"] == ["g1", "g2"]
 
@@ -465,7 +483,7 @@ def test_temporary_qnn_ranks_candidates_generates_actor_and_is_deleted(tmp_path)
     assert '"teacher_sources"' in training
 
 
-def test_goodness_aggregation_and_legacy_acceptance_remain_explicit():
+def test_goodness_aggregation_and_only_first_version_acceptance_remain():
     assert Trainer._average(
         [{"goodness": 0.9}, {"goodness": -0.2}], "minimum"
     )["goodness"] == -0.2
@@ -474,7 +492,9 @@ def test_goodness_aggregation_and_legacy_acceptance_remain_explicit():
         {"goodness": 0.8},
         {"goodness": 0.7},
     ) == (True, None)
-    assert Trainer._accept({"max_loss": 1.0}, {"loss": 0.5}, {}) == (True, None)
+    accepted, reason = Trainer._accept({"max_loss": 1.0}, {"loss": 0.5}, {})
+    assert accepted is False
+    assert reason == "acceptance schema is not first-version goodness"
 
 
 def test_formal_eve_has_no_runtime_qnn_or_task_specific_value_formula():
@@ -486,3 +506,13 @@ def test_formal_eve_has_no_runtime_qnn_or_task_specific_value_formula():
     )
     for forbidden in ("red_circle", "blue_triangle", "red_blue_game", "stage_1"):
         assert forbidden not in formal
+    for removed_compatibility in (
+        "legacy_memorizer",
+        "legacy_catalog_path",
+        'value.get("world_update"',
+        'value.get("myself_update"',
+        'value.get("memory_candidates"',
+        'value.get("training_order"',
+        '"max_loss"',
+    ):
+        assert removed_compatibility not in formal

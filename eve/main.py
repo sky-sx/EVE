@@ -554,7 +554,7 @@ def _load_qt() -> dict[str, Any]:
 
 
 def _qimage_format(qimage: Any, name: str) -> Any:
-    """Resolve QImage formats across PySide6's legacy and scoped enums."""
+    """Resolve QImage formats across PySide6's unscoped and scoped enums."""
     value = getattr(qimage, name, None)
     if value is not None:
         return value

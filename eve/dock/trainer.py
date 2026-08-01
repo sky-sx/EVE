@@ -196,19 +196,12 @@ class Trainer:
 
     def __init__(
         self,
-        memorizer: Any | None = None,
-        legacy_memorizer: Any | None = None,
+        memorizer: Any,
         *,
         workspace_root: str | Path = "dock/workspace",
         training_device: str | torch.device | None = None,
-        **legacy_options: Any,
     ) -> None:
-        legacy_options.pop("tnn_store", None)
-        if legacy_options:
-            raise TypeError(f"unexpected Trainer options: {sorted(legacy_options)}")
-        self._memorizer = legacy_memorizer or memorizer
-        if self._memorizer is None:
-            raise TypeError("memorizer is required")
+        self._memorizer = memorizer
         self.workspace_root = Path(workspace_root)
         self.training_device = torch.device(training_device or "cpu")
         self._queue: list[TrainingOrder] = []
@@ -280,8 +273,15 @@ class Trainer:
             raise ValueError("order_id and target_tnn_id are required")
         if bool(order.model_path) == bool(order.model_memory_id):
             raise ValueError("provide exactly one of model_path or model_memory_id")
-        if not order.acceptance:
-            raise ValueError("an executable order requires acceptance criteria")
+        if set(order.acceptance) != {"min_goodness", "min_regression_goodness"}:
+            raise ValueError(
+                "acceptance requires only min_goodness and min_regression_goodness"
+            )
+        thresholds = [float(value) for value in order.acceptance.values()]
+        if any(not math.isfinite(value) or not -1.0 <= value <= 1.0 for value in thresholds):
+            raise ValueError("goodness acceptance thresholds must be within [-1, 1]")
+        if not order.evaluation_data or not order.regression_data:
+            raise ValueError("evaluation_data and regression_data are required")
         if order.minimum_samples < 1 or order.batch_size < 1 or order.epochs < 0:
             raise ValueError("invalid training bounds")
         aggregation = str(order.actor_stage.get("goodness_aggregation", "mean"))
@@ -440,7 +440,9 @@ class Trainer:
             for item in payload if isinstance(payload, list) else [payload]:
                 if not isinstance(item, dict):
                     continue
-                if item.get("experience_version") in {1, 2}:
+                if "experience_version" in item and item.get("experience_version") != 2:
+                    raise ValueError("Dock accepts only Experience v2")
+                if item.get("experience_version") == 2:
                     item = item.get("training_sample", {})
                 if isinstance(item.get("inputs"), dict) and isinstance(
                     item.get("targets"), dict
@@ -931,19 +933,21 @@ class Trainer:
         acceptance: dict[str, float], evaluation: dict[str, float],
         regression: dict[str, float],
     ) -> tuple[bool, str | None]:
-        metrics = {
-            **evaluation,
-            **{f"regression_{key}": value for key, value in regression.items()},
-        }
-        for criterion, threshold in acceptance.items():
-            prefix, _, name = criterion.partition("_")
-            if prefix not in {"max", "min"} or not name:
-                return False, f"unknown acceptance criterion: {criterion}"
-            actual = metrics.get(name)
-            if actual is None:
-                return False, f"acceptance metric unavailable: {name}"
-            if prefix == "max" and actual > float(threshold):
-                return False, f"{name} exceeded: {actual} > {threshold}"
-            if prefix == "min" and actual < float(threshold):
-                return False, f"{name} below: {actual} < {threshold}"
+        if set(acceptance) != {"min_goodness", "min_regression_goodness"}:
+            return False, "acceptance schema is not first-version goodness"
+        actual = evaluation.get("goodness")
+        if actual is None:
+            return False, "evaluation goodness unavailable"
+        threshold = float(acceptance["min_goodness"])
+        if actual < threshold:
+            return False, f"goodness below: {actual} < {threshold}"
+        regression_actual = regression.get("goodness")
+        if regression_actual is None:
+            return False, "regression goodness unavailable"
+        regression_threshold = float(acceptance["min_regression_goodness"])
+        if regression_actual < regression_threshold:
+            return False, (
+                f"regression_goodness below: {regression_actual} < "
+                f"{regression_threshold}"
+            )
         return True, None

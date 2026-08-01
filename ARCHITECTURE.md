@@ -32,7 +32,7 @@ v2；默认约每 2 秒触发一轮，模型推理期间不会重入。用户触
 `self.goodness` 是范围为 [-1, 1] 的评价标量及其证据说明；倾向只是数值，
 不代替权限。用户表扬/批评作为显式反馈记忆保存，不直接改写 goodness。
 
-用户界面使用 `self`。内部 `myself` 暂时只作为兼容键存在。LLM-based self
+用户界面使用 `self`；当前第一版内部状态键固定为 `myself`，由界面映射为 `self`。LLM-based self
 update loop 可写简短可见摘要，但不得请求、展示或持久化隐藏思维链。
 调试输出写入运行目录的 `debug.jsonl`；其中记录可见/结构化结果和循环状态，
 不记录隐藏思维链。GUI 资源页从 Core 的 `loop_graph` 状态显示循环连接、
@@ -142,7 +142,7 @@ Core 加载，也不进入运行图。
 
 事实、损失、命中、reward、延迟和安全事件都不是好度本身。GoodnessRecord 的分数在 `[-1,1]`，并携带 target、value version、方法、事实、原因、置信度与真实证据 MemoryID。`self.goodness` 只保存当前总体摘要及最近记录指针，不复制全部历史记录。
 
-Experience v2 把环境信息保存为 `GoodnessFact[]`，并用 `goodness_memory_ids` 或 Event 关联后续评价。历史 v1 payload 保持只读兼容。blocked candidate 可以形成 `awaiting_goodness` Experience，但因为没有执行，不能接受正向环境执行反馈。
+Experience 第一版只接受 v2，把环境信息保存为 `GoodnessFact[]`，并用 `goodness_memory_ids` 或 Event 关联后续评价。v1 payload、旧字段和旧迁移入口均不保留。blocked candidate 可以形成 `awaiting_goodness` Experience，但因为没有执行，不能接受正向环境执行反馈。
 
 安全数值函数只在 Dock 内解析白名单 AST：数字、声明变量、四则运算、比较、条件表达式和 `min/max/abs/clip`。属性访问、任意函数、import、文件/网络操作、循环与推导均不允许；缺少必需事实或出现 NaN/Inf 时等待教师评价，不产生默认好度。
 

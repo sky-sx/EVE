@@ -5,6 +5,7 @@ import time
 import json
 
 import numpy as np
+import pytest
 
 from eve.core.loop import (
     DEFAULT_LOCAL_LLM_PATH,
@@ -43,7 +44,7 @@ def wait_until(predicate, timeout_s: float = 3.0) -> None:
     raise AssertionError("condition did not become true")
 
 
-def test_local_models_have_repo_defaults_and_legacy_empty_snapshot_is_migrated(
+def test_local_models_have_repo_defaults_and_old_snapshot_is_rejected(
     tmp_path,
 ):
     runtime = EVEApplication(
@@ -75,13 +76,19 @@ def test_local_models_have_repo_defaults_and_legacy_empty_snapshot_is_migrated(
         ),
         encoding="utf-8",
     )
-    assert runtime.core.load_snapshot(snapshot)
+    assert not runtime.core.load_snapshot(snapshot)
     assert runtime.state["model_config"]["local_llm_path"] == (
         DEFAULT_LOCAL_LLM_PATH
     )
     assert runtime.state["model_config"]["vlm_path"] == DEFAULT_VLM_PATH
     assert runtime.state["model_config"]["yolo_model_path"] == DEFAULT_YOLO_PATH
-    assert runtime.state["model_config"]["cloud_enabled"] is True
+    assert runtime.state["model_config"]["cloud_enabled"] is False
+
+    current_snapshot = tmp_path / "current_snapshot.json"
+    runtime.core.save_snapshot(current_snapshot)
+    runtime.state["myself"]["current_task"] = "changed"
+    assert runtime.core.load_snapshot(current_snapshot)
+    assert runtime.state["myself"]["current_task"] == ""
 
 
 def test_control_gui_has_eight_pages_and_does_not_cold_start(
@@ -199,79 +206,47 @@ def test_control_cold_start_pause_emergency_reset_and_clean_stop(
     assert not restarted.state["permissions"]["mouse"]["move"]
 
 
-def test_llm_protocol_keeps_reply_when_optional_updates_are_invalid(tmp_path):
-    calls = []
-
-    def backend(context):
-        calls.append(context)
-        if len(calls) == 1:
-            return {
-                "protocol_version": 2,
-                "reply": "ok",
-                "thinking_summary": "visible summary",
-                "world_interpretation_update": {
-                    "interpretation": {"room": "desktop"}
-                },
-                "myself_cognition_update": {"current_understanding": "test"},
-                "goodness_update": {},
-                "blackboard_updates": [{"key": "answer", "value": 42}],
-                "active_tnn": [],
-                "memory_actions": [],
-                "training_proposal": None,
-            }
-        return {
-            "protocol_version": 2,
-            "reply": "bad",
-            "thinking_summary": "bad",
-            "world_interpretation_update": {"perception": {"forbidden": True}},
-            "myself_cognition_update": "invalid optional delta",
-            "goodness_update": {"score": "invalid"},
-            "blackboard_updates": [{"value": "missing key"}],
-            "active_tnn": [],
-            "memory_actions": [],
-            "training_proposal": None,
-        }
-
-    state = create_runtime_state()
-    memory = Memorizer(tmp_path / "memory")
-    buffer = InputBuffer()
+def test_llm_protocol_rejects_legacy_or_incomplete_shapes(tmp_path):
     core = CoreLoop(
-        buffer,
-        memory,
-        state=state,
+        InputBuffer(),
+        Memorizer(tmp_path / "memory"),
+        state=create_runtime_state(),
         log_dir=tmp_path,
-        local_llm_backend=backend,
     )
-    memory.start_writer()
-    try:
-        core.start()
-        wait_until(lambda: state["model_status"]["local_llm"]["state"] == "ready")
-        core.submit_user_message("hello")
-        wait_until(lambda: len(state["conversation"]) == 1)
-        assert state["world"]["interpretation"]["room"] == "desktop"
-        assert state["blackboard"]["answer"]["value"] == 42
+    request = {"request_id": "strict", "kind": "user", "message": "hello"}
+    legacy = {
+        "protocol_version": 2,
+        "reply": "old",
+        "thinking_summary": "visible",
+        "world_update": {},
+        "myself_update": {},
+        "goodness_update": {},
+        "blackboard_updates": [],
+        "active_tnn": [],
+        "memory_actions": [],
+        "training_order": None,
+    }
+    with pytest.raises(ValueError, match="fields mismatch"):
+        core._coerce_llm_result(legacy, request)
 
-        before_perception = {
-            key: value for key, value in state["world"]["perception"].items()
-            if key != "updated_at_ns"
-        }
-        core.submit_user_message("invalid")
-        wait_until(lambda: len(state["conversation"]) == 2)
-        wait_until(
-            lambda: state["model_status"]["local_llm"]["state"] == "ready"
+    strict = {
+        "protocol_version": 2,
+        "reply": "current",
+        "thinking_summary": "visible",
+        "world_interpretation_update": {},
+        "myself_cognition_update": {},
+        "goodness_update": {},
+        "goodness_records": [],
+        "blackboard_updates": [],
+        "active_tnn": [],
+        "memory_actions": [],
+        "training_proposal": None,
+    }
+    assert core._coerce_llm_result(strict, request)["reply"] == "current"
+    with pytest.raises(TypeError, match="myself_cognition_update"):
+        core._coerce_llm_result(
+            {**strict, "myself_cognition_update": "invalid"}, request
         )
-        assert state["model_status"]["local_llm"]["state"] == "ready"
-        assert state["conversation"][-1]["reply"] == "bad"
-        after_perception = {
-            key: value for key, value in state["world"]["perception"].items()
-            if key != "updated_at_ns"
-        }
-        assert after_perception == before_perception
-        assert "forbidden" not in state["world"]["perception"]
-        assert state["model_status"]["local_llm"]["failure_count"] == 0
-    finally:
-        core.stop()
-        memory.stop_writer()
 
 
 def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypatch):
@@ -289,6 +264,7 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
             },
             "myself_cognition_update": {"last_self_tick": count},
             "goodness_update": {},
+            "goodness_records": [],
             "blackboard_updates": [],
             "active_tnn": [],
             "memory_actions": [],
@@ -354,6 +330,7 @@ def test_real_llm_user_request_uses_protocol_v2(tmp_path, monkeypatch):
                 "world_interpretation_update": {},
                 "myself_cognition_update": {},
                 "goodness_update": {},
+                "goodness_records": [],
                 "blackboard_updates": [],
                 "active_tnn": [],
                 "memory_actions": [],

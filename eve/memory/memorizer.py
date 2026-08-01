@@ -65,7 +65,6 @@ class Memorizer:
         self.tnn_dir = self.base_dir / "TNNweights"
         self.catalog_path = self.base_dir / "catalog.jsonl"
         self.event_catalog_path = self.base_dir / "events.jsonl"
-        self.legacy_catalog_path = self.base_dir / "catalog.json"
         self.payload_dir.mkdir(parents=True, exist_ok=True)
         self.tnn_dir.mkdir(parents=True, exist_ok=True)
         self.stm_limit = stm_limit
@@ -376,30 +375,29 @@ class Memorizer:
         if missing:
             raise ValueError(f"incomplete experience: {sorted(missing)}")
         version = int(experience.get("experience_version", 0))
-        if version not in {1, 2}:
+        if version != 2:
             raise ValueError("unsupported experience_version")
-        if version == 2:
-            if experience.get("status") not in {
-                "observed", "teacher_labeled", "executed", "complete",
-                "awaiting_goodness", "valued",
-            }:
-                raise ValueError("invalid Experience v2 status")
-            environment = experience.get("environment")
-            if not isinstance(environment, dict) or not isinstance(
-                environment.get("facts"), list
-            ):
-                raise ValueError("Experience v2 environment.facts is required")
-            goodness_ids = experience.get("goodness_memory_ids")
-            if not isinstance(goodness_ids, list):
-                raise ValueError("Experience v2 goodness_memory_ids is required")
-            unknown_goodness = [
-                str(item) for item in goodness_ids
-                if self.get_unit(str(item)) is None
-            ]
-            if unknown_goodness:
-                raise KeyError(
-                    f"unknown GoodnessRecord MemoryID(s): {unknown_goodness}"
-                )
+        if experience.get("status") not in {
+            "observed", "teacher_labeled", "executed", "complete",
+            "awaiting_goodness", "valued",
+        }:
+            raise ValueError("invalid Experience v2 status")
+        environment = experience.get("environment")
+        if not isinstance(environment, dict) or not isinstance(
+            environment.get("facts"), list
+        ):
+            raise ValueError("Experience v2 environment.facts is required")
+        goodness_ids = experience.get("goodness_memory_ids")
+        if not isinstance(goodness_ids, list):
+            raise ValueError("Experience v2 goodness_memory_ids is required")
+        unknown_goodness = [
+            str(item) for item in goodness_ids
+            if self.get_unit(str(item)) is None
+        ]
+        if unknown_goodness:
+            raise KeyError(
+                f"unknown GoodnessRecord MemoryID(s): {unknown_goodness}"
+            )
         memory_id = self.enqueue(
             experience, "experience", priority="critical"
         )
@@ -656,26 +654,7 @@ class Memorizer:
             artifacts, key=lambda item: (item["tnn_id"], item["version"])
         )
 
-    def save_catalog(self) -> None:
-        """Compatibility no-op: catalog mutations are already appended."""
-
     def load_catalog(self) -> None:
-        if self.legacy_catalog_path.exists():
-            data = json.loads(self.legacy_catalog_path.read_text(encoding="utf-8"))
-            self.catalog = {
-                key: MemoryUnit(**value)
-                for key, value in data.get("units", {}).items()
-            }
-            self.stm = [
-                item for item in data.get("stm", []) if item in self.catalog
-            ]
-            self.mtm = {
-                item for item in data.get("mtm", []) if item in self.catalog
-            }
-            self.ltm = {
-                item for item in data.get("ltm", []) if item in self.catalog
-            }
-            # Legacy mutually-exclusive tiers become independent views.
         if not self.catalog_path.exists():
             return
         for line in self.catalog_path.read_text(encoding="utf-8").splitlines():
@@ -693,11 +672,11 @@ class Memorizer:
                 self.stm = [item for item in self.stm if item != memory_id]
                 self.mtm.discard(memory_id)
                 self.ltm.discard(memory_id)
-            elif operation in {"promote", "load_mtm"} and record["memory_id"] in self.catalog:
+            elif operation == "load_mtm" and record["memory_id"] in self.catalog:
                 self.mtm.add(record["memory_id"])
             elif operation == "unload_mtm":
                 self.mtm.discard(record["memory_id"])
-            elif operation in {"promote_ltm", "persist_ltm"} and record["memory_id"] in self.catalog:
+            elif operation == "persist_ltm" and record["memory_id"] in self.catalog:
                 self.ltm.add(record["memory_id"])
             elif operation == "remove_ltm":
                 self.ltm.discard(record["memory_id"])

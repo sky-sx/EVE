@@ -27,6 +27,7 @@ def protocol_reply(reply: str = "ok") -> dict:
         "world_interpretation_update": {},
         "myself_cognition_update": {},
         "goodness_update": {},
+        "goodness_records": [],
         "blackboard_updates": [],
         "active_tnn": [],
         "memory_actions": [],
