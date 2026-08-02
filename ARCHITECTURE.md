@@ -56,10 +56,10 @@ TNN 最多同时加载 5 个。
 
 ## 4. 动作与急停
 
-动作链为：
+动作链同时接受正式 TNN 快速候选和同一 LLM 的慢速探索候选：
 
 ```text
-TNN actor 输出候选
+TNN actor 或 LLM 输出候选
 -> Core 检查候选格式与时效
 -> Core 检查权限、急停和用户接管
 -> 有界 Output 队列
@@ -68,7 +68,8 @@ TNN actor 输出候选
 ```
 
 急停立即清空候选与未执行 Output 队列。长距离鼠标移动和拖拽拆成可中断
-短步。Output 反馈始终带回对应 `candidate_id` 和 `action_id`。
+短步。只有实际执行或 mock 模拟结果带回 `action_id`；被阻断候选只保留
+`candidate_id`、阻断原因和所需权限，不能伪造成已执行动作。
 
 权限和急停语义不可绕过，但不形成独立模块；必要纯函数位于 Core 动作出队
 边界。
@@ -89,6 +90,12 @@ TNN actor 输出候选
 Core 同时验证候选存在且未消费、动作 ID、动作类型、坐标、执行时间、候选
 有效期和对应环境 Event。无法精确绑定的输入只能作为普通环境事件保存。
 
+没有外部事件接口的黑箱桌面任务使用并列的自观察路径：Output 成功后由共享
+observation worker 异步等待、冻结 after frame、请求 VLM，并把候选、动作、
+before/after、VLM 与 Output 结果绑定为 `ObservationBundle v1`。同一 LLM 比较
+可见证据，区分观察与推断，再通过 ValueDefinition 形成 GoodnessRecord 和
+Experience v2。`self_observed_environment` 不携带伪造的 environment event ID。
+
 ## 6. Memory 生命周期
 
 Catalog 是完整不可变记录，STM、MTM、LTM 是彼此独立的语义视图：
@@ -108,7 +115,8 @@ STM overflow -> 仅从 hot view 驱逐，Catalog 记录仍保留
 
 Dock 只接受 TrainingOrder 显式指向的具体 `model.py` 或已有模型 MemoryID；
 具体模型自行实现 forward、training_step 和特殊梯度语义。LLM 的
-`training_proposal` 只是建议，不能直接作为可执行 TrainingOrder。
+`training_proposal` 只是建议，不能直接作为可执行 TrainingOrder；保存 proposal
+后，同一 LLM 必须进入 materialization，输出具体源码和订单，Core 再提交 Dock。
 
 Dock 不按任务名选择模型，也不包含 JSON 算子编译器或模型源码生成器。
 订单必须携带训练数据与明确验收条件；候选通过验收后才写入正式 TNNweights
@@ -118,7 +126,20 @@ QNN 用于扩展训练数据时，只能在 `dock/workspace/<order_id>/` 中临�
 创建、估值并删除；它不写入正式 TNNweights、不注册 Memory TNN、不由
 Core 加载，也不进入运行图。
 
-## 8. 明确不采用
+LLM 生成源码只能进入订单 workspace 的有界 attempt 目录。写入前检查相对路径、
+文件数/大小、Python AST、依赖白名单和危险调用；写入后检查 `create_tnn()`、
+TinyNN 子类、forward/training_step/evaluation_step、模型构造和 proposal schema。
+失败作为结构化材料回到同一 LLM，最多 3 次；超过上限不训练、不注册 TNN。
+
+## 8. LLM 与冻结帧 VLM
+
+VLM 是同一 LLM 的按需工具，不运行独立自主循环。protocol v2 的
+`tool_requests` 第一版只接受 `visual_interpretation`，同一时刻最多一个请求，
+按 frame ID 与 prompt 去重并设短冷却。Core 复制不可变帧并保存证据关系；VLM
+完成或失败后把 request ID、参考帧、参考时间和结果 MemoryID 回送现有 self-update
+队列，并明确提示当前屏幕可能已经变化。
+
+## 9. 明确不采用
 
 - 固定任务 Pipeline 或按任务名选择网络。
 - 运行期 QNN 候选评分层。
@@ -127,7 +148,7 @@ Core 加载，也不进入运行图。
 - 麦克风或注意力/焦点的占位伪实现。
 - 前台窗口标题、进程名等 OS 语义捷径。
 
-## 9. 统一好度数据流
+## 10. 统一好度数据流
 
 ```text
 环境/VLM冻结帧/人工事实
@@ -146,4 +167,8 @@ Experience 第一版只接受 v2，把环境信息保存为 `GoodnessFact[]`，�
 
 安全数值函数只在 Dock 内解析白名单 AST：数字、声明变量、四则运算、比较、条件表达式和 `min/max/abs/clip`。属性访问、任意函数、import、文件/网络操作、循环与推导均不允许；缺少必需事实或出现 NaN/Inf 时等待教师评价，不产生默认好度。
 
-临时 QNN 仍是作者提供的 concrete `model.py`/TinyNN。其权重和临时数据只进入订单 workspace；报告保留结构、来源、误差、排序一致性、价值版本、教师来源与清理状态。QNN 不进入 Memory/TNNweights、Core、运行图或输出控制链。
+临时 QNN 是同一 LLM 根据经历生成的 concrete `model.py`/TinyNN；也允许明确
+订单引用已经存在的受信 concrete 模型。其权重、生成源码和临时数据只进入订单
+workspace，训练后生成的 QNN 源码一并删除；报告保留结构、来源、误差、排序
+一致性、价值版本、教师来源与清理状态。QNN 不进入 Memory/TNNweights、Core、
+运行图或输出控制链。

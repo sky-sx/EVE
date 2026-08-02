@@ -712,6 +712,9 @@ class EVEControlWindow:
                 )
                 self.self_update_metrics.setWordWrap(True)
                 layout.addWidget(self.self_update_metrics)
+                layout.addWidget(qt["QLabel"]("自主纵向闭环摘要"))
+                self.autonomy_summary = self._readonly(qt, 120)
+                layout.addWidget(self.autonomy_summary)
                 grid = qt["QGridLayout"]()
                 self.thinking_view = self._readonly(qt, 100)
                 self.world_view = self._readonly(qt, 180)
@@ -1191,6 +1194,10 @@ class EVEControlWindow:
                 self._set_stable_text(
                     self.conversation_view,
                     _conversation_text(state["conversation"][-30:])
+                )
+                self._set_stable_text(
+                    self.autonomy_summary,
+                    _json_text(state.get("autonomy_status", {})),
                 )
                 self._set_stable_text(
                     self.thinking_view,

@@ -26,6 +26,14 @@ OUTPUT_QUEUE_CAPACITY = 16
 LLM_PROTOCOL_VERSION = 2
 SNAPSHOT_VERSION = 2
 DEFAULT_AUTONOMOUS_INTERVAL_S = 2.0
+MAX_LLM_ACTION_CANDIDATES = 4
+MAX_LLM_TOOL_REQUESTS = 1
+MIN_ACTION_VALID_FOR_MS = 50
+MAX_ACTION_VALID_FOR_MS = 30_000
+MIN_OBSERVATION_DELAY_MS = 50
+MAX_OBSERVATION_DELAY_MS = 3_000
+VLM_TOOL_COOLDOWN_NS = 1_000_000_000
+MAX_MATERIALIZATION_ATTEMPTS = 3
 CORE_MODEL_DIR = Path(__file__).resolve().parent
 DEFAULT_LOCAL_LLM_PATH = str(CORE_MODEL_DIR / "deepseek-7b")
 DEFAULT_VLM_PATH = str(CORE_MODEL_DIR / "qwen")
@@ -371,6 +379,19 @@ def create_runtime_state(
         "cuda_status": {},
         "last_feedback": None,
         "pending_experiences": {},
+        "pending_observations": {},
+        "autonomy_status": {
+            "latest_tool_request": None,
+            "current_vlm_request_id": None,
+            "latest_action_candidate": None,
+            "latest_action_status": None,
+            "pending_observation_count": 0,
+            "latest_observation_bundle": None,
+            "training_proposal_status": "idle",
+            "materialization_status": "idle",
+            "materialization_attempt": 0,
+            "latest_source_check": None,
+        },
         "training_orders": {},
         "dock_status": {
             "state": "idle",
@@ -874,7 +895,6 @@ def run_once(
         now_ns = time.monotonic_ns()
         result = {
             "candidate_id": action["candidate_id"],
-            "action_id": action["candidate_id"],
             "kind": action["action_type"],
             "mode": state["output_mode"],
             "started_at_ns": now_ns,
@@ -883,8 +903,13 @@ def run_once(
             "simulated": False,
             "blocked": True,
             "reason": f"permission_{decision['reason']}",
+            "required_permissions": list(_required_permissions(action)),
             "payload": {},
         }
+    if result.get("blocked"):
+        result = dict(result)
+        result.pop("action_id", None)
+        result.setdefault("required_permissions", list(_required_permissions(action)))
     state["latest_output"] = result
     _record_state_node(
         state,
@@ -1051,6 +1076,9 @@ class CoreLoop:
         self._output_requests: queue.Queue[dict[str, Any]] = queue.Queue(
             maxsize=OUTPUT_QUEUE_CAPACITY
         )
+        self._observation_requests: queue.Queue[dict[str, Any]] = queue.Queue(
+            maxsize=OUTPUT_QUEUE_CAPACITY
+        )
         self._output_stop = threading.Event()
         self._output_thread: threading.Thread | None = None
         self._tnn_executor = ThreadPoolExecutor(
@@ -1073,8 +1101,12 @@ class CoreLoop:
         self._started_at_ns = 0
         self._last_debug_snapshot_ns = 0
         self._remembered_observation_frames: dict[int, str] = {}
+        self._observation_bundle_cache: dict[str, dict[str, Any]] = {}
+        self._recent_vlm_tool_keys: dict[tuple[int, str], int] = {}
+        self._active_vlm_request_id: str | None = None
         self._waiting_training_orders: dict[str, Any] = {}
         self._submitted_training_orders: dict[str, Any] = {}
+        self._materializations: dict[str, dict[str, Any]] = {}
 
     @property
     def running(self) -> bool:
@@ -1258,38 +1290,97 @@ class CoreLoop:
                 status.get("error")
                 or f"VLM is {status.get('state')}"
             )
-        sample = self.input_buffer.get_latest_screen()
-        if sample is None:
-            raise RuntimeError("no screen frame is available")
-        import numpy as np
-
-        frame = sample.value
-        image = np.array(frame.image, copy=True)
         self._request_serial += 1
         request_id = f"vlm_{time.time_ns()}_{self._request_serial}"
+        return self._queue_frozen_vlm_request(
+            request_id=request_id,
+            prompt=str(prompt),
+            origin="human_gui",
+        )
+
+    def _queue_frozen_vlm_request(
+        self,
+        *,
+        request_id: str,
+        prompt: str,
+        origin: str,
+        frame: Any | None = None,
+        reason_summary: str = "",
+        required_fields: list[str] | None = None,
+        evidence_memory_ids: list[str] | None = None,
+        observation_context: dict[str, Any] | None = None,
+    ) -> str:
+        if self._active_vlm_request_id is not None:
+            raise RuntimeError("one frozen-frame VLM request is already active")
+        vlm_status = self.state["model_status"]["vlm"]
+        if vlm_status.get("state") not in {"configured", "idle", "ready"}:
+            raise RuntimeError(
+                vlm_status.get("error") or f"VLM is {vlm_status.get('state')}"
+            )
+        if (
+            self.state["output_mode"] == "mock"
+            and self.vlm_backend is None
+            and self._vlm_model is None
+        ):
+            raise RuntimeError("mock mode does not load a real VLM for action observation")
+        if frame is None:
+            sample = self.input_buffer.get_latest_screen()
+            if sample is None:
+                raise RuntimeError("no screen frame is available")
+            frame = sample.value
+        import numpy as np
+
+        frozen = ScreenFrame(
+            frame_id=int(frame.frame_id),
+            captured_at_ns=int(frame.captured_at_ns),
+            slot=-1,
+            image=np.array(frame.image, copy=True),
+        )
+        screen_bundle_id = self._remember_observation_bundle(
+            reason=f"frozen_vlm_request:{origin}", frame=frozen
+        )
+        screen_memory_id = self._remembered_observation_frames.get(frozen.frame_id)
+        now_ns = time.monotonic_ns()
+        key = (frozen.frame_id, str(prompt).strip())
+        previous = self._recent_vlm_tool_keys.get(key, 0)
+        if previous and now_ns - previous < VLM_TOOL_COOLDOWN_NS:
+            raise RuntimeError("duplicate frozen-frame VLM request is cooling down")
         request = {
-            "request_id": request_id,
+            "request_id": str(request_id),
             "prompt": str(prompt),
-            "frame_id": frame.frame_id,
-            "frame_timestamp_ns": frame.captured_at_ns,
-            "requested_at_ns": time.monotonic_ns(),
-            "image": image,
-            "runtime_visual_result": self._visual_result_for_frame(
-                frame.frame_id
-            ),
+            "frame_id": frozen.frame_id,
+            "frame_timestamp_ns": frozen.captured_at_ns,
+            "requested_at_ns": now_ns,
+            "image": frozen.image,
+            "runtime_visual_result": self._visual_result_for_frame(frozen.frame_id),
+            "screen_memory_id": screen_memory_id,
+            "screen_bundle_memory_id": screen_bundle_id,
+            "origin": str(origin),
+            "reason_summary": str(reason_summary),
+            "required_fields": list(required_fields or ()),
+            "evidence_memory_ids": list(evidence_memory_ids or ()),
+            "observation_context": observation_context,
         }
         try:
             self._vlm_requests.put_nowait(request)
         except queue.Full as exc:
             raise RuntimeError("VLM request queue is full") from exc
+        self._active_vlm_request_id = str(request_id)
+        self._recent_vlm_tool_keys[key] = now_ns
+        self._recent_vlm_tool_keys = {
+            item: seen for item, seen in self._recent_vlm_tool_keys.items()
+            if now_ns - seen <= VLM_TOOL_COOLDOWN_NS
+        }
         self.state["model_status"]["vlm"].update(
             {"state": "queued", "request_id": request_id}
         )
+        self.state["autonomy_status"]["current_vlm_request_id"] = str(request_id)
         log_event(
             self.log_dir,
             "vlm_interpretation_requested",
             request_id=request_id,
-            reference_frame_id=frame.frame_id,
+            reference_frame_id=frozen.frame_id,
+            origin=origin,
         )
         return request_id
 
@@ -2090,6 +2181,7 @@ class CoreLoop:
             ("eve-cloud-llm", self._cloud_worker),
             ("eve-tnn-lifecycle", self._tnn_lifecycle_worker),
             ("eve-dock", self._dock_worker),
+            ("eve-action-observation", self._observation_worker),
         )
         threads = [
             threading.Thread(target=target, name=name)
@@ -2112,6 +2204,7 @@ class CoreLoop:
             self._vlm_requests,
             self._cloud_requests,
             self._tnn_requests,
+            self._observation_requests,
         ):
             try:
                 requests.put_nowait({"kind": "stop"})
@@ -2491,9 +2584,53 @@ class CoreLoop:
                 record, "training_result", priority="critical"
             )
             if not result.success:
+                proposal_id = str(record.get("proposal_id", ""))
+                tracked = self._materializations.get(proposal_id)
+                if tracked is not None:
+                    attempt = int(tracked.get("attempt", 1))
+                    failure = {
+                        "stage": "dock_training",
+                        "order_id": result.order_id,
+                        "error": result.error,
+                        "metrics": result.metrics,
+                        "attempt": attempt,
+                    }
+                    if attempt < MAX_MATERIALIZATION_ATTEMPTS:
+                        self._queue_training_materialization(
+                            proposal_memory_id=tracked["proposal_memory_id"],
+                            proposal=tracked["proposal"],
+                            attempt=attempt + 1,
+                            previous_failure=failure,
+                        )
+                    else:
+                        self.state["autonomy_status"][
+                            "materialization_status"
+                        ] = "failed"
                 continue
             if not result.accepted:
                 record["state"] = "candidate_rejected"
+                proposal_id = str(record.get("proposal_id", ""))
+                tracked = self._materializations.get(proposal_id)
+                if tracked is not None:
+                    attempt = int(tracked.get("attempt", 1))
+                    failure = {
+                        "stage": "dock_acceptance",
+                        "order_id": result.order_id,
+                        "error": result.rejection_reason,
+                        "metrics": result.metrics,
+                        "attempt": attempt,
+                    }
+                    if attempt < MAX_MATERIALIZATION_ATTEMPTS:
+                        self._queue_training_materialization(
+                            proposal_memory_id=tracked["proposal_memory_id"],
+                            proposal=tracked["proposal"],
+                            attempt=attempt + 1,
+                            previous_failure=failure,
+                        )
+                    else:
+                        self.state["autonomy_status"][
+                            "materialization_status"
+                        ] = "failed"
                 continue
             try:
                 artifact = self.memorizer.resolve_tnn_artifact(
@@ -2780,6 +2917,42 @@ class CoreLoop:
                     request_kind=request["kind"],
                     error=error["message"],
                 )
+                if request.get("kind") == "training_materialization":
+                    continuation = request.get("continuation") or {}
+                    proposal = continuation.get("proposal")
+                    proposal_memory_id = str(
+                        continuation.get("proposal_memory_id", "")
+                    )
+                    attempt = int(request.get("materialization_attempt") or 1)
+                    if isinstance(proposal, dict) and proposal_memory_id:
+                        failure = {
+                            "proposal_id": proposal.get("proposal_id"),
+                            "attempt": attempt,
+                            "status": "protocol_failed",
+                            "error_type": type(repair_exc).__name__,
+                            "error": str(repair_exc),
+                            "retry_allowed": attempt < MAX_MATERIALIZATION_ATTEMPTS,
+                            "timestamp_ns": time.monotonic_ns(),
+                        }
+                        failure_id = self.memorizer.enqueue(
+                            failure,
+                            "training_materialization_failure",
+                            priority="critical",
+                        )
+                        self.state["autonomy_status"]["latest_source_check"] = {
+                            **failure, "memory_id": failure_id
+                        }
+                        if failure["retry_allowed"]:
+                            self._queue_training_materialization(
+                                proposal_memory_id=proposal_memory_id,
+                                proposal=proposal,
+                                attempt=attempt + 1,
+                                previous_failure={**failure, "memory_id": failure_id},
+                            )
+                        else:
+                            self.state["autonomy_status"][
+                                "materialization_status"
+                            ] = "failed"
                 return
         finished_ns = time.monotonic_ns()
         duration_ms = (finished_ns - started_ns) / 1_000_000
@@ -2875,6 +3048,8 @@ class CoreLoop:
             "request_id": request["request_id"],
             "trigger_kind": request["kind"],
             "user_message": request["message"],
+            "continuation": request.get("continuation"),
+            "materialization_attempt": request.get("materialization_attempt"),
             "observation_memory_id": request.get("observation_memory_id"),
             "goodness_evaluation": {
                 "target": request.get("target"),
@@ -2910,6 +3085,17 @@ class CoreLoop:
                 "available": self.memorizer.list_tnn_artifacts(),
                 "loaded": sorted(self.state["loaded_tnn"]),
                 "active": sorted(self.state["active_tnn"]),
+                "tiny_nn_contract": {
+                    "base": "eve.dock.tinynn.TinyNN",
+                    "factory": "create_tnn() -> TinyNN",
+                    "required_overrides": [
+                        "forward", "training_step", "evaluation_step"
+                    ],
+                    "inherited_lifecycle": [
+                        "get_input_schema", "get_output_schema", "infer",
+                        "save_weights", "load_weights",
+                    ],
+                },
             },
             "recent_conversation": self.state["conversation"][-8:],
         }
@@ -2921,14 +3107,25 @@ class CoreLoop:
 
     def _generate_local_llm(self, context: dict[str, Any]) -> str:
         system = (
-            "你是 EVE 的统一 LLM-based self update loop。只输出一个 JSON 对象，"
+            "你是 EVE 唯一的认知主体，也是统一 LLM-based self update loop。"
+            "VLM 只是你按需调用的冻结帧视觉工具；Dock 只执行训练，不替你设计网络。"
+            "只输出一个 JSON 对象，"
             "不得输出隐藏推理。protocol_version 必须为 2。字段为 reply, "
             "thinking_summary, world_interpretation_update, "
             "myself_cognition_update, goodness_update, blackboard_updates, "
-            "active_tnn, memory_actions, training_proposal。"
+            "goodness_records, active_tnn, memory_actions, action_candidates, "
+            "tool_requests, training_proposal, training_materialization, "
+            "observation_completion。所有数组字段无内容时必须输出 []，后两个对象"
+            "无内容时输出 null。"
             "用户触发时 reply 必须是非空字符串。你只能更新 world 的 interpretation、"
             "uncertainty、task_state，绝不能改 perception。goodness.score 范围 [-1,1]，"
-            "confidence 范围 [0,1]。training_proposal 只是建议，不是可执行训练订单。"
+            "confidence 范围 [0,1]。你可以提出慢速动作候选，但动作只能经 Core 和"
+            "Output 执行，不能绕过权限、急停、暂停或人类接管。你不能假装知道外部"
+            "程序内部状态；没有可信外部反馈时，必须依据动作前后的冻结帧证据。"
+            "观察事实不等于好度。training_proposal 只是建议；提出后你有责任在"
+            "materialization 阶段生成具体 Actor model.py、可选 QNN model.py 和完整"
+            "TrainingOrder。QNN 只存在于训练期，正式 TNN 必须有明确职责、输入、输出、"
+            "频率和时间范围，并通过好度与回归验收。"
         )
         system += (
             " goodness_update is only the current overall self summary. "
@@ -3101,7 +3298,7 @@ class CoreLoop:
         }:
             raise ValueError("unsupported goodness target kind")
         if target["kind"] in {"memory", "experience", "training_result"} and (
-            self.memorizer.get_unit(target["id"]) is None
+            not self.memorizer.contains(target["id"])
         ):
             raise KeyError(f"unknown goodness target MemoryID: {target['id']}")
         try:
@@ -3128,7 +3325,7 @@ class CoreLoop:
         if not isinstance(evidence, list):
             raise ValueError("goodness evidence_memory_ids must be an array")
         evidence = list(dict.fromkeys(str(item) for item in evidence if item))
-        missing = [item for item in evidence if self.memorizer.get_unit(item) is None]
+        missing = [item for item in evidence if not self.memorizer.contains(item)]
         if missing:
             raise KeyError(f"unknown goodness evidence MemoryID(s): {missing}")
         definition_id = str(method.get("definition_memory_id", ""))
@@ -3181,6 +3378,231 @@ class CoreLoop:
             "created_at_ns": int(value.get("created_at_ns", time.time_ns())),
         }
 
+    def _coerce_action_candidates(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            raise TypeError("action_candidates must be an array")
+        if len(value) > MAX_LLM_ACTION_CANDIDATES:
+            raise ValueError("too many LLM action candidates")
+        sample = self.input_buffer.get_latest_screen()
+        width = height = None
+        if sample is not None:
+            height, width = sample.value.image.shape[:2]
+        clean: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                raise TypeError("each action candidate must be an object")
+            candidate_id = str(item.get("candidate_id", "")).strip()
+            if not candidate_id or candidate_id in seen:
+                raise ValueError("action candidate_id must be non-empty and unique")
+            seen.add(candidate_id)
+            action_type = str(item.get("action_type", ""))
+            if action_type != "mouse":
+                raise ValueError("protocol v2 slow actions currently support mouse only")
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                raise TypeError("action candidate payload must be an object")
+            payload = dict(payload)
+            action_name = str(payload.get("action", ""))
+            if action_name not in {"moveTo", "click"}:
+                raise ValueError("slow mouse action must be moveTo or click")
+            for coordinate in ("x", "y"):
+                number = payload.get(coordinate)
+                if isinstance(number, bool) or not isinstance(number, (int, float)):
+                    raise ValueError(f"mouse {coordinate} must be numeric")
+                number = float(number)
+                if not math.isfinite(number) or not number.is_integer():
+                    raise ValueError(f"mouse {coordinate} must be a finite integer")
+                payload[coordinate] = int(number)
+            if width is not None and not 0 <= payload["x"] < width:
+                raise ValueError("mouse x is outside the current screen")
+            if height is not None and not 0 <= payload["y"] < height:
+                raise ValueError("mouse y is outside the current screen")
+            if action_name == "moveTo":
+                duration = float(payload.get("duration", 0.0))
+                if not math.isfinite(duration) or not 0.0 <= duration <= 3.0:
+                    raise ValueError("mouse move duration must be within [0,3]")
+                payload = {
+                    "action": "moveTo", "x": payload["x"], "y": payload["y"],
+                    "duration": duration,
+                }
+            else:
+                if str(payload.get("button", "left")) != "left":
+                    raise ValueError("protocol v2 slow click supports left button only")
+                payload = {
+                    "action": "click", "button": "left",
+                    "x": payload["x"], "y": payload["y"],
+                }
+            try:
+                valid_for_ms = int(item.get("valid_for_ms"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("valid_for_ms must be an integer") from exc
+            if not MIN_ACTION_VALID_FOR_MS <= valid_for_ms <= MAX_ACTION_VALID_FOR_MS:
+                raise ValueError("valid_for_ms is outside the bounded range")
+            expected = item.get("expected_observation")
+            if not isinstance(expected, dict):
+                raise TypeError("expected_observation must be an object")
+            changes = expected.get("what_may_change")
+            if not isinstance(changes, list) or any(
+                not isinstance(change, str) for change in changes
+            ):
+                raise TypeError("what_may_change must be a text array")
+            try:
+                delay_ms = int(expected.get("observation_delay_ms"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("observation_delay_ms must be an integer") from exc
+            if not MIN_OBSERVATION_DELAY_MS <= delay_ms <= MAX_OBSERVATION_DELAY_MS:
+                raise ValueError("observation_delay_ms is outside the bounded range")
+            evidence = item.get("evidence_memory_ids")
+            if not isinstance(evidence, list):
+                raise TypeError("action evidence_memory_ids must be an array")
+            evidence = list(dict.fromkeys(str(entry) for entry in evidence if entry))
+            missing = [entry for entry in evidence if not self.memorizer.contains(entry)]
+            if missing:
+                raise KeyError(f"unknown action evidence MemoryID(s): {missing}")
+            clean.append(
+                {
+                    "candidate_id": candidate_id,
+                    "action_type": action_type,
+                    "payload": payload,
+                    "reason_summary": str(item.get("reason_summary", ""))[:1000],
+                    "evidence_memory_ids": evidence,
+                    "valid_for_ms": valid_for_ms,
+                    "expected_observation": {
+                        "what_may_change": changes[:20],
+                        "observation_delay_ms": delay_ms,
+                    },
+                }
+            )
+        return clean
+
+    def _coerce_tool_requests(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            raise TypeError("tool_requests must be an array")
+        if len(value) > MAX_LLM_TOOL_REQUESTS:
+            raise ValueError("only one VLM tool request is allowed per LLM turn")
+        clean = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise TypeError("each tool request must be an object")
+            if str(item.get("tool", "")) != "visual_interpretation":
+                raise ValueError("unknown LLM tool request")
+            request_id = str(item.get("request_id", "")).strip()
+            prompt = str(item.get("prompt", "")).strip()
+            if not request_id or not prompt:
+                raise ValueError("visual tool request requires request_id and prompt")
+            required = item.get("required_fields")
+            evidence = item.get("evidence_memory_ids")
+            if not isinstance(required, list) or any(
+                not isinstance(field, str) for field in required
+            ):
+                raise TypeError("tool required_fields must be a text array")
+            if not isinstance(evidence, list):
+                raise TypeError("tool evidence_memory_ids must be an array")
+            evidence = list(dict.fromkeys(str(entry) for entry in evidence if entry))
+            missing = [entry for entry in evidence if not self.memorizer.contains(entry)]
+            if missing:
+                raise KeyError(f"unknown tool evidence MemoryID(s): {missing}")
+            clean.append(
+                {
+                    "request_id": request_id,
+                    "tool": "visual_interpretation",
+                    "prompt": prompt[:4000],
+                    "reason_summary": str(item.get("reason_summary", ""))[:1000],
+                    "required_fields": required[:20],
+                    "evidence_memory_ids": evidence,
+                }
+            )
+        return clean
+
+    def _coerce_training_proposal(self, value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise TypeError("training_proposal must be an object or null")
+        required = {"proposal_id", "target_tnn", "evidence", "teacher_plan", "qnn_plan", "training_plan"}
+        if set(value) != required:
+            raise ValueError("training_proposal fields do not match protocol v2")
+        proposal_id = str(value["proposal_id"]).strip()
+        target = value["target_tnn"]
+        evidence = value["evidence"]
+        if not proposal_id or not isinstance(target, dict) or not isinstance(evidence, dict):
+            raise ValueError("training proposal identity, target, and evidence are required")
+        target_required = {
+            "tnn_id", "role", "input_schema", "output_schema",
+            "runtime_frequency_hz", "time_horizon_ms", "upstream_inputs",
+            "downstream_outputs",
+        }
+        if set(target) != target_required or not str(target.get("tnn_id", "")):
+            raise ValueError("target_tnn fields do not match protocol v2")
+        frequency = float(target["runtime_frequency_hz"])
+        horizon = float(target["time_horizon_ms"])
+        if not math.isfinite(frequency) or frequency <= 0:
+            raise ValueError("target runtime_frequency_hz must be positive")
+        if not math.isfinite(horizon) or horizon <= 0:
+            raise ValueError("target time_horizon_ms must be positive")
+        for key in ("experience_memory_ids", "goodness_memory_ids"):
+            if not isinstance(evidence.get(key), list):
+                raise TypeError(f"training proposal evidence.{key} must be an array")
+            missing = [
+                str(item) for item in evidence[key]
+                if not self.memorizer.contains(str(item))
+            ]
+            if missing:
+                raise KeyError(f"unknown proposal evidence MemoryID(s): {missing}")
+        for key in ("teacher_plan", "qnn_plan", "training_plan"):
+            if not isinstance(value[key], dict):
+                raise TypeError(f"training proposal {key} must be an object")
+        if value["qnn_plan"].get("output_semantics") != "goodness":
+            raise ValueError("QNN output semantics must be goodness")
+        return json.loads(json.dumps(value, ensure_ascii=False))
+
+    def _coerce_training_materialization(self, value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise TypeError("training_materialization must be an object or null")
+        if set(value) != {"proposal_id", "files", "qnn_files", "training_order"}:
+            raise ValueError("training_materialization fields do not match protocol v2")
+        if not str(value.get("proposal_id", "")).strip():
+            raise ValueError("training materialization requires proposal_id")
+        if not isinstance(value.get("files"), list) or not isinstance(value.get("qnn_files"), list):
+            raise TypeError("materialization files must be arrays")
+        if not isinstance(value["training_order"], dict):
+            raise TypeError("materialization training_order must be an object")
+        return value
+
+    def _coerce_observation_completion(self, value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise TypeError("observation_completion must be an object or null")
+        required = {"observation_bundle_memory_id", "inferred_facts", "goodness_record_ids"}
+        if set(value) != required:
+            raise ValueError("observation_completion fields do not match protocol v2")
+        bundle_id = str(value["observation_bundle_memory_id"])
+        bundle = self.memorizer.read(bundle_id) or self._observation_bundle_cache.get(
+            bundle_id
+        )
+        if not isinstance(bundle, dict) or bundle.get("observation_bundle_version") != 1:
+            raise ValueError("observation completion references no ObservationBundle v1")
+        facts = value["inferred_facts"]
+        record_ids = value["goodness_record_ids"]
+        if not isinstance(facts, list) or any(
+            not isinstance(item, dict) or not str(item.get("name", ""))
+            for item in facts
+        ):
+            raise ValueError("observation inferred_facts must be named objects")
+        if not isinstance(record_ids, list) or any(
+            not isinstance(item, str) for item in record_ids
+        ):
+            raise TypeError("observation goodness_record_ids must be a text array")
+        return {
+            "observation_bundle_memory_id": bundle_id,
+            "inferred_facts": [dict(item) for item in facts[:50]],
+            "goodness_record_ids": list(dict.fromkeys(record_ids)),
+        }
+
     def _coerce_llm_result(
         self, raw: Any, request: dict[str, Any]
     ) -> dict[str, Any]:
@@ -3189,7 +3611,9 @@ class CoreLoop:
             "protocol_version", "reply", "thinking_summary",
             "world_interpretation_update", "myself_cognition_update",
             "goodness_update", "goodness_records", "blackboard_updates",
-            "active_tnn", "memory_actions", "training_proposal",
+            "active_tnn", "memory_actions", "action_candidates",
+            "tool_requests", "training_proposal", "training_materialization",
+            "observation_completion",
         }
         missing_fields = required_fields - set(value)
         unknown_fields = set(value) - required_fields
@@ -3288,9 +3712,21 @@ class CoreLoop:
         if any(not isinstance(item, dict) for item in memory_actions[:20]):
             raise TypeError("each memory action must be an object")
         memory_actions = memory_actions[:20]
-        proposal = value["training_proposal"]
-        if proposal is not None and not isinstance(proposal, dict):
-            raise TypeError("training_proposal must be an object or null")
+        action_candidates = self._coerce_action_candidates(value["action_candidates"])
+        tool_requests = self._coerce_tool_requests(value["tool_requests"])
+        proposal = self._coerce_training_proposal(value["training_proposal"])
+        materialization = self._coerce_training_materialization(
+            value["training_materialization"]
+        )
+        observation_completion = self._coerce_observation_completion(
+            value["observation_completion"]
+        )
+        if proposal is not None and materialization is not None:
+            raise ValueError("proposal and materialization require separate LLM stages")
+        if request.get("kind") == "training_materialization" and materialization is None:
+            raise ValueError("materialization stage requires training_materialization")
+        if request.get("kind") != "training_materialization" and materialization is not None:
+            raise ValueError("training_materialization is only valid in its dedicated stage")
         return {
             "protocol_version": 2,
             "reply": reply,
@@ -3302,7 +3738,11 @@ class CoreLoop:
             "blackboard_updates": clean_updates,
             "active_tnn": desired,
             "memory_actions": memory_actions,
+            "action_candidates": action_candidates,
+            "tool_requests": tool_requests,
             "training_proposal": proposal,
+            "training_materialization": materialization,
+            "observation_completion": observation_completion,
         }
 
     def _apply_llm_result(
@@ -3439,12 +3879,425 @@ class CoreLoop:
                 now_ns,
                 producer="local_llm",
             )
+            self.state["autonomy_status"]["training_proposal_status"] = "stored"
+            self._queue_training_materialization(
+                proposal_memory_id=str(proposal_id),
+                proposal=proposal,
+                attempt=1,
+            )
+        for candidate in result.get("action_candidates", []):
+            self._accept_llm_action_candidate(candidate, request)
+        for tool_request in result.get("tool_requests", []):
+            self._accept_llm_tool_request(tool_request)
+        materialization = result.get("training_materialization")
+        if materialization is not None:
+            self._apply_training_materialization(request, materialization)
+        completion = result.get("observation_completion")
+        if completion is not None:
+            record_map = {
+                str(item["record_id"]): str(item["memory_id"])
+                for item in stored_goodness
+            }
+            requested_ids = completion["goodness_record_ids"]
+            unknown = [item for item in requested_ids if item not in record_map]
+            if unknown:
+                raise ValueError(
+                    f"observation completion references unstored goodness records: {unknown}"
+                )
+            self.complete_experience_from_observation(
+                completion["observation_bundle_memory_id"],
+                completion["inferred_facts"],
+                [record_map[item] for item in requested_ids],
+            )
         debug_log(
             self.log_dir,
             "llm_protocol_output",
             {**result, "request_id": request["request_id"], "kind": request["kind"],
              "memory_action_results": action_results},
         )
+
+    def _queue_llm_continuation(
+        self,
+        *,
+        kind: str,
+        message: str,
+        evidence_memory_ids: list[str] | tuple[str, ...] = (),
+        continuation: dict[str, Any] | None = None,
+        materialization_attempt: int | None = None,
+    ) -> str | None:
+        if self.state["emergency_stop"]:
+            return None
+        self._request_serial += 1
+        request_id = f"{kind}_{time.time_ns()}_{self._request_serial}"
+        request = {
+            "request_id": request_id,
+            "kind": kind,
+            "message": str(message),
+            "requested_at_ns": time.monotonic_ns(),
+            "memory_id": next(iter(evidence_memory_ids), None),
+            "evidence_memory_ids": list(evidence_memory_ids),
+            "continuation": continuation,
+            "materialization_attempt": materialization_attempt,
+        }
+        try:
+            self._llm_requests.put_nowait(request)
+        except queue.Full:
+            self.state["model_status"]["local_llm"]["queue_full_count"] = int(
+                self.state["model_status"]["local_llm"].get("queue_full_count", 0)
+            ) + 1
+            return None
+        return request_id
+
+    def _accept_llm_action_candidate(
+        self, candidate: dict[str, Any], request: dict[str, Any]
+    ) -> None:
+        now_ns = time.monotonic_ns()
+        sample = self.input_buffer.get_latest_screen()
+        frame = sample.value if sample is not None else None
+        latest_vlm = self.state.get("last_visual_interpretation_result")
+        if not isinstance(latest_vlm, dict) or (
+            frame is not None
+            and latest_vlm.get("reference_frame_id") != frame.frame_id
+        ):
+            latest_vlm = {}
+        record = {
+            **candidate,
+            "request_id": request["request_id"],
+            "source": "local_llm",
+            "proposed_at_ns": now_ns,
+            "reference_frame_id": getattr(frame, "frame_id", None),
+            "reference_frame_timestamp_ns": getattr(frame, "captured_at_ns", None),
+            "vlm_result_memory_id": latest_vlm.get("result_memory_id"),
+            "task_memory_id": request.get("memory_id"),
+            "world_summary": _value_summary(self.state["world"]),
+            "self_summary": _value_summary(self.state["myself"]),
+        }
+        candidate_memory_id = self.memorizer.enqueue(
+            record, "action_candidate", priority="critical"
+        )
+        action = {
+            **candidate,
+            "source": "local_llm",
+            "generated_at_ns": now_ns,
+            "observed_at_ns": int(getattr(frame, "captured_at_ns", now_ns)),
+            "valid_until_ns": now_ns + int(candidate["valid_for_ms"]) * 1_000_000,
+            "candidate_memory_id": candidate_memory_id,
+            "reference_frame_id": getattr(frame, "frame_id", None),
+            "vlm_result_memory_id": latest_vlm.get("result_memory_id"),
+        }
+        autonomy = self.state["autonomy_status"]
+        autonomy["latest_action_candidate"] = {
+            "candidate_id": action["candidate_id"],
+            "action_type": action["action_type"],
+            "payload": action["payload"],
+            "memory_id": candidate_memory_id,
+        }
+        self.state["blackboard"]["latest_action_candidate"] = _timed(
+            action,
+            now_ns,
+            int(candidate["valid_for_ms"]) * 1_000_000,
+            "local_llm",
+        )
+        if len(self.state["action_queue"]) >= OUTPUT_QUEUE_CAPACITY:
+            result = {
+                "candidate_id": action["candidate_id"],
+                "kind": action["action_type"],
+                "mode": self.state["output_mode"],
+                "started_at_ns": now_ns,
+                "finished_at_ns": time.monotonic_ns(),
+                "executed": False,
+                "simulated": False,
+                "blocked": True,
+                "reason": "core_action_queue_full",
+                "required_permissions": _required_permissions(action),
+                "payload": {},
+            }
+            self._remember_chain(action, result)
+            return
+        self.state["action_queue"].append(action)
+
+    def _accept_llm_tool_request(self, tool_request: dict[str, Any]) -> None:
+        autonomy = self.state["autonomy_status"]
+        autonomy["latest_tool_request"] = {
+            key: tool_request[key]
+            for key in ("request_id", "tool", "prompt", "reason_summary")
+        }
+        try:
+            self._queue_frozen_vlm_request(
+                request_id=tool_request["request_id"],
+                prompt=tool_request["prompt"],
+                origin="llm_tool",
+                reason_summary=tool_request["reason_summary"],
+                required_fields=tool_request["required_fields"],
+                evidence_memory_ids=tool_request["evidence_memory_ids"],
+            )
+        except Exception as exc:
+            self._publish_vlm_failure(
+                {
+                    **tool_request,
+                    "origin": "llm_tool",
+                    "requested_at_ns": time.monotonic_ns(),
+                    "frame_id": None,
+                    "frame_timestamp_ns": None,
+                    "screen_memory_id": None,
+                },
+                exc,
+            )
+
+    def _queue_training_materialization(
+        self,
+        *,
+        proposal_memory_id: str,
+        proposal: dict[str, Any],
+        attempt: int,
+        previous_failure: dict[str, Any] | None = None,
+    ) -> None:
+        proposal_id = str(proposal["proposal_id"])
+        self._materializations[proposal_id] = {
+            "proposal_memory_id": proposal_memory_id,
+            "proposal": proposal,
+            "attempt": attempt,
+        }
+        autonomy = self.state["autonomy_status"]
+        autonomy["materialization_status"] = "queued"
+        autonomy["materialization_attempt"] = attempt
+        self._queue_llm_continuation(
+            kind="training_materialization",
+            message="将训练提案具体化为安全的源码和完整 TrainingOrder。",
+            evidence_memory_ids=[proposal_memory_id],
+            materialization_attempt=attempt,
+            continuation={
+                "proposal_memory_id": proposal_memory_id,
+                "proposal": proposal,
+                "previous_failure": previous_failure,
+                "allowed_dependencies": [
+                    "torch", "torch.nn", "torch.optim", "math", "typing",
+                    "dataclasses", "eve.dock.tinynn",
+                ],
+                "workspace_rule": "Dock workspace only; actor/model.py and optional qnn/model.py",
+            },
+        )
+
+    def _apply_training_materialization(
+        self, request: dict[str, Any], materialization: dict[str, Any]
+    ) -> None:
+        proposal_id = str(materialization["proposal_id"])
+        tracked = self._materializations.get(proposal_id)
+        if tracked is None:
+            raise KeyError(f"unknown training proposal: {proposal_id}")
+        attempt = int(request.get("materialization_attempt") or tracked["attempt"])
+        autonomy = self.state["autonomy_status"]
+        try:
+            order, report = self.trainer.materialize_training(
+                materialization, attempt=attempt
+            )
+            target = tracked["proposal"]["target_tnn"]
+            if report["actor_input_schema"] != target["input_schema"]:
+                raise ValueError("materialized Actor input schema differs from proposal")
+            if report["actor_output_schema"] != target["output_schema"]:
+                raise ValueError("materialized Actor output schema differs from proposal")
+            runtime = order.runtime
+            if float(runtime.get("run_frequency_hz", 0.0)) != float(
+                target["runtime_frequency_hz"]
+            ):
+                raise ValueError("TrainingOrder runtime frequency differs from proposal")
+            if int(runtime.get("output_ttl_ns", 0)) != int(
+                float(target["time_horizon_ms"]) * 1_000_000
+            ):
+                raise ValueError("TrainingOrder time horizon differs from proposal")
+            if set(runtime.get("input_refs", {}).values()) != set(
+                target["upstream_inputs"]
+            ):
+                raise ValueError("TrainingOrder upstream inputs differ from proposal")
+            if set(report["actor_output_schema"]) != set(target["downstream_outputs"]):
+                raise ValueError("Actor downstream outputs differ from proposal")
+            source_ids = []
+            for group in (materialization["files"], materialization["qnn_files"]):
+                for file in group:
+                    source_ids.append(
+                        self.memorizer.enqueue(
+                            {
+                                "proposal_id": proposal_id,
+                                "order_id": order.order_id,
+                                "attempt": attempt,
+                                "relative_path": file["relative_path"],
+                                "content": file["content"],
+                            },
+                            "generated_tnn_source",
+                            priority="critical",
+                        )
+                    )
+            report_id = self.memorizer.enqueue(
+                {**report, "source_memory_ids": source_ids},
+                "source_safety_report",
+                priority="critical",
+            )
+            order_id = self.submit_training_order(order)
+            tracked.update(
+                {
+                    "attempt": attempt,
+                    "order_id": order_id,
+                    "source_memory_ids": source_ids,
+                    "source_report_memory_id": report_id,
+                    "state": "submitted_to_dock",
+                }
+            )
+            self._materializations[proposal_id] = tracked
+            self.state["training_orders"][order_id]["proposal_id"] = proposal_id
+            autonomy.update(
+                {
+                    "materialization_status": "submitted_to_dock",
+                    "materialization_attempt": attempt,
+                    "latest_source_check": {
+                        "status": "passed", "memory_id": report_id,
+                        "order_id": order_id,
+                    },
+                    "training_proposal_status": "materialized",
+                }
+            )
+        except Exception as exc:
+            failure = {
+                "proposal_id": proposal_id,
+                "attempt": attempt,
+                "status": "failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "retry_allowed": attempt < MAX_MATERIALIZATION_ATTEMPTS,
+                "timestamp_ns": time.monotonic_ns(),
+            }
+            failure_id = self.memorizer.enqueue(
+                failure, "training_materialization_failure", priority="critical"
+            )
+            autonomy.update(
+                {
+                    "materialization_status": (
+                        "retry_queued" if failure["retry_allowed"] else "failed"
+                    ),
+                    "materialization_attempt": attempt,
+                    "latest_source_check": {**failure, "memory_id": failure_id},
+                }
+            )
+            if failure["retry_allowed"]:
+                self._queue_training_materialization(
+                    proposal_memory_id=tracked["proposal_memory_id"],
+                    proposal=tracked["proposal"],
+                    attempt=attempt + 1,
+                    previous_failure={**failure, "memory_id": failure_id},
+                )
+
+    def complete_experience_from_observation(
+        self,
+        observation_bundle_memory_id: str,
+        inferred_facts: list[dict[str, Any]],
+        goodness_memory_ids: list[str],
+    ) -> str:
+        bundle_id = str(observation_bundle_memory_id)
+        bundle = self.memorizer.read(bundle_id) or self._observation_bundle_cache.get(
+            bundle_id
+        )
+        if not isinstance(bundle, dict) or bundle.get("observation_bundle_version") != 1:
+            raise ValueError("ObservationBundle v1 is required")
+        candidate_id = str(bundle.get("candidate_id", ""))
+        pending = self.state["pending_experiences"].get(candidate_id)
+        if pending is None:
+            raise KeyError(f"unknown pending observation candidate: {candidate_id}")
+        finished_ns = int(bundle["after"]["frame_timestamp_ns"])
+        facts = self._environment_facts(
+            {"facts": inferred_facts},
+            source="self_observation",
+            source_id=bundle_id,
+            timestamp_ns=finished_ns,
+        )
+        experience = {
+            "experience_version": 2,
+            "status": "valued" if goodness_memory_ids else "awaiting_goodness",
+            "task": {
+                "task_id": str(self.state["myself"].get("current_task", "")),
+                "instruction": str(self.state["myself"].get("current_task", "")),
+                "target_classes": [],
+            },
+            "state": pending["state"],
+            "teacher": pending["teacher"],
+            "action": pending["action"],
+            "output": pending["output"],
+            "environment": {
+                "source": "self_observed_environment",
+                "facts": facts,
+            },
+            "timestamps": {
+                "started_at_ns": int(pending["started_at_ns"]),
+                "executed_at_ns": int(pending["output"].get("finished_at_ns", 0)),
+                "finished_at_ns": finished_ns,
+            },
+            "observation_bundle_memory_id": bundle_id,
+            "goodness_memory_ids": list(goodness_memory_ids),
+        }
+        related = list(pending.get("related_memory_ids", ()))
+        related.extend([bundle_id, *goodness_memory_ids])
+        memory_id = self.memorizer.record_experience(
+            experience, related_memory_ids=list(dict.fromkeys(related))
+        )
+        self.state["blackboard"]["latest_experience"] = _timed(
+            {"memory_id": memory_id, **experience},
+            time.monotonic_ns(),
+            producer="self_observed_environment",
+        )
+        self.state["pending_experiences"].pop(candidate_id, None)
+        self._refresh_waiting_training_orders()
+        return memory_id
+
+    def _publish_vlm_failure(
+        self, request: dict[str, Any], exc: Exception
+    ) -> dict[str, Any]:
+        finished_ns = time.monotonic_ns()
+        result = {
+            "request_id": str(request.get("request_id", "")),
+            "role": "visual_interpretation",
+            "origin": str(request.get("origin", "unknown")),
+            "reference_frame_id": request.get("frame_id"),
+            "reference_frame_timestamp_ns": request.get("frame_timestamp_ns"),
+            "screen_memory_id": request.get("screen_memory_id"),
+            "result_memory_id": None,
+            "status": "failed",
+            "label_status": "failed",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "retry_allowed": False,
+            "completed_at_ns": finished_ns,
+        }
+        result_id = self.memorizer.enqueue(
+            result, "vlm_visual_interpretation", priority="critical"
+        )
+        result["result_memory_id"] = result_id
+        self.state["last_visual_interpretation_result"] = result
+        self.state["blackboard"]["latest_vlm_result"] = _timed(
+            result, finished_ns, producer="vlm"
+        )
+        if self._active_vlm_request_id == result["request_id"]:
+            self._active_vlm_request_id = None
+            self.state["autonomy_status"]["current_vlm_request_id"] = None
+        observation_context = request.get("observation_context")
+        if isinstance(observation_context, dict):
+            self._finalize_action_observation(
+                observation_context, result
+            )
+        elif request.get("origin") == "llm_tool":
+            evidence = [
+                str(item) for item in (
+                    request.get("screen_memory_id"), result_id,
+                    *request.get("evidence_memory_ids", ()),
+                ) if item
+            ]
+            self._queue_llm_continuation(
+                kind="vlm_result",
+                message="冻结帧视觉工具返回结构化失败；不要自动重试。",
+                evidence_memory_ids=evidence,
+                continuation={
+                    "tool_result": result,
+                    "reference_frame_warning": "current screen may have changed",
+                },
+            )
+        return result
 
     def _vlm_worker(self) -> None:
         status = self.state["model_status"]["vlm"]
@@ -3487,6 +4340,7 @@ class CoreLoop:
                             self._load_vlm(path)
                     self._process_vlm_request(request)
                 except Exception as exc:
+                    self._publish_vlm_failure(request, exc)
                     reusable = (
                         self._vlm_model is not None
                         or self.vlm_backend is not None
@@ -3590,6 +4444,9 @@ class CoreLoop:
                     "finished_at_ns": time.monotonic_ns(),
                 }
             )
+            if self._active_vlm_request_id == str(request.get("request_id", "")):
+                self._active_vlm_request_id = None
+                self.state["autonomy_status"]["current_vlm_request_id"] = None
             return
         finished_ns = time.monotonic_ns()
         latest = self.input_buffer.get_latest_screen()
@@ -3617,6 +4474,7 @@ class CoreLoop:
             "requested_at_ns": request["requested_at_ns"],
             "completed_at_ns": finished_ns,
             "analysis": str(analysis),
+            "origin": str(request.get("origin", "unknown")),
             "objects": objects,
             "label_status": label_status,
             "validation_error": validation_error,
@@ -3639,7 +4497,7 @@ class CoreLoop:
                 image=request["image"],
             ),
         )
-        image_id = self._remembered_observation_frames.get(
+        image_id = request.get("screen_memory_id") or self._remembered_observation_frames.get(
             int(request["frame_id"])
         )
         result["screen_memory_id"] = image_id
@@ -3671,6 +4529,35 @@ class CoreLoop:
                 "error": None,
             }
         )
+        self._active_vlm_request_id = None
+        self.state["autonomy_status"]["current_vlm_request_id"] = None
+        observation_context = request.get("observation_context")
+        if isinstance(observation_context, dict):
+            self._finalize_action_observation(
+                observation_context, published_result
+            )
+        elif request.get("origin") == "llm_tool":
+            evidence = [
+                str(item) for item in (
+                    image_id,
+                    result_id,
+                    *request.get("evidence_memory_ids", ()),
+                ) if item
+            ]
+            self._queue_llm_continuation(
+                kind="vlm_result",
+                message="冻结帧视觉工具已返回；基于该参考帧继续同一 self update。",
+                evidence_memory_ids=evidence,
+                continuation={
+                    "tool_request_id": request["request_id"],
+                    "reference_frame_id": request["frame_id"],
+                    "reference_frame_timestamp_ns": request["frame_timestamp_ns"],
+                    "screen_memory_id": image_id,
+                    "result_memory_id": result_id,
+                    "status": result["status"],
+                    "reference_frame_warning": "current screen may have changed",
+                },
+            )
         stats = self.state["runtime_stats"]
         stats["vlm_calls"] = stats.get("vlm_calls", 0) + 1
         log_event(
@@ -4095,6 +4982,259 @@ class CoreLoop:
                 _execute_tnn, node, inputs, observed_times
             )
 
+    def _action_frame_snapshot(self, action: dict[str, Any]) -> dict[str, Any]:
+        sample = self.input_buffer.get_latest_screen()
+        if sample is None:
+            return {
+                "candidate_id": action["candidate_id"],
+                "action_id": action["candidate_id"],
+                "frame_id": 0,
+                "frame_timestamp_ns": 0,
+                "screen_memory_id": "",
+                "vlm_result_memory_id": None,
+            }
+        frame = sample.value
+        self._remember_observation_bundle(reason="action_before", frame=frame)
+        visual = self.state.get("last_visual_interpretation_result")
+        if not isinstance(visual, dict) or visual.get("reference_frame_id") != frame.frame_id:
+            visual = {}
+        return {
+            "candidate_id": action["candidate_id"],
+            "action_id": action["candidate_id"],
+            "frame_id": int(frame.frame_id),
+            "frame_timestamp_ns": int(frame.captured_at_ns),
+            "screen_memory_id": str(
+                self._remembered_observation_frames.get(int(frame.frame_id), "")
+            ),
+            "vlm_result_memory_id": visual.get("result_memory_id"),
+        }
+
+    def _schedule_action_observation(
+        self,
+        action: dict[str, Any],
+        result: dict[str, Any],
+        before: dict[str, Any],
+        memory_ids: dict[str, str],
+    ) -> None:
+        candidate_id = str(action["candidate_id"])
+        request = {
+            "candidate_id": candidate_id,
+            "action": action,
+            "result": result,
+            "before": before,
+            "memory_ids": memory_ids,
+            "delay_ms": int(
+                action.get("expected_observation", {}).get(
+                    "observation_delay_ms", MIN_OBSERVATION_DELAY_MS
+                )
+            ),
+        }
+        self.state["pending_observations"][candidate_id] = {
+            "state": "waiting_after_frame",
+            "queued_at_ns": time.monotonic_ns(),
+        }
+        self.state["autonomy_status"]["pending_observation_count"] = len(
+            self.state["pending_observations"]
+        )
+        try:
+            self._observation_requests.put_nowait(request)
+        except queue.Full:
+            self._interrupt_action_observation(request, "observation_queue_full")
+
+    def _observation_worker(self) -> None:
+        while not self._model_stop.is_set():
+            try:
+                request = self._observation_requests.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if request.get("kind") == "stop":
+                return
+            try:
+                delay_s = max(
+                    MIN_OBSERVATION_DELAY_MS,
+                    min(MAX_OBSERVATION_DELAY_MS, int(request["delay_ms"])),
+                ) / 1000.0
+                if self._model_stop.wait(delay_s) or self.state["emergency_stop"]:
+                    self._interrupt_action_observation(request, "emergency_or_shutdown")
+                    continue
+                sample = self.input_buffer.get_latest_screen()
+                if sample is None:
+                    self._interrupt_action_observation(request, "after_frame_unavailable")
+                    continue
+                frame = sample.value
+                self._remember_observation_bundle(reason="action_after", frame=frame)
+                after = {
+                    "frame_id": int(frame.frame_id),
+                    "frame_timestamp_ns": int(frame.captured_at_ns),
+                    "screen_memory_id": str(
+                        self._remembered_observation_frames.get(int(frame.frame_id), "")
+                    ),
+                    "vlm_result_memory_id": None,
+                }
+                context = {**request, "after": after}
+                self.state["pending_observations"][request["candidate_id"]][
+                    "state"
+                ] = "waiting_vlm"
+                try:
+                    while (
+                        self._active_vlm_request_id is not None
+                        and not self._model_stop.is_set()
+                        and not self.state["emergency_stop"]
+                    ):
+                        self._model_stop.wait(0.05)
+                    if self._model_stop.is_set() or self.state["emergency_stop"]:
+                        self._interrupt_action_observation(
+                            request, "emergency_or_shutdown"
+                        )
+                        continue
+                    self._request_serial += 1
+                    self._queue_frozen_vlm_request(
+                        request_id=(
+                            f"after_{request['candidate_id']}_{time.time_ns()}_"
+                            f"{self._request_serial}"
+                        ),
+                        prompt=(
+                            "解释动作执行后的冻结帧。只描述可见对象、文字、得分、"
+                            "目标和界面状态；不得推断程序内部状态。"
+                        ),
+                        origin="action_observation",
+                        frame=frame,
+                        evidence_memory_ids=list(request["memory_ids"].values()),
+                        observation_context=context,
+                    )
+                except Exception as exc:
+                    self._finalize_action_observation(
+                        context,
+                        {
+                            "request_id": "",
+                            "status": "failed",
+                            "label_status": "failed",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "result_memory_id": None,
+                            "reference_frame_id": after["frame_id"],
+                            "reference_frame_timestamp_ns": after[
+                                "frame_timestamp_ns"
+                            ],
+                        },
+                    )
+            finally:
+                self._observation_requests.task_done()
+
+    def _interrupt_action_observation(
+        self, request: dict[str, Any], reason: str
+    ) -> None:
+        candidate_id = str(request["candidate_id"])
+        fact = {
+            "candidate_id": candidate_id,
+            "action_id": request.get("result", {}).get("action_id"),
+            "status": "interrupted",
+            "reason": str(reason),
+            "timestamp_ns": time.monotonic_ns(),
+        }
+        self.memorizer.enqueue(
+            fact, "action_observation_interrupted", priority="critical"
+        )
+        self.state["pending_observations"].pop(candidate_id, None)
+        self.state["autonomy_status"]["pending_observation_count"] = len(
+            self.state["pending_observations"]
+        )
+
+    def _finalize_action_observation(
+        self,
+        context: dict[str, Any],
+        vlm_result: dict[str, Any],
+    ) -> str:
+        candidate_id = str(context["candidate_id"])
+        after = dict(context["after"])
+        after["vlm_result_memory_id"] = vlm_result.get("result_memory_id")
+        output_result_memory_id = str(
+            context["memory_ids"].get("output_result", "")
+        )
+        bundle = {
+            "observation_bundle_version": 1,
+            "candidate_id": candidate_id,
+            "action_id": str(context["result"].get("action_id", candidate_id)),
+            "action_memory_id": str(
+                context["memory_ids"].get("action_candidate", "")
+            ),
+            "before": dict(context["before"]),
+            "after": after,
+            "execution": {
+                "started_at_ns": int(context["result"].get("started_at_ns", 0)),
+                "finished_at_ns": int(context["result"].get("finished_at_ns", 0)),
+                "output_result_memory_id": output_result_memory_id,
+            },
+            "source": "self_observed_environment",
+            "after_vlm_status": str(vlm_result.get("status", "failed")),
+        }
+        bundle_id = self.memorizer.enqueue(
+            bundle, "observation_bundle", priority="critical"
+        )
+        self._observation_bundle_cache[str(bundle_id)] = bundle
+        while len(self._observation_bundle_cache) > 32:
+            self._observation_bundle_cache.pop(
+                next(iter(self._observation_bundle_cache)), None
+            )
+        related = [
+            str(item) for item in (
+                bundle["action_memory_id"],
+                bundle["before"].get("screen_memory_id"),
+                bundle["before"].get("vlm_result_memory_id"),
+                bundle["after"].get("screen_memory_id"),
+                bundle["after"].get("vlm_result_memory_id"),
+                output_result_memory_id,
+                bundle_id,
+            ) if item
+        ]
+        if related:
+            self.memorizer.create_event(
+                list(dict.fromkeys(related)),
+                summary="self observed action before and after",
+                tags=["observation_bundle", "self_observed_environment"],
+                started_at_ns=int(bundle["before"]["frame_timestamp_ns"]),
+                ended_at_ns=int(bundle["after"]["frame_timestamp_ns"]),
+            )
+        pending = self.state["pending_experiences"].get(candidate_id)
+        if pending is not None:
+            pending["observation_bundle_memory_id"] = bundle_id
+            pending["related_memory_ids"] = list(dict.fromkeys(
+                [*pending.get("related_memory_ids", ()), *related]
+            ))
+        self.state["pending_observations"].pop(candidate_id, None)
+        autonomy = self.state["autonomy_status"]
+        autonomy["pending_observation_count"] = len(
+            self.state["pending_observations"]
+        )
+        autonomy["latest_observation_bundle"] = {
+            "memory_id": bundle_id,
+            "candidate_id": candidate_id,
+            "action_id": bundle["action_id"],
+            "after_vlm_status": bundle["after_vlm_status"],
+        }
+        self.state["blackboard"]["latest_observation_bundle"] = _timed(
+            {"memory_id": bundle_id, **bundle},
+            time.monotonic_ns(),
+            producer="self_observed_environment",
+        )
+        if not self.state["emergency_stop"]:
+            self._queue_llm_continuation(
+                kind="action_observation",
+                message=(
+                    "比较动作前后可见状态，区分直接观察与推断；生成环境事实，"
+                    "并按 ValueDefinition 生成必要 GoodnessRecord 和 observation_completion。"
+                ),
+                evidence_memory_ids=related,
+                continuation={
+                    "observation_bundle_memory_id": bundle_id,
+                    "before": bundle["before"],
+                    "after": bundle["after"],
+                    "after_vlm_result": vlm_result,
+                    "external_environment_state_available": False,
+                },
+            )
+        return str(bundle_id)
+
     def _start_output_worker(self) -> None:
         if self._output_thread is not None and self._output_thread.is_alive():
             return
@@ -4131,13 +5271,22 @@ class CoreLoop:
             except queue.Empty:
                 continue
             try:
+                before = self._action_frame_snapshot(action)
                 result = run_once(
                     self.state,
                     action,
                     self.log_dir,
                     before_output=self._mark_expected_output,
                 )
-                self._remember_chain(action, result)
+                memory_ids = self._remember_chain(
+                    action, result, before_snapshot=before
+                )
+                if not result.get("blocked") and (
+                    result.get("executed") or result.get("simulated")
+                ):
+                    self._schedule_action_observation(
+                        action, result, before, memory_ids
+                    )
             except Exception as exc:
                 self._record_error("output", exc, critical=True)
             finally:
@@ -4219,7 +5368,6 @@ class CoreLoop:
             except queue.Full:
                 result = {
                     "candidate_id": candidate_id,
-                    "action_id": candidate_id,
                     "kind": action["action_type"],
                     "mode": self.state["output_mode"],
                     "started_at_ns": now_ns,
@@ -4228,6 +5376,7 @@ class CoreLoop:
                     "simulated": False,
                     "blocked": True,
                     "reason": "output_queue_full",
+                    "required_permissions": list(_required_permissions(action)),
                     "payload": {},
                 }
                 self.state["latest_output"] = result
@@ -4696,12 +5845,47 @@ class CoreLoop:
             "queue_size": self._output_requests.qsize(),
             "last_error": None,
         }
+        vlm_status = self.state["model_status"]["vlm"]
+        self.state["node_status"]["vlm_tool"] = {
+            "state": vlm_status.get("state", "unknown"),
+            "last_run_ns": vlm_status.get("finished_at_ns", 0),
+            "last_duration_ms": vlm_status.get("last_duration_ms", 0.0),
+            "average_duration_ms": 0.0,
+            "actual_hz": int(self.state["runtime_stats"].get("vlm_calls", 0)) / elapsed_s,
+            "queue_size": self._vlm_requests.qsize(),
+            "last_error": vlm_status.get("last_request_error"),
+        }
+        self.state["node_status"]["action_observation"] = {
+            "state": "running" if self.running else "stopped",
+            "last_run_ns": now_ns,
+            "last_duration_ms": 0.0,
+            "average_duration_ms": 0.0,
+            "actual_hz": 0.0,
+            "queue_size": self._observation_requests.qsize(),
+            "pending_count": len(self.state["pending_observations"]),
+            "last_error": None,
+        }
+        trainer_stats = self.trainer.stats()
+        self.state["node_status"]["dock"] = {
+            "state": self.state["dock_status"].get("state", "idle"),
+            "last_run_ns": self.state["dock_status"].get("last_result", {}).get(
+                "finished_at_ns", 0
+            ) if isinstance(self.state["dock_status"].get("last_result"), dict) else 0,
+            "last_duration_ms": 0.0,
+            "average_duration_ms": 0.0,
+            "actual_hz": int(trainer_stats.get("completed", 0)) / elapsed_s,
+            "queue_size": trainer_stats.get("queued", 0),
+            "last_error": None,
+        }
         edges = [
             {"source": "capture", "target": "buffer", "condition": "continuous samples"},
             {"source": "buffer", "target": "core", "condition": "each Core iteration"},
             {"source": "core", "target": "self_update_loop", "condition": "due and LLM ready"},
             {"source": "self_update_loop", "target": "world", "condition": "validated interpretation update"},
             {"source": "self_update_loop", "target": "self", "condition": "validated cognition update"},
+            {"source": "self_update_loop", "target": "vlm_tool", "condition": "visual tool requested"},
+            {"source": "vlm_tool", "target": "self_update_loop", "condition": "frozen result continuation"},
+            {"source": "self_update_loop", "target": "output_worker", "condition": "slow candidate passed Core"},
             {"source": "core", "target": "yolo", "condition": "new screen frame"},
             {"source": "yolo", "target": "blackboard", "condition": "current frame result"},
             {"source": "core", "target": "tnn_scheduler", "condition": "node due and not running"},
@@ -4709,8 +5893,13 @@ class CoreLoop:
             {"source": "output_worker", "target": "mouse_output", "condition": "permission recheck"},
             {"source": "output_worker", "target": "keyboard_output", "condition": "permission recheck"},
             {"source": "output_worker", "target": "speak_output", "condition": "permission recheck"},
+            {"source": "output_worker", "target": "action_observation", "condition": "executed or simulated"},
+            {"source": "action_observation", "target": "vlm_tool", "condition": "after frame frozen"},
+            {"source": "action_observation", "target": "self_update_loop", "condition": "ObservationBundle complete"},
             {"source": "core", "target": "memory_writer", "condition": "bounded async writes"},
             {"source": "core", "target": "dock", "condition": "training order queued"},
+            {"source": "self_update_loop", "target": "dock", "condition": "materialized TrainingOrder"},
+            {"source": "dock", "target": "self_update_loop", "condition": "bounded correction feedback"},
         ]
         referenced = {
             value
@@ -4799,15 +5988,14 @@ class CoreLoop:
         }
 
     def _remember_chain(
-        self, action: dict[str, Any], result: dict[str, Any]
+        self,
+        action: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        before_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         memory_ids: dict[str, str] = {}
         try:
-            observation_id = self._remember_observation_bundle(
-                reason="action_result"
-            )
-            if observation_id:
-                memory_ids["observation_bundle"] = observation_id
             decision = self.state["blackboard"].get(
                 "latest_permission_result", {}
             ).get("value", {})
@@ -4816,25 +6004,32 @@ class CoreLoop:
                 ("permission_result", decision),
                 ("output_result", result),
             ):
-                memory_id = self.memorizer.enqueue(
+                memory_id = (
+                    action.get("candidate_memory_id")
+                    if payload_type == "action_candidate"
+                    else None
+                ) or self.memorizer.enqueue(
                     payload, payload_type, priority="critical"
                 )
                 if memory_id is not None:
                     self.state["memory_ids"].append(memory_id)
                     memory_ids[payload_type] = memory_id
-            input_summary = (
-                self.state["blackboard"]
-                .get("latest_input_summary", {})
-                .get("value", {})
-            )
+            input_summary = self.state["blackboard"].get(
+                "latest_input_summary", {}
+            ).get("value", {})
             teacher = self.state.get("visual_interpretation_result") or {}
             screen = input_summary.get("screen") or {}
             cursor = input_summary.get("cursor") or {}
+            before = before_snapshot or {}
             self.state["pending_experiences"][action["candidate_id"]] = {
                 "state": {
-                    "screen_memory_id": teacher.get("screen_memory_id"),
-                    "frame_id": screen.get("frame_id"),
-                    "frame_timestamp_ns": screen.get("timestamp_ns"),
+                    "screen_memory_id": before.get(
+                        "screen_memory_id", teacher.get("screen_memory_id")
+                    ),
+                    "frame_id": before.get("frame_id", screen.get("frame_id")),
+                    "frame_timestamp_ns": before.get(
+                        "frame_timestamp_ns", screen.get("timestamp_ns")
+                    ),
                     "cursor": {
                         "x": cursor.get("x"),
                         "y": cursor.get("y"),
@@ -4853,6 +6048,14 @@ class CoreLoop:
                     "observed_at_ns", action.get("generated_at_ns", 0)
                 ),
                 "related_memory_ids": list(memory_ids.values()),
+            }
+            self.state["autonomy_status"]["latest_action_status"] = {
+                "candidate_id": action["candidate_id"],
+                "action_id": result.get("action_id") if not result.get("blocked") else None,
+                "executed": bool(result.get("executed")),
+                "simulated": bool(result.get("simulated")),
+                "blocked": bool(result.get("blocked")),
+                "reason": str(result.get("reason", "")),
             }
             if result.get("blocked"):
                 finished_at_ns = int(result.get("finished_at_ns", time.monotonic_ns()))

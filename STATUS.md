@@ -1,6 +1,6 @@
 # EVE 当前实现状态
 
-更新时间：2026-07-31。
+更新时间：2026-08-02。
 
 本轮只收拢架构与错误语义，不扩展新能力。正式运行时保持
 `main + input + output + memory + core + dock` 六个边界。
@@ -18,9 +18,10 @@
 - GUI 高频文本窗口只在内容变化时更新并保留滚动位置；所有运行事件、
   LLM/self、YOLO、TNN、Output 结果及每秒循环快照写入 `debug.jsonl`。
 - 资源页显示带状态、实际频率、耗时、队列深度和触发条件的运行循环图。
-- Core 仅接收带具体 `model.py`/模型 MemoryID、数据和验收条件的可执行
-  `TrainingOrder`；Dock 不包含 JSON 模型编译器。LLM training proposal 只记录，
-  不自动执行。
+- `training_proposal` 与 `TrainingOrder` 仍严格分离；proposal 保存后由同一
+  LLM 进入 materialization，生成具体 Actor 源码、可选 QNN 源码和完整订单。
+  Core/Dock 只接受通过 workspace、AST、依赖、危险调用和 TinyNN 接口检查的
+  材料；Dock 不包含 JSON 模型编译器，也不替 LLM 设计网络。
 - 正式 TNN 只有通过验收后才保存到 Memory 并由 Core 加载，最多同时加载
   5 个。
 - 各 TNN 由共享执行池按各自到期时间提交，同一节点不会重入；状态记录目标
@@ -28,8 +29,9 @@
 - 动作候选通过 Core 的权限、急停、有效期和接管检查后进入有界 Output
   队列；Output worker 执行前再次检查。急停清空未执行动作。
 - 鼠标长距离移动与拖拽拆成可中断短步。
-- Output 反馈同时返回 `candidate_id` 与 `action_id`；正向 Experience 只接受
-  与候选、动作、执行时间和环境事件精确绑定的反馈。
+- 已执行 Output 反馈同时返回 `candidate_id` 与 `action_id`；被阻断候选不再
+  伪造 `action_id`。可信外部事件仍要求与候选、动作和时间精确绑定；无外部
+  接口的桌面任务使用独立 `self_observed_environment` 证据路径。
 - Memory 使用完整 Catalog 与独立 STM/MTM/LTM 视图；STM 溢出只驱逐热视图，
   MTM/LTM 只通过显式操作变化，不存在自动晋升线程。
 - 正常停机生成 Snapshot v2、`world.md` 与 `self.md`；只持久化耐久语义。
@@ -52,3 +54,43 @@
 - Dock 支持 ValueDefinition 的最小安全数值表达式，以及只在 `dock/workspace/<order_id>/` 内存在的临时 QNN。QNN 仅评价已有候选、产生 Actor top-k 样本，随后删除；不会注册为正式 TNN，也不会被 Core 加载。
 - 训练验收只接受 `min_goodness` 和 `min_regression_goodness`，支持 `mean`/`minimum` 聚合；loss 等指标仅作诊断事实。权限、急停、接口和 artifact 完整性仍是不可由高好度绕过的硬边界。
 - 本轮验证是合成数据和单元/集成测试证据，不代表真实桌面成长实验、任意连续动作搜索、通用视觉理解或长期价值观已经完成。
+
+## 2026-08-02：自主行为与自主成长纵向闭环
+
+### 代码已存在
+
+- protocol v2 新增且强制要求 `action_candidates`、`tool_requests`、
+  `training_materialization` 和 `observation_completion`；第一版不保留缺字段旧后端。
+- LLM 慢速鼠标候选当前支持 `moveTo` 和左键 `click`，经 Core 原权限、暂停、
+  急停、接管、时效与队列检查后，仍由 Output 执行前复检。
+- LLM 可按需请求单个冻结帧 VLM；请求绑定 request/frame/time/screen/result，
+  完成或失败均为结构化结果，LLM 工具结果回到同一 self-update 队列。VLM
+  没有独立自治循环。
+- 已执行或 mock 动作由一个共享异步 observation worker 形成 before/after、
+  after-VLM 与 `ObservationBundle v1`；随后同一 LLM 可提交可见事实、
+  GoodnessRecord 和 Experience v2。该路径不伪造外部 environment event。
+- proposal materialization 最多纠错 3 次；源码只写入
+  `dock/workspace/<order_id>/materialized/attempt_n/`，限制文件、大小、路径、
+  import、危险调用、TinyNN 接口、构造、schema、频率、上游和时间范围。
+- 生成的 QNN 仍只在订单 workspace/训练期存在并按配置删除；通过好度与回归
+  验收的 Actor 才进入正式 Memory 并由 Core 加载。
+- 现有 GUI 的 self 页面只显示纵向闭环摘要；完整结构化输出继续进入
+  `debug.jsonl`。循环图新增 LLM→VLM→LLM、LLM→Output、Output→Observation
+  →LLM 和 materialization→Dock 连接。
+
+### 测试证据
+
+- 修改前：`56 passed in 13.24s`。
+- 修改后：`63 passed in 12.63s`。
+- 新增 7 个纵向测试，包含 Mock Output、Fake 冻结帧 VLM、before/after、
+  self-observed Experience/Goodness、阻断语义、源码安全、一次失败后修正、
+  三次上限、真实本地 Dock 训练和正式 TNN 加载。
+- 1 秒 smoke 使用合成 Capture 与 mock Output；`real_output_calls=0`、
+  `threads_stopped=true`、`capture_process_stopped=true`。
+
+### 尚无证据
+
+- 尚未进行真实桌面动作、真实模型自主代码生成、真实冻结帧 VLM 质量验收、
+  真实黑箱小游戏成长、真实 TNN 性能改善或长时间稳定性验收。
+- 因此当前只能称为“代码闭环 + 单元/集成 + 合成纵向闭环”，不能称为真实
+  桌面自主成长完成。

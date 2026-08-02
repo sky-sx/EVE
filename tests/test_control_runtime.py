@@ -240,7 +240,11 @@ def test_llm_protocol_rejects_legacy_or_incomplete_shapes(tmp_path):
         "blackboard_updates": [],
         "active_tnn": [],
         "memory_actions": [],
+        "action_candidates": [],
+        "tool_requests": [],
         "training_proposal": None,
+        "training_materialization": None,
+        "observation_completion": None,
     }
     assert core._coerce_llm_result(strict, request)["reply"] == "current"
     with pytest.raises(TypeError, match="myself_cognition_update"):
@@ -268,7 +272,11 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
             "blackboard_updates": [],
             "active_tnn": [],
             "memory_actions": [],
+            "action_candidates": [],
+            "tool_requests": [],
             "training_proposal": None,
+            "training_materialization": None,
+            "observation_completion": None,
         }
 
     state = create_runtime_state()
@@ -334,7 +342,11 @@ def test_real_llm_user_request_uses_protocol_v2(tmp_path, monkeypatch):
                 "blackboard_updates": [],
                 "active_tnn": [],
                 "memory_actions": [],
+                "action_candidates": [],
+                "tool_requests": [],
                 "training_proposal": None,
+                "training_materialization": None,
+                "observation_completion": None,
             },
             ensure_ascii=False,
         ),

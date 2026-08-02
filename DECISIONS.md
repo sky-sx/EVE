@@ -79,3 +79,11 @@
 5. QNN 只作为 Dock 订单中的一次性教师近似器：输入状态与已有候选输出，输出预测好度，产生 Actor top-k 样本后删除。它不是运行时主体，不注册到 Memory/TNNweights，不由 Core 加载。
 6. 不强迫所有 TNN 先训练 QNN；教师可直接提供 Actor 目标。当前实现也不声称支持任意连续动作空间搜索。
 7. 第一版实验完成前不维护历史兼容层：Experience、LLM protocol、Snapshot、Catalog 与训练验收只保留当前正式 schema；不兼容旧数据直接拒绝，不迁移、不回退到旧语义。
+
+## 自主纵向闭环（2026-08-02）
+
+1. EVE 只有同一个本地 LLM 认知主体；VLM 是冻结帧工具，Dock 是训练执行器，二者不形成自治 Agent。
+2. LLM 可以提出慢速动作候选，但只能进入现有 Core 权限/急停/接管/时效检查和 Output 二次复检，不得直接调用桌面底层。
+3. 黑箱桌面任务允许用动作前后冻结帧形成 `self_observed_environment`；可见事实与推断仍不等于好度，也不伪造外部 environment event。
+4. `training_proposal` 不可执行；同一 LLM 负责生成具体 Actor、可选 QNN 和 TrainingOrder，Dock 只执行已经通过 workspace 与最小源码安全检查的订单。
+5. materialization 自主纠错最多 3 次。失败报告保留，超过上限停止本轮训练，不注册正式 TNN。

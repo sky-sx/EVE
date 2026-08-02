@@ -24,6 +24,21 @@ ARTIFACT_FILES = {
     "model.py", "weights.pt", "structure.json", "description.json",
     "training.json",
 }
+MATERIALIZATION_MAX_FILES = 4
+MATERIALIZATION_MAX_FILE_BYTES = 256_000
+MATERIALIZATION_ALLOWED_IMPORTS = {
+    "torch",
+    "torch.nn",
+    "torch.optim",
+    "math",
+    "typing",
+    "dataclasses",
+    "eve.dock.tinynn",
+}
+MATERIALIZATION_FORBIDDEN_CALLS = {
+    "open", "eval", "exec", "compile", "__import__", "input",
+    "breakpoint",
+}
 
 
 def _evaluate_goodness_expression(
@@ -184,6 +199,114 @@ def _import_tnn_model(model_path: str | Path, factory: str) -> TinyNN:
     return model
 
 
+def _validate_generated_model_source(source: str, *, relative_path: str) -> dict[str, Any]:
+    """Apply the small, explicit source boundary used for LLM materialization."""
+    encoded = source.encode("utf-8")
+    if not encoded or len(encoded) > MATERIALIZATION_MAX_FILE_BYTES:
+        raise ValueError(f"generated source size is invalid: {relative_path}")
+    try:
+        tree = ast.parse(source, filename=relative_path)
+    except SyntaxError as exc:
+        raise SyntaxError(f"{relative_path}: {exc.msg} at line {exc.lineno}") from exc
+    imports: list[str] = []
+    required_methods = {"forward", "training_step", "evaluation_step"}
+    tiny_classes: list[ast.ClassDef] = []
+    factory_found = False
+    for top_level in tree.body:
+        if isinstance(top_level, ast.Expr) and isinstance(
+            top_level.value, ast.Constant
+        ) and isinstance(top_level.value.value, str):
+            continue
+        if not isinstance(
+            top_level,
+            (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef,
+             ast.AsyncFunctionDef, ast.Assign, ast.AnnAssign),
+        ):
+            raise ValueError(
+                f"disallowed module-level statement in {relative_path}: "
+                f"{type(top_level).__name__}"
+            )
+        if isinstance(top_level, (ast.Assign, ast.AnnAssign)):
+            assigned = top_level.value
+            if isinstance(assigned, ast.Call):
+                raise ValueError(
+                    f"module-level calls are forbidden in {relative_path}"
+                )
+        if isinstance(top_level, ast.FunctionDef) and top_level.name == "create_tnn":
+            factory_found = True
+        if isinstance(top_level, ast.ClassDef):
+            base_names = {
+                base.id if isinstance(base, ast.Name) else (
+                    base.attr if isinstance(base, ast.Attribute) else ""
+                )
+                for base in top_level.bases
+            }
+            if "TinyNN" in base_names:
+                tiny_classes.append(top_level)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                raise ValueError(f"relative imports are forbidden: {relative_path}")
+            names = [str(node.module or "")]
+        else:
+            names = []
+        for name in names:
+            if not any(
+                name == allowed or name.startswith(allowed + ".")
+                for allowed in MATERIALIZATION_ALLOWED_IMPORTS
+            ):
+                raise ImportError(f"forbidden import in {relative_path}: {name}")
+            imports.append(name)
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in MATERIALIZATION_FORBIDDEN_CALLS:
+                raise ValueError(
+                    f"forbidden call in {relative_path}: {node.func.id}"
+                )
+            if isinstance(node.func, ast.Attribute):
+                dotted = []
+                current: ast.AST = node.func
+                while isinstance(current, ast.Attribute):
+                    dotted.append(current.attr)
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    dotted.append(current.id)
+                call_name = ".".join(reversed(dotted))
+                if any(
+                    token in call_name
+                    for token in (
+                        "subprocess", "socket", "requests", "urllib",
+                        "shutil", "os.system", "Path.write", "Path.unlink",
+                    )
+                ):
+                    raise ValueError(
+                        f"forbidden call in {relative_path}: {call_name}"
+                    )
+    if not factory_found:
+        raise AttributeError(f"{relative_path} must define create_tnn()")
+    if not tiny_classes:
+        raise TypeError(f"{relative_path} must define a TinyNN subclass")
+    methods = {
+        item.name
+        for class_node in tiny_classes
+        for item in class_node.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    missing = required_methods - methods
+    if missing:
+        raise AttributeError(
+            f"{relative_path} TinyNN interface is missing: {sorted(missing)}"
+        )
+    return {
+        "relative_path": relative_path,
+        "size_bytes": len(encoded),
+        "imports": sorted(set(imports)),
+        "ast_valid": True,
+        "interface_methods": sorted(methods & required_methods),
+    }
+
+
 def _dtype(name: str) -> torch.dtype:
     value = getattr(torch, name, None)
     if not isinstance(value, torch.dtype):
@@ -234,6 +357,136 @@ class Trainer:
                 "completed": self._completed,
                 "failed": self._failed,
             }
+
+    def materialize_training(
+        self,
+        materialization: dict[str, Any],
+        *,
+        attempt: int,
+    ) -> tuple[TrainingOrder, dict[str, Any]]:
+        """Write checked LLM source only inside this Dock workspace.
+
+        The method validates every path and AST before writing any file. Failed
+        attempts remain inspectable in their own numbered directory and can
+        never overwrite an earlier attempt.
+        """
+        if not isinstance(materialization, dict):
+            raise TypeError("training_materialization must be an object")
+        proposal_id = str(materialization.get("proposal_id", "")).strip()
+        if not proposal_id:
+            raise ValueError("training materialization requires proposal_id")
+        order_payload = materialization.get("training_order")
+        if not isinstance(order_payload, dict):
+            raise TypeError("training_materialization.training_order must be an object")
+        payload = dict(order_payload)
+        order_id = str(payload.get("order_id", "")).strip()
+        if not order_id:
+            raise ValueError("materialized training order requires order_id")
+        if attempt < 1:
+            raise ValueError("materialization attempt must be positive")
+        if payload.get("continue_training") or payload.get("weights_path"):
+            raise ValueError(
+                "generated TrainingOrder cannot reference external continuation weights"
+            )
+        root = self.workspace_root.resolve()
+        order_workspace = (root / order_id).resolve()
+        if order_workspace.parent != root:
+            raise ValueError("training order_id escapes Dock workspace")
+        attempt_workspace = (
+            order_workspace / "materialized" / f"attempt_{attempt}"
+        ).resolve()
+        if order_workspace not in attempt_workspace.parents:
+            raise ValueError("materialization path escapes Dock workspace")
+        if attempt_workspace.exists():
+            raise FileExistsError(
+                f"materialization attempt already exists: {attempt_workspace}"
+            )
+
+        actor_files = materialization.get("files")
+        qnn_files = materialization.get("qnn_files")
+        if not isinstance(actor_files, list) or not isinstance(qnn_files, list):
+            raise TypeError("files and qnn_files must be arrays")
+        if len(actor_files) != 1:
+            raise ValueError("exactly one Actor file is required")
+        if len(qnn_files) not in {0, 1}:
+            raise ValueError("at most one QNN file is supported")
+        if len(actor_files) + len(qnn_files) > MATERIALIZATION_MAX_FILES:
+            raise ValueError("generated file count exceeds the bounded limit")
+        expected_paths = ["actor/model.py"] + (
+            ["qnn/model.py"] if qnn_files else []
+        )
+        entries = [*actor_files, *qnn_files]
+        checked: list[tuple[Path, str, dict[str, Any]]] = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise TypeError("each generated file must be an object")
+            relative = str(entry.get("relative_path", "")).replace("\\", "/")
+            if relative != expected_paths[index]:
+                raise ValueError(
+                    f"generated file path must be {expected_paths[index]}"
+                )
+            path = (attempt_workspace / relative).resolve()
+            if attempt_workspace not in path.parents:
+                raise ValueError("generated source path escapes Dock workspace")
+            source = entry.get("content")
+            if not isinstance(source, str):
+                raise TypeError("generated source content must be text")
+            report = _validate_generated_model_source(
+                source, relative_path=relative
+            )
+            checked.append((path, source, report))
+
+        attempt_workspace.mkdir(parents=True, exist_ok=False)
+        for path, source, _report in checked:
+            path.parent.mkdir(parents=True, exist_ok=False)
+            path.write_text(source, encoding="utf-8")
+        actor_path = checked[0][0]
+        actor = _import_tnn_model(actor_path, str(payload.get("factory", "create_tnn")))
+        target_tnn_id = str(payload.get("target_tnn_id", ""))
+        if actor.tnn_id != target_tnn_id:
+            raise ValueError("Actor tnn_id does not match TrainingOrder target_tnn_id")
+        actor_input_schema = actor.get_input_schema()
+        actor_output_schema = actor.get_output_schema()
+        payload["model_path"] = str(actor_path)
+        payload["model_memory_id"] = ""
+        qnn_path = ""
+        if qnn_files:
+            qnn_path = str(checked[1][0])
+            _import_tnn_model(qnn_path, "create_tnn")
+            qnn_stage = dict(payload.get("qnn_stage") or {})
+            if not qnn_stage.get("enabled"):
+                raise ValueError("qnn_files require qnn_stage.enabled=true")
+            qnn_stage.update(
+                {
+                    "model_path": qnn_path,
+                    "model_memory_id": "",
+                    "delete_after_training": True,
+                }
+            )
+            payload["qnn_stage"] = qnn_stage
+        elif (payload.get("qnn_stage") or {}).get("enabled"):
+            raise ValueError("enabled qnn_stage requires qnn/model.py")
+        else:
+            payload["qnn_stage"] = {}
+        allowed = set(TrainingOrder.__dataclass_fields__)
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValueError(f"unknown TrainingOrder fields: {sorted(unknown)}")
+        order = TrainingOrder(**payload)
+        self._validate_order(order)
+        report = {
+            "proposal_id": proposal_id,
+            "order_id": order.order_id,
+            "attempt": attempt,
+            "workspace": str(attempt_workspace),
+            "actor_model_path": str(actor_path),
+            "qnn_model_path": qnn_path,
+            "source_checks": [item[2] for item in checked],
+            "actor_input_schema": actor_input_schema,
+            "actor_output_schema": actor_output_schema,
+            "status": "passed",
+        }
+        return order, report
 
     def process_one(self, *, batch_size: int | None = None) -> TrainingResult:
         with self._lock:
@@ -315,8 +568,15 @@ class Trainer:
         version = order.version or f"v{time.time_ns()}"
         artifact = self.workspace_root / order.order_id
         if artifact.exists():
-            raise FileExistsError(f"training workspace exists: {artifact}")
-        artifact.mkdir(parents=True)
+            allowed_existing = artifact / "materialized"
+            unexpected = [
+                item.name for item in artifact.iterdir()
+                if item != allowed_existing
+            ]
+            if unexpected or not allowed_existing.is_dir():
+                raise FileExistsError(f"training workspace exists: {artifact}")
+        else:
+            artifact.mkdir(parents=True)
         model_path = artifact / "model.py"
         shutil.copy2(source_model, model_path)
         model = _import_tnn_model(model_path, order.factory).to(self.training_device)
@@ -361,7 +621,11 @@ class Trainer:
                 qnn_report["actor_stage_completed"] = True
         finally:
             if order.qnn_stage.get("enabled"):
-                self._cleanup_qnn_workspace(artifact, qnn_report)
+                self._cleanup_qnn_workspace(
+                    artifact,
+                    qnn_report,
+                    source_model_path=str(order.qnn_stage.get("model_path", "")),
+                )
         model.save_weights(str(artifact / "weights.pt"))
         documents = {
             "structure.json": structure,
@@ -859,18 +1123,40 @@ class Trainer:
                 }
             )
         except Exception:
-            self._cleanup_qnn_workspace(artifact, report)
+            self._cleanup_qnn_workspace(
+                artifact,
+                report,
+                source_model_path=str(config.get("model_path", "")),
+            )
             raise
         return actor_samples, report
 
     @staticmethod
     def _cleanup_qnn_workspace(
-        artifact: Path, report: dict[str, Any]
+        artifact: Path,
+        report: dict[str, Any],
+        *,
+        source_model_path: str = "",
     ) -> None:
         qnn_dir = artifact / "_temporary_qnn"
         if qnn_dir.exists():
             shutil.rmtree(qnn_dir)
-        report["cleanup_complete"] = not qnn_dir.exists()
+        source_removed = True
+        if source_model_path:
+            source = Path(source_model_path).expanduser().resolve()
+            artifact_resolved = artifact.resolve()
+            if artifact_resolved in source.parents and source.exists():
+                source.unlink()
+                source_removed = not source.exists()
+                parent = source.parent
+                if parent != artifact_resolved and parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            elif artifact_resolved not in source.parents:
+                # Pre-existing author supplied models are inputs, not temporary
+                # generated QNN source owned by this workspace.
+                source_removed = True
+        report["generated_qnn_source_removed"] = source_removed
+        report["cleanup_complete"] = not qnn_dir.exists() and source_removed
 
     def _batch(
         self, rows: list[dict[str, Any]], structure: dict[str, Any]

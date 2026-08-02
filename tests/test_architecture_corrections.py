@@ -31,7 +31,11 @@ def protocol_reply(reply: str = "ok") -> dict:
         "blackboard_updates": [],
         "active_tnn": [],
         "memory_actions": [],
+        "action_candidates": [],
+        "tool_requests": [],
         "training_proposal": None,
+        "training_materialization": None,
+        "observation_completion": None,
     }
 
 

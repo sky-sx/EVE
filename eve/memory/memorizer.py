@@ -240,6 +240,16 @@ class Memorizer:
     def get_unit(self, memory_id: str) -> MemoryUnit | None:
         return self.catalog.get(memory_id)
 
+    def contains(self, memory_id: str) -> bool:
+        """Return whether an ID is persisted or accepted by the async writer."""
+        key = str(memory_id)
+        if key in self.catalog:
+            return True
+        with self._condition:
+            return key == self._writer_current_id or any(
+                request.memory_id == key for request in self._queue
+            )
+
     def delete(self, memory_id: str) -> bool:
         with self._lock:
             unit = self.catalog.get(memory_id)
