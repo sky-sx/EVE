@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from eve.core.loop import (
+    EVE_FIRST_EDITION_FIELDS,
     EVE_FIRST_EDITION_PROMPT,
     ORGAN_NAMES,
     ORGAN_PROMPTS,
@@ -46,6 +47,13 @@ def test_fixed_prompt_is_first_edition_and_lists_only_organs():
         assert name in EVE_FIRST_EDITION_PROMPT
     assert "没有图片输入时不得声称看见画面" in EVE_FIRST_EDITION_PROMPT
     assert "Output 成功反馈之前" in EVE_FIRST_EDITION_PROMPT
+    assert set(EVE_FIRST_EDITION_FIELDS) == {
+        "action_candidates", "active_tnn", "blackboard_updates",
+        "goodness_records", "goodness_update", "memory_actions",
+        "myself_cognition_update", "prompt_request", "reply",
+        "thinking_summary", "training_proposal",
+        "world_interpretation_update",
+    }
 
 
 def test_first_edition_shape_rejects_version_and_bounds_organ_prompt(tmp_path):
@@ -71,6 +79,13 @@ def test_first_edition_shape_rejects_version_and_bounds_organ_prompt(tmp_path):
         core._coerce_llm_result(
             {**first_edition_result(reply="x"), "protocol_version": 2}, request
         )
+    for invalid in (
+        {key: value for key, value in first_edition_result().items() if key != "reply"},
+        {**first_edition_result(), "interpretation": {}},
+        {**first_edition_result(), "unknown_field": None},
+    ):
+        with pytest.raises(ValueError, match="fields mismatch"):
+            core._coerce_llm_result(invalid, request)
 
 
 @pytest.mark.parametrize(
@@ -197,12 +212,18 @@ def test_qwen_loader_creates_one_shared_model_and_processor(tmp_path, monkeypatc
     class Parameter:
         device = "cuda:0"
 
+    class Linear4bit:
+        pass
+
     class Model:
         is_loaded_in_4bit = True
         hf_device_map = {"model": "cuda:0"}
 
         def parameters(self):
             return iter([Parameter()])
+
+        def modules(self):
+            return iter([self, Linear4bit()])
 
     class AutoProcessor:
         @staticmethod
@@ -223,10 +244,19 @@ def test_qwen_loader_creates_one_shared_model_and_processor(tmp_path, monkeypatc
     transformers.AutoProcessor = AutoProcessor
     transformers.AutoModelForImageTextToText = AutoModel
     transformers.AutoModelForVision2Seq = AutoModel
-    transformers.BitsAndBytesConfig = lambda **_kwargs: object()
+    def bits_config(**kwargs):
+        calls["quantization"] = kwargs
+        return object()
+
+    transformers.BitsAndBytesConfig = bits_config
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "transformers", transformers)
-    monkeypatch.setitem(sys.modules, "bitsandbytes", types.ModuleType("bitsandbytes"))
+    bitsandbytes = types.ModuleType("bitsandbytes")
+    bitsandbytes.__path__ = []
+    bitsandbytes_nn = types.ModuleType("bitsandbytes.nn")
+    bitsandbytes_nn.Linear4bit = Linear4bit
+    monkeypatch.setitem(sys.modules, "bitsandbytes", bitsandbytes)
+    monkeypatch.setitem(sys.modules, "bitsandbytes.nn", bitsandbytes_nn)
     monkeypatch.setitem(sys.modules, "accelerate", types.ModuleType("accelerate"))
 
     qwen_path = tmp_path / "qwen"
@@ -241,12 +271,38 @@ def test_qwen_loader_creates_one_shared_model_and_processor(tmp_path, monkeypatc
     processor = core._qwen_processor
     core._load_vlm(str(qwen_path))
 
-    assert calls == {"processor": 1, "model": 1}
+    assert calls["processor"] == 1
+    assert calls["model"] == 1
+    assert calls["quantization"]["load_in_4bit"] is True
+    assert calls["quantization"]["bnb_4bit_quant_type"] == "nf4"
+    assert calls["quantization"]["bnb_4bit_use_double_quant"] is True
     assert core._qwen_model is model
     assert core._qwen_processor is processor
     assert core.state["model_status"]["qwen"]["hf_device_map"] == {
         "model": "cuda:0"
     }
+    assert core.state["model_status"]["qwen"]["linear4bit_count"] == 1
+
+
+def test_qwen_4bit_verification_requires_flag_and_linear_module(tmp_path):
+    class Linear4bit:
+        pass
+
+    class Model:
+        def __init__(self, flag, modules):
+            self.is_loaded_in_4bit = flag
+            self._modules = modules
+
+        def modules(self):
+            return iter(self._modules)
+
+    assert CoreLoop._verify_qwen_4bit(
+        Model(True, [Linear4bit()]), Linear4bit
+    ) == (True, 1)
+    assert CoreLoop._verify_qwen_4bit(Model(True, []), Linear4bit) == (False, 0)
+    assert CoreLoop._verify_qwen_4bit(
+        Model(False, [Linear4bit()]), Linear4bit
+    ) == (False, 1)
 
 
 def test_text_only_uses_tokenizer_without_pixel_values(tmp_path, monkeypatch):

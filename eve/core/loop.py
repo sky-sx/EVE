@@ -48,6 +48,21 @@ MOUSE_ATOMS = (
 
 ORGAN_NAMES = ("mouse", "keyboard", "speak", "vision", "memory", "dock")
 
+EVE_FIRST_EDITION_FIELDS = (
+    "action_candidates",
+    "active_tnn",
+    "blackboard_updates",
+    "goodness_records",
+    "goodness_update",
+    "memory_actions",
+    "myself_cognition_update",
+    "prompt_request",
+    "reply",
+    "thinking_summary",
+    "training_proposal",
+    "world_interpretation_update",
+)
+
 EVE_FIRST_EDITION_PROMPT = """EVE 第一版固定提示词
 你是 EVE 这一个、也是唯一的认知主体。你运行 LLM-based self update loop，
 但不得请求、输出或保存隐藏推理；thinking_summary 只能是简短、可见的 self 更新摘要。
@@ -63,11 +78,9 @@ STM/MTM/LTM 分别是热视图、当前工作集和显式长期保留视图。
 同一器官说明不得连续反复请求。没有图片输入时不得声称看见画面；动作得到真实或 mock
 Output 成功反馈之前，不得声称动作已经完成。reply 只用于 GUI 文本显示，不会自动触发 speak。
 
-只输出一个 JSON 对象，字段必须且只能是：reply、thinking_summary、
-world_interpretation_update、myself_cognition_update、goodness_update、goodness_records、
-blackboard_updates、active_tnn、memory_actions、training_proposal、prompt_request、action_candidates。
+只输出一个 JSON 对象，字段必须且只能是：{fields}。
 数组无内容时输出 []，training_proposal 与 prompt_request 无内容时输出 null。
-"""
+""".format(fields="、".join(EVE_FIRST_EDITION_FIELDS))
 
 ORGAN_PROMPTS = {
     "mouse": """Mouse 器官调用格式：action_candidates 项使用 action_type='mouse'，payload.action
@@ -118,6 +131,23 @@ _SHIFTED_KEYS = {
     "|": "BACKSLASH", ":": "SEMICOLON", '"': "APOSTROPHE",
     "<": "COMMA", ">": "PERIOD", "?": "SLASH", "~": "GRAVE",
 }
+
+
+class _LLMRequestQueue(queue.Queue[dict[str, Any]]):
+    """Keep the existing queue API while giving user work strict priority."""
+
+    _PRIORITY = {"stop": -1, "user": 0, "autonomous": 2, "self_update": 2}
+
+    def _put(self, item: dict[str, Any]) -> None:
+        priority = self._PRIORITY.get(str(item.get("kind", "")), 1)
+        for index, queued in enumerate(self.queue):
+            queued_priority = self._PRIORITY.get(
+                str(queued.get("kind", "")), 1
+            )
+            if priority < queued_priority:
+                self.queue.insert(index, item)
+                return
+        self.queue.append(item)
 
 
 def default_permissions(enabled: bool = False) -> dict[str, Any]:
@@ -368,6 +398,7 @@ def create_runtime_state(
                 "gpu_parameter_devices": [],
                 "cpu_offload": False,
                 "is_loaded_in_4bit": False,
+                "linear4bit_count": 0,
                 "vram_before": {},
                 "vram_after": {},
                 "last_inference_peak_bytes": 0,
@@ -385,6 +416,11 @@ def create_runtime_state(
                 "last_error": None,
                 "next_thinking_due_ns": 0,
                 "autonomous_interval_s": DEFAULT_AUTONOMOUS_INTERVAL_S,
+                "llm_inflight": False,
+                "repair_inflight": False,
+                "autonomous_pending": False,
+                "consecutive_schema_failures": 0,
+                "schema_blocked": False,
             },
             "vlm": {
                 "state": "not_configured",
@@ -1149,7 +1185,9 @@ class CoreLoop:
         self._cancel_generation = threading.Event()
         self._cancel_vlm = threading.Event()
         self._cancel_cloud = threading.Event()
-        self._llm_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=4)
+        self._llm_requests: queue.Queue[dict[str, Any]] = _LLMRequestQueue(
+            maxsize=4
+        )
         self._vlm_requests: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2)
         self._runtime_visual_requests: queue.Queue[dict[str, Any]] = (
             queue.Queue(maxsize=2)
@@ -1176,6 +1214,7 @@ class CoreLoop:
         self._yolo_force_event = threading.Event()
         self._yolo_load_started = threading.Event()
         self._model_load_lock = threading.Lock()
+        self._qwen_inference_lock = threading.Lock()
         self._request_serial = 0
         self._last_autonomous_ns = 0
         self._thread: threading.Thread | None = None
@@ -1190,6 +1229,15 @@ class CoreLoop:
         self._waiting_training_orders: dict[str, Any] = {}
         self._submitted_training_orders: dict[str, Any] = {}
         self._materializations: dict[str, dict[str, Any]] = {}
+
+    def reset_schema_block(self) -> None:
+        """Explicitly re-enable autonomous updates after the protocol is fixed."""
+        status = self.state["model_status"]["local_llm"]
+        status["consecutive_schema_failures"] = 0
+        status["schema_blocked"] = False
+        if status.get("state") == "schema_blocked":
+            status["state"] = "ready"
+        status["last_error"] = None
 
     @property
     def running(self) -> bool:
@@ -1224,7 +1272,9 @@ class CoreLoop:
         if not self.state["cold_started"]:
             raise RuntimeError("cold start EVE before sending a message")
         status = self.state["model_status"]["local_llm"]
-        if status.get("state") not in {"ready", "running", "queued"}:
+        if status.get("state") not in {
+            "ready", "running", "queued", "schema_blocked"
+        }:
             raise RuntimeError(
                 status.get("error") or f"local LLM is {status.get('state')}"
             )
@@ -2338,9 +2388,43 @@ class CoreLoop:
             if thread.is_alive():
                 raise RuntimeError(f"model worker did not stop: {thread.name}")
         self._model_threads.clear()
+        for requests in (
+            self._llm_requests,
+            self._vlm_requests,
+            self._runtime_visual_requests,
+            self._cloud_requests,
+            self._tnn_requests,
+            self._observation_requests,
+        ):
+            while True:
+                try:
+                    pending = requests.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(pending, dict):
+                    pending.pop("image", None)
         self._qwen_model = None
         self._qwen_processor = None
         self._yolo_detector = None
+        llm_status = self.state["model_status"]["local_llm"]
+        llm_status.update(
+            {
+                "state": "stopped",
+                "llm_inflight": False,
+                "repair_inflight": False,
+                "autonomous_pending": False,
+            }
+        )
+        self.state["model_status"]["qwen"].update(
+            {
+                "state": "stopped",
+                "is_loaded_in_4bit": False,
+                "linear4bit_count": 0,
+            }
+        )
+        self.state["model_status"]["vlm"]["state"] = "stopped"
+        self._active_vlm_request_id = None
+        self.state["autonomy_status"]["current_vlm_request_id"] = None
         try:
             import torch
 
@@ -2815,6 +2899,8 @@ class CoreLoop:
                     continue
                 if request.get("kind") == "stop":
                     return
+                if request.get("kind") in {"autonomous", "self_update"}:
+                    status["autonomous_pending"] = False
                 self._cancel_generation.clear()
                 try:
                     self._process_llm_request(request)
@@ -2824,7 +2910,11 @@ class CoreLoop:
                     ) + 1
                     status.update(
                         {
-                            "state": "ready",
+                            "state": (
+                                "schema_blocked"
+                                if status.get("schema_blocked")
+                                else "ready"
+                            ),
                             "error": None,
                             "last_request_state": "error",
                             "last_request_error": (
@@ -2915,9 +3005,22 @@ class CoreLoop:
             quantization_config=quantization,
             device_map="auto",
         )
-        is_4bit = bool(getattr(model, "is_loaded_in_4bit", False))
+        is_4bit, linear4bit_count = self._verify_qwen_4bit(model)
         if not is_4bit:
-            raise RuntimeError("Qwen did not actually load in 4-bit mode")
+            status.update(
+                {
+                    "state": "error",
+                    "is_loaded_in_4bit": bool(
+                        getattr(model, "is_loaded_in_4bit", False)
+                    ),
+                    "linear4bit_count": linear4bit_count,
+                    "error": (
+                        "Qwen 4-bit verification failed: both "
+                        "is_loaded_in_4bit and Linear4bit modules are required"
+                    ),
+                }
+            )
+            raise RuntimeError(status["error"])
         device_map = dict(getattr(model, "hf_device_map", {}) or {})
         parameter_devices = sorted({str(parameter.device) for parameter in model.parameters()})
         after = self._cuda_vram_snapshot(torch)
@@ -2933,6 +3036,7 @@ class CoreLoop:
                 "cpu_offload": any(str(item).startswith("cpu") for item in device_map.values()),
                 "quantization": "4bit-nf4",
                 "is_loaded_in_4bit": True,
+                "linear4bit_count": linear4bit_count,
                 "model": str(model_path),
                 "vram_after": after,
                 "error": None,
@@ -2941,10 +3045,30 @@ class CoreLoop:
         self.state["model_status"]["local_llm"].update(status)
         self.state["model_status"]["vlm"].update(status)
 
+    @staticmethod
+    def _verify_qwen_4bit(
+        model: Any, linear4bit_type: type[Any] | None = None
+    ) -> tuple[bool, int]:
+        if linear4bit_type is None:
+            from bitsandbytes.nn import Linear4bit
+
+            linear4bit_type = Linear4bit
+        modules = model.modules() if hasattr(model, "modules") else ()
+        count = sum(1 for module in modules if isinstance(module, linear4bit_type))
+        return bool(getattr(model, "is_loaded_in_4bit", False)) and count > 0, count
+
     def _maybe_enqueue_autonomous(self) -> None:
         if self.state["paused"] or self.state["emergency_stop"]:
             return
         status = self.state["model_status"]["local_llm"]
+        if (
+            status.get("schema_blocked")
+            or status.get("llm_inflight")
+            or status.get("repair_inflight")
+            or status.get("autonomous_pending")
+            or not self._llm_requests.empty()
+        ):
+            return
         if status.get("state") != "ready":
             return
         now_ns = time.monotonic_ns()
@@ -2955,7 +3079,6 @@ class CoreLoop:
         )
         if now_ns - self._last_autonomous_ns < interval_s * 1_000_000_000:
             return
-        self._last_autonomous_ns = now_ns
         request_id = f"autonomous_{time.time_ns()}"
         try:
             self._llm_requests.put_nowait(
@@ -2967,6 +3090,8 @@ class CoreLoop:
                     "memory_id": None,
                 }
             )
+            self._last_autonomous_ns = now_ns
+            status["autonomous_pending"] = True
             status["queued_request_id"] = request_id
             status["next_thinking_due_ns"] = int(
                 now_ns + interval_s * 1_000_000_000
@@ -2993,7 +3118,9 @@ class CoreLoop:
 
     def _process_llm_request(self, request: dict[str, Any]) -> None:
         status = self.state["model_status"]["local_llm"]
-        if status.get("state") not in {"ready", "queued"}:
+        if status.get("schema_blocked") and request.get("kind") != "user":
+            return
+        if status.get("state") not in {"ready", "queued", "schema_blocked"}:
             raise RuntimeError(status.get("error") or "local LLM is not ready")
         started_ns = time.monotonic_ns()
         self.state["model_status"]["qwen"]["mode"] = "text-only"
@@ -3031,16 +3158,31 @@ class CoreLoop:
                     "repair": {
                         "error": f"{type(exc).__name__}: {exc}",
                         "invalid_output": self._safe_model_output_summary(str(raw)),
-                        "instruction": "Return one valid EVE first-edition JSON object only.",
+                        "instruction": (
+                            "Return one valid EVE first-edition JSON object only. "
+                            "Its top-level fields must be exactly: "
+                            + ", ".join(EVE_FIRST_EDITION_FIELDS)
+                        ),
                     },
                 }
                 status["attempt_count"] = int(status.get("attempt_count", 0)) + 1
-                repaired_raw = self._invoke_local_llm(repair_context)
+                repaired_raw = self._invoke_local_llm(
+                    repair_context, repair=True
+                )
                 status["repair_count"] = int(status.get("repair_count", 0)) + 1
                 result = self._coerce_llm_result(repaired_raw, request)
                 self._apply_llm_result(request, result)
                 raw = repaired_raw
+                status["consecutive_schema_failures"] = 0
             except Exception as repair_exc:
+                consecutive = int(
+                    status.get("consecutive_schema_failures", 0)
+                ) + 1
+                status["consecutive_schema_failures"] = consecutive
+                # A contract failure is not a reason to think again immediately.
+                self._last_autonomous_ns = time.monotonic_ns()
+                if consecutive >= 2:
+                    status["schema_blocked"] = True
                 status["failure_count"] = int(status.get("failure_count", 0)) + 1
                 status["last_error"] = f"{type(repair_exc).__name__}: {repair_exc}"
                 summary = self._safe_model_output_summary(str(raw))
@@ -3053,7 +3195,11 @@ class CoreLoop:
                 }
                 status.update(
                     {
-                        "state": "ready",
+                        "state": (
+                            "schema_blocked"
+                            if status.get("schema_blocked")
+                            else "ready"
+                        ),
                         "error": None,
                         "last_request_state": "error",
                         "last_request_error": error["message"],
@@ -3116,13 +3262,19 @@ class CoreLoop:
                                 "materialization_status"
                             ] = "failed"
                 return
+        else:
+            status["consecutive_schema_failures"] = 0
         finished_ns = time.monotonic_ns()
         duration_ms = (finished_ns - started_ns) / 1_000_000
         completed_count = int(status.get("completed_count", 0)) + 1
         previous_average = float(status.get("average_duration_ms", 0.0))
         status.update(
             {
-                "state": "ready",
+                "state": (
+                    "schema_blocked"
+                    if status.get("schema_blocked")
+                    else "ready"
+                ),
                 "finished_at_ns": finished_ns,
                 "last_duration_ms": duration_ms,
                 "last_latency_ms": duration_ms,
@@ -3262,47 +3414,22 @@ class CoreLoop:
             "organ_prompt": request.get("organ_prompt"),
         }
 
-    def _invoke_local_llm(self, context: dict[str, Any]) -> Any:
-        if self.local_llm_backend is not None:
-            return self.local_llm_backend(context)
-        return self._generate_local_llm(context)
+    def _invoke_local_llm(
+        self, context: dict[str, Any], *, repair: bool = False
+    ) -> Any:
+        status = self.state["model_status"]["local_llm"]
+        with self._qwen_inference_lock:
+            status["llm_inflight"] = True
+            status["repair_inflight"] = bool(repair)
+            try:
+                if self.local_llm_backend is not None:
+                    return self.local_llm_backend(context)
+                return self._generate_local_llm(context)
+            finally:
+                status["repair_inflight"] = False
+                status["llm_inflight"] = False
 
     def _generate_local_llm(self, context: dict[str, Any]) -> str:
-        system = (
-            "你是 EVE 唯一的认知主体，也是统一 LLM-based self update loop。"
-            "VLM 只是你按需调用的冻结帧视觉工具；Dock 只执行训练，不替你设计网络。"
-            "只输出一个 JSON 对象，"
-            "不得输出隐藏推理。protocol_version 必须为 2。字段为 reply, "
-            "thinking_summary, world_interpretation_update, "
-            "myself_cognition_update, goodness_update, blackboard_updates, "
-            "goodness_records, active_tnn, memory_actions, action_candidates, "
-            "tool_requests, training_proposal, training_materialization, "
-            "observation_completion。所有数组字段无内容时必须输出 []，后两个对象"
-            "无内容时输出 null。"
-            "用户触发时 reply 必须是非空字符串。你只能更新 world 的 interpretation、"
-            "uncertainty、task_state，绝不能改 perception。goodness.score 范围 [-1,1]，"
-            "confidence 范围 [0,1]。你可以提出慢速动作候选，但动作只能经 Core 和"
-            "Output 执行，不能绕过权限、急停、暂停或人类接管。你不能假装知道外部"
-            "程序内部状态；没有可信外部反馈时，必须依据动作前后的冻结帧证据。"
-            "观察事实不等于好度。training_proposal 只是建议；提出后你有责任在"
-            "materialization 阶段生成具体 Actor model.py、可选 QNN model.py 和完整"
-            "TrainingOrder。QNN 只存在于训练期，正式 TNN 必须有明确职责、输入、输出、"
-            "频率和时间范围，并通过好度与回归验收。"
-        )
-        system += (
-            " goodness_update is only the current overall self summary. "
-            "goodness_records is a required array (use [] when there is no "
-            "target-specific judgment); no alternate field names are accepted. "
-            "each item requires target(kind,id), score, confidence, value_basis with "
-            "value_version, method, reason, and real evidence_memory_ids. Facts such "
-            "as reward, hit, score, loss, latency, or unsafe_count are evidence, not "
-            "goodness by themselves. Use the supplied ValueDefinition, task, frozen "
-            "world facts, self, and memory evidence. Never expose hidden reasoning. "
-            "A goodness score cannot override permissions, safety, or training hard "
-            "boundaries. Do not use LLM/VLM inference latency as the target TNN horizon."
-        )
-        # The long-lived prefix is fixed for the first edition.  Detailed organ
-        # schemas are added only after a bounded prompt_request continuation.
         system = EVE_FIRST_EDITION_PROMPT
         if context.get("organ_prompt"):
             system += "\n\n本轮按需器官调用说明：\n" + str(context["organ_prompt"])
@@ -3344,6 +3471,7 @@ class CoreLoop:
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
+                enable_thinking=False,
             )
         else:
             prompt = "\n".join(
@@ -3351,31 +3479,30 @@ class CoreLoop:
                 for message in messages
             )
             prompt += "\nassistant:"
-        if suppress_reasoning and prompt.rstrip().endswith("<think>"):
-            prompt += "</think>\n\n"
-        inputs = tokenizer(prompt, return_tensors="pt")
-        if "pixel_values" in inputs or any(
-            str(name).startswith(("image_", "video_")) for name in inputs
-        ):
-            raise RuntimeError("text-only Qwen input unexpectedly contains vision tensors")
-        device = next(model.parameters()).device
-        inputs = {name: value.to(device) for name, value in inputs.items()}
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
-        with torch.inference_mode():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-                stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
-            )
-        if torch.cuda.is_available():
-            self.state["model_status"]["qwen"]["last_inference_peak_bytes"] = int(
-                torch.cuda.max_memory_allocated()
-            )
-        generated = output[0, inputs["input_ids"].shape[1] :]
-        return tokenizer.decode(generated, skip_special_tokens=True)
+        del suppress_reasoning
+        inputs = output = generated = None
+        try:
+            inputs = tokenizer(prompt, return_tensors="pt")
+            if "pixel_values" in inputs or any(
+                str(name).startswith(("image_", "video_")) for name in inputs
+            ):
+                raise RuntimeError(
+                    "text-only Qwen input unexpectedly contains vision tensors"
+                )
+            device = next(model.parameters()).device
+            inputs = {name: value.to(device) for name, value in inputs.items()}
+            with torch.inference_mode():
+                output = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.eos_token_id,
+                    stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
+                )
+            generated = output[0, inputs["input_ids"].shape[1] :]
+            return tokenizer.decode(generated, skip_special_tokens=True)
+        finally:
+            del generated, output, inputs
 
     # Kept as an internal call-site alias while the first-edition prompt is
     # assembled in _generate_local_llm.
@@ -3868,13 +3995,7 @@ class CoreLoop:
         self, raw: Any, request: dict[str, Any]
     ) -> dict[str, Any]:
         value = raw if isinstance(raw, dict) else self._parse_model_json(str(raw))
-        required_fields = {
-            "reply", "thinking_summary",
-            "world_interpretation_update", "myself_cognition_update",
-            "goodness_update", "goodness_records", "blackboard_updates",
-            "active_tnn", "memory_actions", "action_candidates",
-            "training_proposal", "prompt_request",
-        }
+        required_fields = set(EVE_FIRST_EDITION_FIELDS)
         missing_fields = required_fields - set(value)
         unknown_fields = set(value) - required_fields
         if missing_fields or unknown_fields:
@@ -4652,6 +4773,8 @@ class CoreLoop:
                         error=f"{type(exc).__name__}: {exc}",
                     )
                     self._record_error("vlm", exc, critical=False)
+                finally:
+                    request.pop("image", None)
         except Exception as exc:
             status.update(
                 {"state": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -4671,10 +4794,16 @@ class CoreLoop:
         started_ns = time.monotonic_ns()
         self.state["model_status"]["qwen"]["mode"] = "vision"
         status.update({"state": "running", "started_at_ns": started_ns})
-        if self.vlm_backend is not None:
-            analysis = self.vlm_backend(request)
-        else:
-            analysis = self._generate_with_vision(request)
+        llm_status = self.state["model_status"]["local_llm"]
+        with self._qwen_inference_lock:
+            llm_status["llm_inflight"] = True
+            try:
+                if self.vlm_backend is not None:
+                    analysis = self.vlm_backend(request)
+                else:
+                    analysis = self._generate_with_vision(request)
+            finally:
+                llm_status["llm_inflight"] = False
         if self._cancel_vlm.is_set():
             status.update(
                 {
@@ -4822,78 +4951,76 @@ class CoreLoop:
                 return cancel_event.is_set()
 
         image = request["image"]
-        if image.shape[-1] == 4:
-            image = image[..., :3][..., ::-1]
         processor = self._qwen_processor
         model = self._qwen_model
         if processor is None or model is None:
             raise RuntimeError("Qwen is not loaded")
         self.state["model_status"]["qwen"]["mode"] = "vision"
-        pil_image = Image.fromarray(image)
-        height, width = image.shape[:2]
-        prompt = (
-            request["prompt"]
-            + f"\n\n实际帧尺寸是 {width}x{height} 像素；bbox 坐标格式为"
-            "[x1, y1, x2, y2] 绝对像素。不得假设其他图像尺寸。"
-            "只输出一个紧凑 JSON 对象，不要输出分析过程。JSON 字段为："
-            'summary、verified_detections、corrections。'
-        )
-        runtime_visual = request.get("runtime_visual_result")
-        if runtime_visual is not None:
-            prompt += (
-                "\n\n以下是运行时 YOLO/TNN 对同一帧给出的候选结果。"
-                "请核对并明确指出漏检、误检或标签修正：\n"
-                + json.dumps(
-                    runtime_visual,
-                    ensure_ascii=False,
-                    default=repr,
+        pil_image = inputs = output = generated = None
+        try:
+            if image.shape[-1] == 4:
+                image = image[..., :3][..., ::-1]
+            pil_image = Image.fromarray(image)
+            height, width = image.shape[:2]
+            prompt = (
+                request["prompt"]
+                + f"\n\n实际帧尺寸是 {width}x{height} 像素；bbox 坐标格式为"
+                "[x1, y1, x2, y2] 绝对像素。不得假设其他图像尺寸。"
+                "只输出一个紧凑 JSON 对象，不要输出分析过程。JSON 字段为："
+                "summary、verified_detections、corrections。"
+            )
+            runtime_visual = request.get("runtime_visual_result")
+            if runtime_visual is not None:
+                prompt += (
+                    "\n\n以下是运行时 YOLO/TNN 对同一帧给出的候选结果。"
+                    "请核对并明确指出漏检、误检或标签修正：\n"
+                    + json.dumps(
+                        runtime_visual,
+                        ensure_ascii=False,
+                        default=repr,
+                    )
                 )
-            )
-        if hasattr(processor, "apply_chat_template"):
-            inputs = processor.apply_chat_template(
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": pil_image},
-                            {"type": "text", "text": prompt},
-                        ],
-                    }
-                ],
-                tokenize=True,
-                add_generation_prompt=True,
-                enable_thinking=False,
-                return_dict=True,
-                return_tensors="pt",
-            )
-        else:
-            inputs = processor(
-                images=pil_image,
-                text=prompt,
-                return_tensors="pt",
-            )
-        device = next(model.parameters()).device
-        inputs = {name: value.to(device) for name, value in inputs.items()}
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
-        with torch.inference_mode():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                do_sample=False,
-                stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
-            )
-        if torch.cuda.is_available():
-            self.state["model_status"]["qwen"]["last_inference_peak_bytes"] = int(
-                torch.cuda.max_memory_allocated()
-            )
-        prompt_length = int(inputs["input_ids"].shape[1])
-        generated = output[:, prompt_length:]
-        return processor.batch_decode(
-            generated,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )[0]
+            if hasattr(processor, "apply_chat_template"):
+                inputs = processor.apply_chat_template(
+                    [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": pil_image},
+                                {"type": "text", "text": prompt},
+                            ],
+                        }
+                    ],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                    return_dict=True,
+                    return_tensors="pt",
+                )
+            else:
+                inputs = processor(
+                    images=pil_image,
+                    text=prompt,
+                    return_tensors="pt",
+                )
+            device = next(model.parameters()).device
+            inputs = {name: value.to(device) for name, value in inputs.items()}
+            with torch.inference_mode():
+                output = model.generate(
+                    **inputs,
+                    max_new_tokens=256,
+                    do_sample=False,
+                    stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
+                )
+            prompt_length = int(inputs["input_ids"].shape[1])
+            generated = output[:, prompt_length:]
+            return processor.batch_decode(
+                generated,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
+        finally:
+            del generated, output, inputs, pil_image, image
 
     def _cloud_worker(self) -> None:
         status = self.state["model_status"]["cloud_llm"]
@@ -5945,6 +6072,22 @@ class CoreLoop:
                 for node in self.state["loaded_tnn"].values()
             ),
         }
+        resources["models"] = {
+            "Qwen": {
+                "state": self.state["model_status"]["qwen"].get("state"),
+                "quantization": self.state["model_status"]["qwen"].get(
+                    "quantization"
+                ),
+                "is_loaded_in_4bit": self.state["model_status"]["qwen"].get(
+                    "is_loaded_in_4bit", False
+                ),
+                "linear4bit_count": self.state["model_status"]["qwen"].get(
+                    "linear4bit_count", 0
+                ),
+                "shared_by": ["self_update_loop", "vlm_tool"],
+            },
+            "YOLO": dict(self.state["model_status"]["yolo"]),
+        }
         self.state["node_status"]["capture"] = {
             "state": self.input_buffer.capture_health().get("state", "unknown"),
             "last_run_ns": now_ns,
@@ -5981,7 +6124,7 @@ class CoreLoop:
             "counts": counts,
             "last_error": None,
         }
-        for name in ("local_llm", "yolo", "vlm", "cloud_llm"):
+        for name in ("yolo", "cloud_llm"):
             model = self.state["model_status"][name]
             self.state["node_status"][name] = {
                 "state": model.get("state", "unknown"),
@@ -6047,7 +6190,9 @@ class CoreLoop:
         llm_status = self.state["model_status"]["local_llm"]
         self.state["node_status"]["self_update_loop"] = {
             "state": (
-                "paused"
+                "schema_blocked"
+                if llm_status.get("schema_blocked")
+                else "paused"
                 if self.state["paused"] or self.state["emergency_stop"]
                 else llm_status.get("state", "unknown")
             ),
@@ -6063,6 +6208,7 @@ class CoreLoop:
             "run_count": int(llm_status.get("success_count", 0)),
             "failure_count": int(llm_status.get("failure_count", 0)),
             "last_error": llm_status.get("last_error"),
+            "bound_resource": "Qwen",
         }
         self.state["node_status"]["tnn_scheduler"] = {
             "state": "running" if self.running else "stopped",
@@ -6104,6 +6250,7 @@ class CoreLoop:
             "actual_hz": int(self.state["runtime_stats"].get("vlm_calls", 0)) / elapsed_s,
             "queue_size": self._vlm_requests.qsize(),
             "last_error": vlm_status.get("last_request_error"),
+            "bound_resource": "Qwen",
         }
         self.state["node_status"]["action_observation"] = {
             "state": "running" if self.running else "stopped",
@@ -6174,6 +6321,7 @@ class CoreLoop:
                     "overdue": status.get("overdue"),
                     "skipped_count": status.get("skipped_count", 0),
                     "last_error": status.get("last_error"),
+                    "bound_resource": status.get("bound_resource"),
                 }
             )
         graph = {

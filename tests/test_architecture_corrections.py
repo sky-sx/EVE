@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 import numpy as np
@@ -137,6 +138,102 @@ def test_protocol_repair_once_and_metrics_are_visible(tmp_path):
     finally:
         core.stop()
         memory.stop_writer()
+
+
+def test_repair_limit_schema_breaker_and_state_reset(tmp_path):
+    calls = []
+
+    def invalid_backend(context):
+        calls.append(context)
+        return {"reply": "invalid"}
+
+    state = create_runtime_state()
+    state["model_status"]["local_llm"]["state"] = "ready"
+    memory = Memorizer(tmp_path / "memory")
+    core = CoreLoop(
+        InputBuffer(), memory, state=state, log_dir=tmp_path,
+        local_llm_backend=invalid_backend, trainer=object(),
+    )
+    for index in range(2):
+        core._process_llm_request(
+            {
+                "request_id": f"user-{index}",
+                "kind": "user",
+                "message": "hello",
+                "requested_at_ns": time.monotonic_ns(),
+                "memory_id": None,
+            }
+        )
+    status = state["model_status"]["local_llm"]
+    assert len(calls) == 4
+    assert status["schema_blocked"] is True
+    assert status["consecutive_schema_failures"] == 2
+    assert status["llm_inflight"] is False
+    assert status["repair_inflight"] is False
+    core._last_autonomous_ns = 0
+    core._maybe_enqueue_autonomous()
+    assert core._llm_requests.empty()
+    memory.stop_writer()
+
+
+def test_autonomous_dedup_and_user_priority(tmp_path):
+    state = create_runtime_state()
+    state["cold_started"] = True
+    status = state["model_status"]["local_llm"]
+    status["state"] = "ready"
+    memory = Memorizer(tmp_path / "memory")
+    core = CoreLoop(
+        InputBuffer(), memory, state=state, log_dir=tmp_path,
+        local_llm_backend=lambda _context: protocol_reply(), trainer=object(),
+    )
+    core._last_autonomous_ns = -10**18
+    core._maybe_enqueue_autonomous()
+    core._maybe_enqueue_autonomous()
+    assert core._llm_requests.qsize() == 1
+    assert status["autonomous_pending"] is True
+    user_id = core.submit_user_message("priority")
+    assert core._llm_requests.get_nowait()["request_id"] == user_id
+    assert core._llm_requests.get_nowait()["kind"] == "autonomous"
+    memory.stop_writer()
+
+
+def test_shared_inference_lock_and_flags_recover_after_exception(tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def backend(_context):
+        entered.set()
+        release.wait(2)
+        raise RuntimeError("generation failed")
+
+    state = create_runtime_state()
+    core = CoreLoop(
+        InputBuffer(), Memorizer(tmp_path / "memory"), state=state,
+        log_dir=tmp_path, local_llm_backend=backend, trainer=object(),
+    )
+    errors = []
+
+    def invoke_and_capture() -> None:
+        try:
+            core._invoke_local_llm({})
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(
+        target=invoke_and_capture,
+    )
+    worker.start()
+    assert entered.wait(1)
+    assert state["model_status"]["local_llm"]["llm_inflight"] is True
+    assert core._qwen_inference_lock.acquire(blocking=False) is False
+    release.set()
+    worker.join(2)
+    assert not worker.is_alive()
+    assert isinstance(errors[0], RuntimeError)
+    assert state["model_status"]["local_llm"]["llm_inflight"] is False
+    assert state["model_status"]["local_llm"]["repair_inflight"] is False
+    assert core._qwen_inference_lock.acquire(blocking=False) is True
+    core._qwen_inference_lock.release()
 
 
 def test_snapshot_v2_excludes_transient_state_and_feedback_is_explicit(tmp_path):

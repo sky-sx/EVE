@@ -901,8 +901,7 @@ class EVEControlWindow:
                 )
                 self.cloud_enabled = qt["QCheckBox"]()
                 self.cloud_enabled.setChecked(bool(config["cloud_enabled"]))
-                form.addRow("本地 LLM 路径（强制 4-bit NF4）", self.local_path)
-                form.addRow("VLM 视觉工具路径（按需 4-bit NF4）", self.vlm_path)
+                form.addRow("共享 Qwen 路径（文本与视觉，强制 4-bit NF4）", self.local_path)
                 form.addRow("YOLO 运行时视觉路径", self.yolo_path)
                 form.addRow("云端 base_url", self.cloud_url)
                 form.addRow("云端 model", self.cloud_model)
@@ -1247,10 +1246,15 @@ class EVEControlWindow:
                     f"RTX 5080={cuda.get('is_rtx_5080', '未验证')} | "
                     f"CC={cuda.get('compute_capability', '未验证')} | "
                     f"torch CUDA={cuda.get('torch_cuda_version', '未验证')} | "
-                    f"tensor test={cuda.get('tensor_test_passed', '未验证')}"
+                    f"tensor test={cuda.get('tensor_test_passed', '未验证')}\n"
+                    f"Qwen resource={state['model_status']['qwen'].get('state')} | "
+                    f"quantization={state['model_status']['qwen'].get('quantization')} | "
+                    f"verified_4bit={state['model_status']['qwen'].get('is_loaded_in_4bit', False)} | "
+                    f"Linear4bit={state['model_status']['qwen'].get('linear4bit_count', 0)} | "
+                    "shared_by=self_update_loop,vlm_tool"
                 )
                 required = [
-                    "capture", "buffer", "core", "qwen", "local_llm", "yolo", "vlm",
+                    "capture", "buffer", "core", "self_update_loop", "vlm_tool", "yolo",
                     "cloud_llm", "memory_writer", "permission_check",
                     "mouse_output", "keyboard_output", "speak_output", "dock",
                 ]
