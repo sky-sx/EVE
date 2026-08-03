@@ -1,5 +1,5 @@
 """Minimal EVE Memory API."""
 
-from eve.memory.memorizer import Event, Memorizer, MemoryUnit
+from eve.memory.memorizer import CatalogRecord, Event, Memorizer, MemoryUnit
 
-__all__ = ["Event", "Memorizer", "MemoryUnit"]
+__all__ = ["CatalogRecord", "Event", "Memorizer", "MemoryUnit"]

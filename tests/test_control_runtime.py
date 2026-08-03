@@ -56,6 +56,7 @@ def test_local_models_have_repo_defaults_and_old_snapshot_is_rejected(
     assert runtime.state["model_config"]["local_llm_path"] == (
         DEFAULT_LOCAL_LLM_PATH
     )
+    assert runtime.state["model_config"]["qwen_path"] == DEFAULT_LOCAL_LLM_PATH
     assert runtime.state["model_config"]["vlm_path"] == DEFAULT_VLM_PATH
     assert runtime.state["model_config"]["yolo_model_path"] == DEFAULT_YOLO_PATH
     assert runtime.state["model_status"]["local_llm"]["state"] == "configured"
@@ -162,6 +163,7 @@ def test_control_cold_start_pause_emergency_reset_and_clean_stop(
     runtime = EVEApplication(
         profile="control",
         run_dir=tmp_path,
+        memory_dir=tmp_path / "memory",
         input_buffer=synthetic_buffer(),
         use_default_local_models=False,
     )
@@ -193,13 +195,14 @@ def test_control_cold_start_pause_emergency_reset_and_clean_stop(
     assert not runtime.core.running
     assert not runtime.memory.writer_running
     snapshot = json.loads(
-        (tmp_path / "state_snapshot.json").read_text(encoding="utf-8")
+        (tmp_path / "state" / "state_snapshot.json").read_text(encoding="utf-8")
     )
     assert "permissions" not in snapshot
     assert "must-not-be-saved" not in _json_dump(snapshot)
     restarted = EVEApplication(
         profile="control",
         run_dir=tmp_path,
+        memory_dir=tmp_path / "memory",
         input_buffer=synthetic_buffer(),
         use_default_local_models=False,
     )
@@ -230,7 +233,6 @@ def test_llm_protocol_rejects_legacy_or_incomplete_shapes(tmp_path):
         core._coerce_llm_result(legacy, request)
 
     strict = {
-        "protocol_version": 2,
         "reply": "current",
         "thinking_summary": "visible",
         "world_interpretation_update": {},
@@ -241,10 +243,8 @@ def test_llm_protocol_rejects_legacy_or_incomplete_shapes(tmp_path):
         "active_tnn": [],
         "memory_actions": [],
         "action_candidates": [],
-        "tool_requests": [],
         "training_proposal": None,
-        "training_materialization": None,
-        "observation_completion": None,
+        "prompt_request": None,
     }
     assert core._coerce_llm_result(strict, request)["reply"] == "current"
     with pytest.raises(TypeError, match="myself_cognition_update"):
@@ -260,7 +260,6 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
         calls.append(context)
         count = len(calls)
         return {
-            "protocol_version": 2,
             "reply": "",
             "thinking_summary": f"visible self update {count}",
             "world_interpretation_update": {
@@ -273,10 +272,8 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
             "active_tnn": [],
             "memory_actions": [],
             "action_candidates": [],
-            "tool_requests": [],
             "training_proposal": None,
-            "training_materialization": None,
-            "observation_completion": None,
+            "prompt_request": None,
         }
 
     state = create_runtime_state()
@@ -332,7 +329,6 @@ def test_real_llm_user_request_uses_protocol_v2(tmp_path, monkeypatch):
         "_generate_local_llm",
         lambda context: json.dumps(
             {
-                "protocol_version": 2,
                 "reply": f"直接回复：{context['user_message']}",
                 "thinking_summary": "",
                 "world_interpretation_update": {},
@@ -343,10 +339,8 @@ def test_real_llm_user_request_uses_protocol_v2(tmp_path, monkeypatch):
                 "active_tnn": [],
                 "memory_actions": [],
                 "action_candidates": [],
-                "tool_requests": [],
                 "training_proposal": None,
-                "training_materialization": None,
-                "observation_completion": None,
+                "prompt_request": None,
             },
             ensure_ascii=False,
         ),

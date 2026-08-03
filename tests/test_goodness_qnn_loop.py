@@ -16,7 +16,6 @@ from eve.memory.memorizer import Memorizer
 
 def protocol_reply() -> dict:
     return {
-        "protocol_version": 2,
         "reply": "",
         "thinking_summary": "visible summary only",
         "world_interpretation_update": {},
@@ -27,10 +26,8 @@ def protocol_reply() -> dict:
         "active_tnn": [],
         "memory_actions": [],
         "action_candidates": [],
-        "tool_requests": [],
         "training_proposal": None,
-        "training_materialization": None,
-        "observation_completion": None,
+        "prompt_request": None,
     }
 
 
@@ -274,7 +271,7 @@ def test_value_definition_and_goodness_request_are_explicit_memory_operations(tm
     assert queued["request_id"] == request_id
     assert queued["kind"] == "goodness_evaluation"
     assert queued["target"] == {"kind": "episode", "id": target_id}
-    assert memory.get_unit(definition_id).payload_type == "value_definition"
+    assert memory.get_record(definition_id).payload_type == "value_definition"
 
 
 def test_generated_function_creates_record_and_never_uses_missing_fact_default(tmp_path):

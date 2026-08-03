@@ -14,6 +14,7 @@ from typing import Any
 
 from eve.core.loop import (
     DEFAULT_LOCAL_LLM_PATH,
+    DEFAULT_QWEN_PATH,
     DEFAULT_VLM_PATH,
     DEFAULT_YOLO_PATH,
     CoreLoop,
@@ -23,6 +24,9 @@ from eve.core.loop import (
 from eve.input.buffer import InputBuffer
 from eve.memory.memorizer import Memorizer
 from eve.output import keyboard, mouse, speak
+
+DEFAULT_MEMORY_DIR = Path(__file__).resolve().parent / "memory"
+DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "core" / "state"
 
 
 class EVEApplication:
@@ -61,8 +65,15 @@ class EVEApplication:
         self.started_at_ns = 0
         self.finished_at_ns = 0
         self.exit_reason = "not_started"
+        self.memory_dir = (
+            Path(memory_dir) if memory_dir is not None else DEFAULT_MEMORY_DIR
+        )
+        if memory_dir is None:
+            Memorizer.migrate_legacy_directory(
+                self.run_dir / "memory", self.memory_dir
+            )
         self.memory = Memorizer(
-            Path(memory_dir) if memory_dir is not None else self.run_dir / "memory",
+            self.memory_dir,
             writer_error_callback=self._memory_error,
         )
         self.core = CoreLoop(
@@ -73,19 +84,28 @@ class EVEApplication:
             tnn_id=tnn_id,
             smoke_node=False,
         )
-        self.core.load_snapshot(self.run_dir / "state_snapshot.json")
+        self.state_dir = (
+            DEFAULT_STATE_DIR
+            if memory_dir is None
+            else Path(memory_dir).parent / "state"
+        )
+        self.core.load_snapshot(self.state_dir / "state_snapshot.json")
         if profile == "control" and use_default_local_models:
             model_config = self.state["model_config"]
+            model_config["qwen_path"] = (
+                model_config.get("qwen_path") or DEFAULT_QWEN_PATH
+            )
             model_config["local_llm_path"] = (
-                model_config.get("local_llm_path") or DEFAULT_LOCAL_LLM_PATH
+                model_config["qwen_path"]
             )
             model_config["vlm_path"] = (
-                model_config.get("vlm_path") or DEFAULT_VLM_PATH
+                model_config["qwen_path"]
             )
             model_config["yolo_model_path"] = (
                 model_config.get("yolo_model_path") or DEFAULT_YOLO_PATH
             )
             for name, path in (
+                ("qwen", model_config["qwen_path"]),
                 ("local_llm", model_config["local_llm_path"]),
                 ("vlm", model_config["vlm_path"]),
                 ("yolo", model_config["yolo_model_path"]),
@@ -97,7 +117,7 @@ class EVEApplication:
                         "auto_start": name == "yolo",
                         "quantization": (
                             "4bit-nf4-required"
-                            if name in {"local_llm", "vlm"}
+                            if name in {"qwen", "local_llm", "vlm"}
                             else "native-cuda"
                         ),
                     }
@@ -126,6 +146,7 @@ class EVEApplication:
         self.exit_reason = "running"
         self._critical_event.clear()
         self._stop_requested.clear()
+        self.memory.ensure_views()
         self.memory.start_writer()
         mouse.reset_stop()
         keyboard.reset_stop()
@@ -200,11 +221,11 @@ class EVEApplication:
             except Exception as exc:
                 failures.append(exc)
         try:
-            self.core.save_snapshot(self.run_dir / "state_snapshot.json")
+            self.core.save_snapshot(self.state_dir / "state_snapshot.json")
         except Exception as exc:
             failures.append(exc)
         try:
-            self.core.save_readable_snapshots(self.run_dir)
+            self.core.save_readable_snapshots(self.state_dir)
         except Exception as exc:
             failures.append(exc)
         try:
@@ -390,7 +411,7 @@ class EVEApplication:
     def memory_view_snapshot(self) -> dict[str, Any]:
         stm_ids = self.memory.tier_ids("stm")
         latest_id = stm_ids[-1] if stm_ids else None
-        latest_unit = self.memory.get_unit(latest_id) if latest_id else None
+        latest_unit = self.memory.get_record(latest_id) if latest_id else None
         latest_event = self.memory.latest_event()
         ltm_ids = self.memory.tier_ids("ltm")
         mtm_ids = self.memory.tier_ids("mtm")
@@ -869,7 +890,7 @@ class EVEControlWindow:
                 layout = qt["QVBoxLayout"](page)
                 form = qt["QFormLayout"]()
                 config = self.application.state["model_config"]
-                self.local_path = qt["QLineEdit"](config["local_llm_path"])
+                self.local_path = qt["QLineEdit"](config["qwen_path"])
                 self.vlm_path = qt["QLineEdit"](config["vlm_path"])
                 self.yolo_path = qt["QLineEdit"](config["yolo_model_path"])
                 self.cloud_url = qt["QLineEdit"](config["cloud_base_url"])
@@ -1023,8 +1044,9 @@ class EVEControlWindow:
                 try:
                     self.application.core.configure_models(
                         {
+                            "qwen_path": self.local_path.text().strip(),
                             "local_llm_path": self.local_path.text().strip(),
-                            "vlm_path": self.vlm_path.text().strip(),
+                            "vlm_path": self.local_path.text().strip(),
                             "yolo_model_path": self.yolo_path.text().strip(),
                             "cloud_base_url": self.cloud_url.text().strip(),
                             "cloud_model": self.cloud_model.text().strip(),
@@ -1058,7 +1080,7 @@ class EVEControlWindow:
             def _request_memory_review(self) -> None:
                 try:
                     self.application.core.submit_user_message(
-                        "请使用当前 STM、MTM、LTM 视图复核记忆，并仅通过 protocol v2 "
+                        "请使用当前 STM、MTM、LTM 视图复核记忆，并仅通过第一版固定输出的 "
                         "memory_actions 提出必要的显式视图调整。"
                     )
                 except Exception as exc:
@@ -1228,7 +1250,7 @@ class EVEControlWindow:
                     f"tensor test={cuda.get('tensor_test_passed', '未验证')}"
                 )
                 required = [
-                    "capture", "buffer", "core", "local_llm", "yolo", "vlm",
+                    "capture", "buffer", "core", "qwen", "local_llm", "yolo", "vlm",
                     "cloud_llm", "memory_writer", "permission_check",
                     "mouse_output", "keyboard_output", "speak_output", "dock",
                 ]

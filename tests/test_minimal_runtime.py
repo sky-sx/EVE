@@ -54,7 +54,7 @@ def test_tnn_reference_to_action_is_consumed_once(tmp_path):
     assert len(state["memory_ids"]) == 3
     memory.flush()
     assert {
-        memory.get_unit(item).payload_type for item in state["memory_ids"]
+            memory.get_record(item).payload_type for item in state["memory_ids"]
     } == {"action_candidate", "permission_result", "output_result"}
     loop.stop()
     memory.stop_writer()
@@ -102,6 +102,7 @@ def test_formal_entry_starts_child_capture_and_stops_cleanly(tmp_path):
     app = EVEApplication(
         profile="smoke",
         run_dir=tmp_path,
+        memory_dir=tmp_path / "memory",
         allow_mock_actions=True,
     )
     app.start(load_smoke_node=True)

@@ -31,10 +31,16 @@ reference/                   外部参考工程，不是 EVE 实现
 oldsrc/                      旧实现参考，不是正式代码
 eve/core/yolo26/             内嵌第三方模型仓库
 eve/core/qwen/               本地模型资源
-eve/core/deepseek-7b/        本地模型资源
+eve/core/deepseek-7b/        教师/Dock 参考资源，不进入普通运行循环
+eve/memory/                  正式 Memory 根目录（运行 payload 与视图均被 Git 忽略）
+eve/core/state/              可恢复状态及 world/self Markdown 快照
 ```
 
 正式事实源只看 `eve/`。参考目录和内嵌第三方仓库不作为 EVE 当前能力证据。
+
+普通运行只加载一份 `eve/core/qwen/` 多模态模型和一份 Processor；Text-only 与
+Vision 共用该实例。默认 Memory 不再位于 `runs/`；`runs/` 只保存日志、性能记录和
+单次运行临时结果。可用 `--memory-dir` 显式覆盖 Memory 根目录。
 
 ## 运行
 

@@ -107,6 +107,11 @@ persist_to_ltm / remove_from_ltm -> 显式持久语义集
 STM overflow -> 仅从 hot view 驱逐，Catalog 记录仍保留
 ```
 
+正式根目录为 `eve/memory/`：payload 写入 `objects/`，Catalog 与 Event 分别为
+`catalog.jsonl`、`events.jsonl`，三层 ID 视图写入 `views/stm.json`、`mtm.json`、
+`ltm.json`，TNN artifact 写入 `TNNweights/`。默认路径不依赖 `run_dir`；旧的
+`runs/memory/` 只进行一次保留源目录、先备份后复制并逐文件 SHA-256 校验的迁移。
+
 不存在后台自动晋升线程或 `force_promotion()`。LLM 可通过显式 memory_actions
 请求调整视图。正常停机生成 Snapshot v2 及可读的 `world.md`、`self.md`；
 运行期 perception、Blackboard、资源状态和错误不进入耐久快照。
@@ -116,7 +121,8 @@ STM overflow -> 仅从 hot view 驱逐，Catalog 记录仍保留
 Dock 只接受 TrainingOrder 显式指向的具体 `model.py` 或已有模型 MemoryID；
 具体模型自行实现 forward、training_step 和特殊梯度语义。LLM 的
 `training_proposal` 只是建议，不能直接作为可执行 TrainingOrder；保存 proposal
-后，同一 LLM 必须进入 materialization，输出具体源码和订单，Core 再提交 Dock。
+后不会在第一版正常运行入口自动进入 materialization。未来若显式启用教师流程，
+必须另行生成具体源码和订单并通过 Core/Dock 的安全检查。
 
 Dock 不按任务名选择模型，也不包含 JSON 算子编译器或模型源码生成器。
 订单必须携带训练数据与明确验收条件；候选通过验收后才写入正式 TNNweights
@@ -133,9 +139,10 @@ TinyNN 子类、forward/training_step/evaluation_step、模型构造和 proposal
 
 ## 8. LLM 与冻结帧 VLM
 
-VLM 是同一 LLM 的按需工具，不运行独立自主循环。protocol v2 的
-`tool_requests` 第一版只接受 `visual_interpretation`，同一时刻最多一个请求，
-按 frame ID 与 prompt 去重并设短冷却。Core 复制不可变帧并保存证据关系；VLM
+Vision 是同一 Qwen 模型的按需模式，不运行独立自主循环。文本模式只使用 Processor
+内的 tokenizer 与纯文本 Chat Template，不创建 `pixel_values`。模型先通过
+`prompt_request=vision` 获得器官说明；每个原始任务最多追加两次 Vision。Core 复制
+不可变帧并保存证据关系；Vision
 完成或失败后把 request ID、参考帧、参考时间和结果 MemoryID 回送现有 self-update
 队列，并明确提示当前屏幕可能已经变化。
 

@@ -23,11 +23,10 @@ from eve.output import keyboard, mouse, speak
 
 MAX_LOADED_TNN = 5
 OUTPUT_QUEUE_CAPACITY = 16
-LLM_PROTOCOL_VERSION = 2
 SNAPSHOT_VERSION = 2
 DEFAULT_AUTONOMOUS_INTERVAL_S = 2.0
 MAX_LLM_ACTION_CANDIDATES = 4
-MAX_LLM_TOOL_REQUESTS = 1
+MAX_VISION_CALLS_PER_TASK = 2
 MIN_ACTION_VALID_FOR_MS = 50
 MAX_ACTION_VALID_FOR_MS = 30_000
 MIN_OBSERVATION_DELAY_MS = 50
@@ -35,14 +34,62 @@ MAX_OBSERVATION_DELAY_MS = 3_000
 VLM_TOOL_COOLDOWN_NS = 1_000_000_000
 MAX_MATERIALIZATION_ATTEMPTS = 3
 CORE_MODEL_DIR = Path(__file__).resolve().parent
-DEFAULT_LOCAL_LLM_PATH = str(CORE_MODEL_DIR / "deepseek-7b")
-DEFAULT_VLM_PATH = str(CORE_MODEL_DIR / "qwen")
+DEFAULT_QWEN_PATH = str(CORE_MODEL_DIR / "qwen")
+# Transitional public names point at the same physical Qwen weights.  Runtime
+# loading is canonicalized through qwen_path and never loads DeepSeek.
+DEFAULT_LOCAL_LLM_PATH = DEFAULT_QWEN_PATH
+DEFAULT_VLM_PATH = DEFAULT_QWEN_PATH
 DEFAULT_YOLO_PATH = str(CORE_MODEL_DIR / "yolo26" / "weights" / "yolo26n.pt")
 MOUSE_ATOMS = (
     "move", "left_click", "left_double_click", "right_click",
     "middle_click", "scroll_up", "scroll_down", "left_drag",
     "right_drag", "middle_drag",
 )
+
+ORGAN_NAMES = ("mouse", "keyboard", "speak", "vision", "memory", "dock")
+
+EVE_FIRST_EDITION_PROMPT = """EVE 第一版固定提示词
+你是 EVE 这一个、也是唯一的认知主体。你运行 LLM-based self update loop，
+但不得请求、输出或保存隐藏推理；thinking_summary 只能是简短、可见的 self 更新摘要。
+
+World 是对环境事实的解释；其中 perception 由代码写入，你只能更新 interpretation、
+uncertainty 和 task_state。Myself 是当前 self 的任务、认知、goodness 与倾向；
+Blackboard 是带时间和有效期的运行交换区；Memory 是由 MemoryID 引用的不可变 payload，
+STM/MTM/LTM 分别是热视图、当前工作集和显式长期保留视图。
+
+你可读取本轮提供的 World、Myself、Blackboard、MemoryID 视图、TNN 状态、最近对话、
+权限概况及真实 Output 反馈。当前器官目录仅为：mouse、keyboard、speak、vision、memory、dock。
+需要详细调用格式时先将 prompt_request 设为对应器官名；Core 会在同一任务下一轮提供说明。
+同一器官说明不得连续反复请求。没有图片输入时不得声称看见画面；动作得到真实或 mock
+Output 成功反馈之前，不得声称动作已经完成。reply 只用于 GUI 文本显示，不会自动触发 speak。
+
+只输出一个 JSON 对象，字段必须且只能是：reply、thinking_summary、
+world_interpretation_update、myself_cognition_update、goodness_update、goodness_records、
+blackboard_updates、active_tnn、memory_actions、training_proposal、prompt_request、action_candidates。
+数组无内容时输出 []，training_proposal 与 prompt_request 无内容时输出 null。
+"""
+
+ORGAN_PROMPTS = {
+    "mouse": """Mouse 器官调用格式：action_candidates 项使用 action_type='mouse'，payload.action
+可为 move/moveTo（x,y,duration）、moveRel（dx,dy,duration）、click（可选 x,y,button,clicks）、
+doubleClick（可选 x,y,button）、rightClick（可选 x,y）、middleClick（可选 x,y）、
+drag（x1,y1,x2,y2,button,duration）或 scroll（clicks）。外层只生成 payload、horizon_ms
+和 reason_summary；action_id/source/observed_at_ns/generated_at_ns/valid_until_ns 由 Core 生成。""",
+    "keyboard": """Keyboard 器官调用格式：action_candidates 项使用 action_type='keyboard'，
+payload.action 可为 press（keys 字符串或数组）、write（text, method 可为 write/paste/unicode,
+interval）、hotkey（keys 数组）、keyDown（key）或 keyUp（key）。普通按键逐键授权；write
+还需要 send_text 权限，非 ASCII 文本须使用 paste/unicode 路径。""",
+    "speak": """Speak 器官调用格式：action_candidates 项使用 action_type='speak'，payload 至少含
+text，可选 rate、volume。reply 只是 GUI 文字；只有显式 speak 动作才调用 TTS。""",
+    "vision": """Vision 器官调用格式：将 prompt_request 设为 vision 后，下一轮 action_candidates
+保持为空；Core 会冻结当前真实屏幕帧并调用同一 Qwen 的视觉模式，将结果写回 World/Blackboard，
+再进入文本模式继续同一任务。每个原始任务最多自动调用两次 Vision。""",
+    "memory": """Memory 器官调用格式：memory_actions 每项 action 为 create、load_to_mtm、
+unload_from_mtm、persist_to_ltm、remove_from_ltm、delete 或 create_event。create 提供 payload
+及 payload_type；其余按需提供 memory_id；create_event 提供 memory_ids、summary、tags。""",
+    "dock": """Dock 器官只接收 training_proposal 建议；教师/云端 DeepSeek 仅按需辅助，
+不进入普通运行循环，也不得与本地 Qwen 长期同时占用显存。""",
+}
 _NAMED_KEYS = {
     "ENTER", "SPACE", "TAB", "BACKSPACE", "DELETE", "HOME", "END",
     "PAGEUP", "PAGEDOWN", "UP", "DOWN", "LEFT", "RIGHT", "SHIFT",
@@ -313,6 +360,18 @@ def create_runtime_state(
         "loop_graph": {"updated_at_ns": 0, "nodes": [], "edges": []},
         "node_status": {},
         "model_status": {
+            "qwen": {
+                "state": "not_configured",
+                "mode": None,
+                "device": None,
+                "hf_device_map": {},
+                "gpu_parameter_devices": [],
+                "cpu_offload": False,
+                "is_loaded_in_4bit": False,
+                "vram_before": {},
+                "vram_after": {},
+                "last_inference_peak_bytes": 0,
+            },
             "local_llm": {
                 "state": "not_configured",
                 "device": None,
@@ -340,6 +399,7 @@ def create_runtime_state(
             "cloud_llm": {"state": "disabled", "device": "cloud"},
         },
         "model_config": {
+            "qwen_path": "",
             "local_llm_path": "",
             "vlm_path": "",
             "yolo_model_path": "",
@@ -868,7 +928,11 @@ def _dispatch(action: dict[str, Any], mode: str) -> dict[str, Any]:
     executor = executors.get(action["action_type"])
     if executor is None:
         raise ValueError(f"unknown action type: {action['action_type']}")
-    return executor.execute(action["candidate_id"], action["payload"], mode)
+    action_id = str(action.get("action_id") or action["candidate_id"])
+    result = executor.execute(action_id, action["payload"], mode)
+    result["candidate_id"] = action["candidate_id"]
+    result["action_id"] = action_id
+    return result
 
 
 def run_once(
@@ -1052,13 +1116,32 @@ class CoreLoop:
         self.runtime_visual_backend = runtime_visual_backend
         self.cloud_backend = cloud_backend
         if trainer is None:
-            from eve.dock.trainer import Trainer
+            try:
+                from eve.dock.trainer import Trainer
 
-            trainer = Trainer(
-                memorizer,
-                workspace_root=self.log_dir / "dock_workspace",
-                training_device=runtime_device,
-            )
+                trainer = Trainer(
+                    memorizer,
+                    workspace_root=self.log_dir / "dock_workspace",
+                    training_device=runtime_device,
+                )
+            except ImportError as exc:
+                class UnavailableTrainer:
+                    def __init__(self, error: Exception) -> None:
+                        self.error = f"{type(error).__name__}: {error}"
+
+                    def has_pending(self) -> bool:
+                        return False
+
+                    def process_one(self) -> None:
+                        return None
+
+                    def enqueue(self, _order: Any) -> None:
+                        raise RuntimeError(f"Dock unavailable: {self.error}")
+
+                    def stats(self) -> dict[str, Any]:
+                        return {"state": "unavailable", "error": self.error}
+
+                trainer = UnavailableTrainer(exc)
         self.trainer = trainer
         self._stop_event = threading.Event()
         self._failed_event = threading.Event()
@@ -1087,10 +1170,8 @@ class CoreLoop:
         )
         self._tnn_futures: dict[str, Future[dict[str, Any]]] = {}
         self._model_threads: list[threading.Thread] = []
-        self._local_model: Any = None
-        self._local_tokenizer: Any = None
-        self._vlm_model: Any = None
-        self._vlm_processor: Any = None
+        self._qwen_model: Any = None
+        self._qwen_processor: Any = None
         self._yolo_detector: Any = None
         self._yolo_force_event = threading.Event()
         self._yolo_load_started = threading.Event()
@@ -1104,6 +1185,8 @@ class CoreLoop:
         self._observation_bundle_cache: dict[str, dict[str, Any]] = {}
         self._recent_vlm_tool_keys: dict[tuple[int, str], int] = {}
         self._active_vlm_request_id: str | None = None
+        self._vision_calls_by_task: dict[str, int] = {}
+        self._last_prompt_request_by_task: dict[str, str] = {}
         self._waiting_training_orders: dict[str, Any] = {}
         self._submitted_training_orders: dict[str, Any] = {}
         self._materializations: dict[str, dict[str, Any]] = {}
@@ -1122,6 +1205,20 @@ class CoreLoop:
         if unknown:
             raise ValueError(f"unknown model config: {sorted(unknown)}")
         self.state["model_config"].update(config)
+        qwen_path = str(
+            config.get("qwen_path")
+            or config.get("local_llm_path")
+            or config.get("vlm_path")
+            or self.state["model_config"].get("qwen_path", "")
+        )
+        if qwen_path:
+            self.state["model_config"].update(
+                {
+                    "qwen_path": qwen_path,
+                    "local_llm_path": qwen_path,
+                    "vlm_path": qwen_path,
+                }
+            )
 
     def submit_user_message(self, message: str) -> str:
         if not self.state["cold_started"]:
@@ -1309,7 +1406,14 @@ class CoreLoop:
         required_fields: list[str] | None = None,
         evidence_memory_ids: list[str] | None = None,
         observation_context: dict[str, Any] | None = None,
+        root_task_id: str | None = None,
     ) -> str:
+        if origin == "llm_tool":
+            task_key = str(root_task_id or request_id)
+            used = int(self._vision_calls_by_task.get(task_key, 0))
+            if used >= MAX_VISION_CALLS_PER_TASK:
+                raise RuntimeError("Vision call limit reached for this task")
+            self._vision_calls_by_task[task_key] = used + 1
         if self._active_vlm_request_id is not None:
             raise RuntimeError("one frozen-frame VLM request is already active")
         vlm_status = self.state["model_status"]["vlm"]
@@ -1320,7 +1424,7 @@ class CoreLoop:
         if (
             self.state["output_mode"] == "mock"
             and self.vlm_backend is None
-            and self._vlm_model is None
+            and self._qwen_model is None
         ):
             raise RuntimeError("mock mode does not load a real VLM for action observation")
         if frame is None:
@@ -1360,6 +1464,7 @@ class CoreLoop:
             "required_fields": list(required_fields or ()),
             "evidence_memory_ids": list(evidence_memory_ids or ()),
             "observation_context": observation_context,
+            "root_task_id": str(root_task_id or request_id),
         }
         try:
             self._vlm_requests.put_nowait(request)
@@ -2128,7 +2233,25 @@ class CoreLoop:
         log_event(self.log_dir, "core_stopped")
 
     def verify_cuda(self) -> dict[str, Any]:
-        import torch
+        try:
+            import torch
+        except ImportError as exc:
+            status = {
+                "torch_version": None,
+                "torch_cuda_version": None,
+                "available": False,
+                "device_count": 0,
+                "device_name": None,
+                "is_rtx_5080": False,
+                "compute_capability": None,
+                "arch_list": [],
+                "tensor_test_passed": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "checked_at_ns": time.monotonic_ns(),
+            }
+            self.state["cuda_status"] = status
+            self.state["resource_status"]["cuda"] = status
+            return status
 
         status: dict[str, Any] = {
             "torch_version": torch.__version__,
@@ -2215,10 +2338,8 @@ class CoreLoop:
             if thread.is_alive():
                 raise RuntimeError(f"model worker did not stop: {thread.name}")
         self._model_threads.clear()
-        self._local_model = None
-        self._local_tokenizer = None
-        self._vlm_model = None
-        self._vlm_processor = None
+        self._qwen_model = None
+        self._qwen_processor = None
         self._yolo_detector = None
         try:
             import torch
@@ -2667,7 +2788,7 @@ class CoreLoop:
         status = self.state["model_status"]["local_llm"]
         try:
             if self.local_llm_backend is None:
-                path = self.state["model_config"].get("local_llm_path", "")
+                path = self.state["model_config"].get("qwen_path", "")
                 if path:
                     with self._model_load_lock:
                         self._load_local_llm(path)
@@ -2682,6 +2803,9 @@ class CoreLoop:
                         "device": "injected",
                         "quantization": "test_backend",
                     }
+                )
+                self.state["model_status"]["qwen"].update(
+                    {"state": "ready", "mode": "text-only", "device": "injected"}
                 )
             while not self._model_stop.is_set():
                 try:
@@ -2728,57 +2852,94 @@ class CoreLoop:
             self._record_error("local_llm", exc, critical=False)
 
     def _load_local_llm(self, path: str) -> None:
-        import torch
-        from transformers import (
-            AutoModelForCausalLM,
-            AutoTokenizer,
-            BitsAndBytesConfig,
+        self._load_qwen(path)
+        self.state["model_status"]["local_llm"].update(
+            self.state["model_status"]["qwen"]
         )
 
-        model_path = Path(path).expanduser()
-        if not model_path.exists():
-            raise FileNotFoundError(f"local LLM path does not exist: {model_path}")
+    @staticmethod
+    def _cuda_vram_snapshot(torch: Any) -> dict[str, int]:
         if not torch.cuda.is_available():
-            raise RuntimeError("4-bit local LLM requires an available CUDA device")
+            return {"allocated": 0, "reserved": 0, "free": 0, "total": 0}
+        free, total = torch.cuda.mem_get_info()
+        return {
+            "allocated": int(torch.cuda.memory_allocated()),
+            "reserved": int(torch.cuda.memory_reserved()),
+            "free": int(free),
+            "total": int(total),
+        }
+
+    def _load_qwen(self, path: str) -> None:
+        """Load the sole multimodal Qwen instance used by text and vision."""
+        if self._qwen_model is not None and self._qwen_processor is not None:
+            return
+        import torch
+        import transformers
+        from transformers import AutoProcessor, BitsAndBytesConfig
+
+        model_path = Path(
+            self.state["model_config"].get("qwen_path") or path
+        ).expanduser()
+        if not model_path.exists():
+            raise FileNotFoundError(f"Qwen path does not exist: {model_path}")
+        if not torch.cuda.is_available():
+            raise RuntimeError("4-bit Qwen requires an available CUDA device")
         try:
             import bitsandbytes  # noqa: F401
             import accelerate  # noqa: F401
         except ImportError as exc:
-            raise RuntimeError(
-                "4-bit local LLM requires bitsandbytes and accelerate"
-            ) from exc
-        status = self.state["model_status"]["local_llm"]
-        status.update({"state": "loading", "path": str(model_path)})
+            raise RuntimeError("4-bit Qwen requires bitsandbytes and accelerate") from exc
+        model_class = getattr(
+            transformers,
+            "AutoModelForImageTextToText",
+            getattr(transformers, "AutoModelForVision2Seq", None),
+        )
+        if model_class is None:
+            raise RuntimeError("installed transformers has no multimodal auto model")
+        status = self.state["model_status"]["qwen"]
+        before = self._cuda_vram_snapshot(torch)
+        status.update({"state": "loading", "path": str(model_path), "vram_before": before})
         quantization = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.bfloat16,
         )
-        self._local_tokenizer = AutoTokenizer.from_pretrained(
+        processor = AutoProcessor.from_pretrained(
             str(model_path), local_files_only=True, trust_remote_code=True
         )
-        self._local_model = AutoModelForCausalLM.from_pretrained(
+        model = model_class.from_pretrained(
             str(model_path),
             local_files_only=True,
             trust_remote_code=True,
             quantization_config=quantization,
             device_map="auto",
         )
-        device = str(next(self._local_model.parameters()).device)
-        is_4bit = bool(getattr(self._local_model, "is_loaded_in_4bit", False))
+        is_4bit = bool(getattr(model, "is_loaded_in_4bit", False))
         if not is_4bit:
-            raise RuntimeError("local LLM did not actually load in 4-bit mode")
+            raise RuntimeError("Qwen did not actually load in 4-bit mode")
+        device_map = dict(getattr(model, "hf_device_map", {}) or {})
+        parameter_devices = sorted({str(parameter.device) for parameter in model.parameters()})
+        after = self._cuda_vram_snapshot(torch)
+        self._qwen_processor = processor
+        self._qwen_model = model
         status.update(
             {
                 "state": "ready",
-                "device": device,
+                "mode": "text-only",
+                "device": parameter_devices[0] if len(parameter_devices) == 1 else "sharded",
+                "hf_device_map": device_map,
+                "gpu_parameter_devices": [item for item in parameter_devices if item.startswith("cuda")],
+                "cpu_offload": any(str(item).startswith("cpu") for item in device_map.values()),
                 "quantization": "4bit-nf4",
                 "is_loaded_in_4bit": True,
                 "model": str(model_path),
+                "vram_after": after,
                 "error": None,
             }
         )
+        self.state["model_status"]["local_llm"].update(status)
+        self.state["model_status"]["vlm"].update(status)
 
     def _maybe_enqueue_autonomous(self) -> None:
         if self.state["paused"] or self.state["emergency_stop"]:
@@ -2835,6 +2996,7 @@ class CoreLoop:
         if status.get("state") not in {"ready", "queued"}:
             raise RuntimeError(status.get("error") or "local LLM is not ready")
         started_ns = time.monotonic_ns()
+        self.state["model_status"]["qwen"]["mode"] = "text-only"
         status.update(
             {
                 "state": "running",
@@ -2869,7 +3031,7 @@ class CoreLoop:
                     "repair": {
                         "error": f"{type(exc).__name__}: {exc}",
                         "invalid_output": self._safe_model_output_summary(str(raw)),
-                        "instruction": "Return one valid protocol v2 JSON object only.",
+                        "instruction": "Return one valid EVE first-edition JSON object only.",
                     },
                 }
                 status["attempt_count"] = int(status.get("attempt_count", 0)) + 1
@@ -3011,7 +3173,7 @@ class CoreLoop:
         def memory_view(ids: Any, limit: int = 12) -> list[dict[str, Any]]:
             rows = []
             for memory_id in list(ids)[-limit:]:
-                unit = self.memorizer.get_unit(memory_id)
+                unit = self.memorizer.get_record(memory_id)
                 if unit is None:
                     continue
                 rows.append(
@@ -3044,7 +3206,6 @@ class CoreLoop:
             )
         visual_summary = "；".join(visual_sentences) or "当前帧未检测到对象"
         return {
-            "protocol_version": LLM_PROTOCOL_VERSION,
             "request_id": request["request_id"],
             "trigger_kind": request["kind"],
             "user_message": request["message"],
@@ -3098,6 +3259,7 @@ class CoreLoop:
                 },
             },
             "recent_conversation": self.state["conversation"][-8:],
+            "organ_prompt": request.get("organ_prompt"),
         }
 
     def _invoke_local_llm(self, context: dict[str, Any]) -> Any:
@@ -3139,8 +3301,13 @@ class CoreLoop:
             "A goodness score cannot override permissions, safety, or training hard "
             "boundaries. Do not use LLM/VLM inference latency as the target TNN horizon."
         )
+        # The long-lived prefix is fixed for the first edition.  Detailed organ
+        # schemas are added only after a bounded prompt_request continuation.
+        system = EVE_FIRST_EDITION_PROMPT
+        if context.get("organ_prompt"):
+            system += "\n\n本轮按需器官调用说明：\n" + str(context["organ_prompt"])
         user = json.dumps(context, ensure_ascii=False, default=_value_summary)
-        return self._generate_from_messages(
+        return self._generate_text_only(
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -3149,7 +3316,7 @@ class CoreLoop:
             suppress_reasoning=True,
         )
 
-    def _generate_from_messages(
+    def _generate_text_only(
         self,
         messages: list[dict[str, str]],
         *,
@@ -3166,8 +3333,12 @@ class CoreLoop:
                 del input_ids, scores, kwargs
                 return cancel_event.is_set()
 
-        tokenizer = self._local_tokenizer
-        model = self._local_model
+        processor = self._qwen_processor
+        model = self._qwen_model
+        if processor is None or model is None:
+            raise RuntimeError("Qwen is not loaded")
+        tokenizer = getattr(processor, "tokenizer", processor)
+        self.state["model_status"]["qwen"]["mode"] = "text-only"
         if hasattr(tokenizer, "apply_chat_template"):
             prompt = tokenizer.apply_chat_template(
                 messages,
@@ -3183,8 +3354,14 @@ class CoreLoop:
         if suppress_reasoning and prompt.rstrip().endswith("<think>"):
             prompt += "</think>\n\n"
         inputs = tokenizer(prompt, return_tensors="pt")
+        if "pixel_values" in inputs or any(
+            str(name).startswith(("image_", "video_")) for name in inputs
+        ):
+            raise RuntimeError("text-only Qwen input unexpectedly contains vision tensors")
         device = next(model.parameters()).device
         inputs = {name: value.to(device) for name, value in inputs.items()}
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         with torch.inference_mode():
             output = model.generate(
                 **inputs,
@@ -3193,8 +3370,27 @@ class CoreLoop:
                 pad_token_id=tokenizer.eos_token_id,
                 stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
             )
+        if torch.cuda.is_available():
+            self.state["model_status"]["qwen"]["last_inference_peak_bytes"] = int(
+                torch.cuda.max_memory_allocated()
+            )
         generated = output[0, inputs["input_ids"].shape[1] :]
         return tokenizer.decode(generated, skip_special_tokens=True)
+
+    # Kept as an internal call-site alias while the first-edition prompt is
+    # assembled in _generate_local_llm.
+    def _generate_from_messages(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_new_tokens: int,
+        suppress_reasoning: bool,
+    ) -> str:
+        return self._generate_text_only(
+            messages,
+            max_new_tokens=max_new_tokens,
+            suppress_reasoning=suppress_reasoning,
+        )
 
     @staticmethod
     def _visible_model_reply(raw: str) -> str:
@@ -3378,7 +3574,7 @@ class CoreLoop:
             "created_at_ns": int(value.get("created_at_ns", time.time_ns())),
         }
 
-    def _coerce_action_candidates(self, value: Any) -> list[dict[str, Any]]:
+    def _coerce_legacy_action_candidates_disabled(self, value: Any) -> list[dict[str, Any]]:
         if not isinstance(value, list):
             raise TypeError("action_candidates must be an array")
         if len(value) > MAX_LLM_ACTION_CANDIDATES:
@@ -3398,7 +3594,7 @@ class CoreLoop:
             seen.add(candidate_id)
             action_type = str(item.get("action_type", ""))
             if action_type != "mouse":
-                raise ValueError("protocol v2 slow actions currently support mouse only")
+                raise ValueError("legacy slow actions currently support mouse only")
             payload = item.get("payload")
             if not isinstance(payload, dict):
                 raise TypeError("action candidate payload must be an object")
@@ -3428,7 +3624,7 @@ class CoreLoop:
                 }
             else:
                 if str(payload.get("button", "left")) != "left":
-                    raise ValueError("protocol v2 slow click supports left button only")
+                    raise ValueError("legacy slow click supports left button only")
                 payload = {
                     "action": "click", "button": "left",
                     "x": payload["x"], "y": payload["y"],
@@ -3476,7 +3672,66 @@ class CoreLoop:
             )
         return clean
 
+    def _coerce_action_candidates(self, value: Any) -> list[dict[str, Any]]:
+        """Normalize the first-edition model envelope into Core-owned actions."""
+        if not isinstance(value, list):
+            raise TypeError("action_candidates must be an array")
+        if len(value) > MAX_LLM_ACTION_CANDIDATES:
+            raise ValueError("too many action candidates")
+        allowed = {
+            "mouse": {
+                "move", "moveTo", "moveRel", "click", "doubleClick",
+                "rightClick", "middleClick", "drag", "scroll",
+            },
+            "keyboard": {"press", "write", "hotkey", "keyDown", "keyUp"},
+            "speak": {"speak"},
+        }
+        clean: list[dict[str, Any]] = []
+        now_ns = time.monotonic_ns()
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise TypeError("each action candidate must be an object")
+            if set(item) - {"action_type", "payload", "horizon_ms", "reason_summary"}:
+                raise ValueError("model action contains Core-owned or unknown fields")
+            action_type = str(item.get("action_type", ""))
+            payload = item.get("payload")
+            if action_type not in allowed or not isinstance(payload, dict):
+                raise ValueError("action_type/payload is invalid")
+            payload = dict(payload)
+            action_name = str(payload.get("action", ""))
+            if action_type == "speak" and not action_name:
+                action_name = "speak"
+                payload["action"] = action_name
+            if action_name not in allowed[action_type]:
+                raise ValueError(f"unsupported {action_type} action: {action_name}")
+            if action_type == "mouse" and action_name == "move":
+                payload["action"] = "moveTo"
+            if action_type == "speak" and not str(payload.get("text", "")):
+                raise ValueError("speak action requires text")
+            try:
+                horizon_ms = int(item.get("horizon_ms", 1000))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("horizon_ms must be an integer") from exc
+            if not MIN_ACTION_VALID_FOR_MS <= horizon_ms <= MAX_ACTION_VALID_FOR_MS:
+                raise ValueError("horizon_ms is outside the bounded range")
+            clean.append(
+                {
+                    "candidate_id": f"llm:{now_ns}:{index}:{uuid.uuid4().hex[:8]}",
+                    "action_type": action_type,
+                    "payload": payload,
+                    "reason_summary": str(item.get("reason_summary", ""))[:1000],
+                    "evidence_memory_ids": [],
+                    "valid_for_ms": horizon_ms,
+                    "expected_observation": {
+                        "what_may_change": [],
+                        "observation_delay_ms": MIN_OBSERVATION_DELAY_MS,
+                    },
+                }
+            )
+        return clean
+
     def _coerce_tool_requests(self, value: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("legacy tool_requests are disabled in the first edition")
         if not isinstance(value, list):
             raise TypeError("tool_requests must be an array")
         if len(value) > MAX_LLM_TOOL_REQUESTS:
@@ -3522,7 +3777,7 @@ class CoreLoop:
             raise TypeError("training_proposal must be an object or null")
         required = {"proposal_id", "target_tnn", "evidence", "teacher_plan", "qnn_plan", "training_plan"}
         if set(value) != required:
-            raise ValueError("training_proposal fields do not match protocol v2")
+            raise ValueError("training_proposal fields do not match the first edition")
         proposal_id = str(value["proposal_id"]).strip()
         target = value["target_tnn"]
         evidence = value["evidence"]
@@ -3534,7 +3789,7 @@ class CoreLoop:
             "downstream_outputs",
         }
         if set(target) != target_required or not str(target.get("tnn_id", "")):
-            raise ValueError("target_tnn fields do not match protocol v2")
+            raise ValueError("target_tnn fields do not match the first edition")
         frequency = float(target["runtime_frequency_hz"])
         horizon = float(target["time_horizon_ms"])
         if not math.isfinite(frequency) or frequency <= 0:
@@ -3558,12 +3813,15 @@ class CoreLoop:
         return json.loads(json.dumps(value, ensure_ascii=False))
 
     def _coerce_training_materialization(self, value: Any) -> dict[str, Any] | None:
+        if value is not None:
+            raise RuntimeError("legacy training materialization output is disabled")
+        return None
         if value is None:
             return None
         if not isinstance(value, dict):
             raise TypeError("training_materialization must be an object or null")
         if set(value) != {"proposal_id", "files", "qnn_files", "training_order"}:
-            raise ValueError("training_materialization fields do not match protocol v2")
+            raise ValueError("training_materialization fields do not match the disabled schema")
         if not str(value.get("proposal_id", "")).strip():
             raise ValueError("training materialization requires proposal_id")
         if not isinstance(value.get("files"), list) or not isinstance(value.get("qnn_files"), list):
@@ -3573,13 +3831,16 @@ class CoreLoop:
         return value
 
     def _coerce_observation_completion(self, value: Any) -> dict[str, Any] | None:
+        if value is not None:
+            raise RuntimeError("legacy observation completion output is disabled")
+        return None
         if value is None:
             return None
         if not isinstance(value, dict):
             raise TypeError("observation_completion must be an object or null")
         required = {"observation_bundle_memory_id", "inferred_facts", "goodness_record_ids"}
         if set(value) != required:
-            raise ValueError("observation_completion fields do not match protocol v2")
+            raise ValueError("observation_completion fields do not match the disabled schema")
         bundle_id = str(value["observation_bundle_memory_id"])
         bundle = self.memorizer.read(bundle_id) or self._observation_bundle_cache.get(
             bundle_id
@@ -3608,22 +3869,19 @@ class CoreLoop:
     ) -> dict[str, Any]:
         value = raw if isinstance(raw, dict) else self._parse_model_json(str(raw))
         required_fields = {
-            "protocol_version", "reply", "thinking_summary",
+            "reply", "thinking_summary",
             "world_interpretation_update", "myself_cognition_update",
             "goodness_update", "goodness_records", "blackboard_updates",
             "active_tnn", "memory_actions", "action_candidates",
-            "tool_requests", "training_proposal", "training_materialization",
-            "observation_completion",
+            "training_proposal", "prompt_request",
         }
         missing_fields = required_fields - set(value)
         unknown_fields = set(value) - required_fields
         if missing_fields or unknown_fields:
             raise ValueError(
-                f"protocol v2 fields mismatch; missing={sorted(missing_fields)}, "
+                f"EVE first-edition fields mismatch; missing={sorted(missing_fields)}, "
                 f"unknown={sorted(unknown_fields)}"
             )
-        if int(value["protocol_version"]) != LLM_PROTOCOL_VERSION:
-            raise ValueError("unsupported LLM protocol_version")
         reply = self._visible_model_reply(str(value["reply"]))
         if request.get("kind") == "user" and not reply:
             raise ValueError("user-triggered LLM result requires reply")
@@ -3713,22 +3971,13 @@ class CoreLoop:
             raise TypeError("each memory action must be an object")
         memory_actions = memory_actions[:20]
         action_candidates = self._coerce_action_candidates(value["action_candidates"])
-        tool_requests = self._coerce_tool_requests(value["tool_requests"])
         proposal = self._coerce_training_proposal(value["training_proposal"])
-        materialization = self._coerce_training_materialization(
-            value["training_materialization"]
-        )
-        observation_completion = self._coerce_observation_completion(
-            value["observation_completion"]
-        )
-        if proposal is not None and materialization is not None:
-            raise ValueError("proposal and materialization require separate LLM stages")
-        if request.get("kind") == "training_materialization" and materialization is None:
-            raise ValueError("materialization stage requires training_materialization")
-        if request.get("kind") != "training_materialization" and materialization is not None:
-            raise ValueError("training_materialization is only valid in its dedicated stage")
+        prompt_request = value["prompt_request"]
+        if prompt_request is not None:
+            prompt_request = str(prompt_request).strip()
+            if prompt_request not in ORGAN_NAMES:
+                raise ValueError("prompt_request names no available organ")
         return {
-            "protocol_version": 2,
             "reply": reply,
             "thinking_summary": str(value.get("thinking_summary", ""))[:2000],
             "world_interpretation_update": world_update,
@@ -3739,10 +3988,8 @@ class CoreLoop:
             "active_tnn": desired,
             "memory_actions": memory_actions,
             "action_candidates": action_candidates,
-            "tool_requests": tool_requests,
             "training_proposal": proposal,
-            "training_materialization": materialization,
-            "observation_completion": observation_completion,
+            "prompt_request": prompt_request,
         }
 
     def _apply_llm_result(
@@ -3880,41 +4127,73 @@ class CoreLoop:
                 producer="local_llm",
             )
             self.state["autonomy_status"]["training_proposal_status"] = "stored"
-            self._queue_training_materialization(
-                proposal_memory_id=str(proposal_id),
-                proposal=proposal,
-                attempt=1,
-            )
         for candidate in result.get("action_candidates", []):
             self._accept_llm_action_candidate(candidate, request)
-        for tool_request in result.get("tool_requests", []):
-            self._accept_llm_tool_request(tool_request)
-        materialization = result.get("training_materialization")
-        if materialization is not None:
-            self._apply_training_materialization(request, materialization)
-        completion = result.get("observation_completion")
-        if completion is not None:
-            record_map = {
-                str(item["record_id"]): str(item["memory_id"])
-                for item in stored_goodness
-            }
-            requested_ids = completion["goodness_record_ids"]
-            unknown = [item for item in requested_ids if item not in record_map]
-            if unknown:
-                raise ValueError(
-                    f"observation completion references unstored goodness records: {unknown}"
+        prompt_request = result.get("prompt_request")
+        if prompt_request is not None:
+            self._handle_prompt_request(request, prompt_request)
+        if request.get("kind") == "action_observation" and stored_goodness:
+            continuation = request.get("continuation") or {}
+            bundle_id = str(continuation.get("observation_bundle_memory_id", ""))
+            if bundle_id:
+                self.complete_experience_from_observation(
+                    bundle_id,
+                    [],
+                    [str(item["memory_id"]) for item in stored_goodness],
                 )
-            self.complete_experience_from_observation(
-                completion["observation_bundle_memory_id"],
-                completion["inferred_facts"],
-                [record_map[item] for item in requested_ids],
-            )
         debug_log(
             self.log_dir,
             "llm_protocol_output",
             {**result, "request_id": request["request_id"], "kind": request["kind"],
              "memory_action_results": action_results},
         )
+
+    def _handle_prompt_request(self, request: dict[str, Any], organ: str) -> None:
+        """Provide one bounded organ schema continuation for the same task."""
+        task_id = str(request.get("root_request_id") or request["request_id"])
+        previous = self._last_prompt_request_by_task.get(task_id)
+        if previous == organ:
+            if organ == "vision" and request.get("kind") in {"organ_prompt", "vlm_result"}:
+                try:
+                    self._queue_frozen_vlm_request(
+                        request_id=f"vision_{time.time_ns()}_{uuid.uuid4().hex[:8]}",
+                        prompt="Interpret the frozen screen frame for the current task.",
+                        origin="llm_tool",
+                        root_task_id=task_id,
+                    )
+                except Exception as exc:
+                    self.state["blackboard"]["organ_prompt_rejected"] = _timed(
+                        {"task_id": task_id, "organ": organ, "reason": str(exc)},
+                        time.monotonic_ns(),
+                        producer="core",
+                    )
+                return
+            self.state["blackboard"]["organ_prompt_rejected"] = _timed(
+                {"task_id": task_id, "organ": organ, "reason": "duplicate_prompt_request"},
+                time.monotonic_ns(),
+                producer="core",
+            )
+            return
+        self._last_prompt_request_by_task[task_id] = organ
+        self._request_serial += 1
+        continuation = {
+            "request_id": f"organ_{organ}_{time.time_ns()}_{self._request_serial}",
+            "root_request_id": task_id,
+            "kind": "organ_prompt",
+            "message": f"Core 已提供 {organ} 器官调用说明；继续同一任务。",
+            "requested_at_ns": time.monotonic_ns(),
+            "memory_id": request.get("memory_id"),
+            "evidence_memory_ids": list(request.get("evidence_memory_ids", ())),
+            "organ_prompt": ORGAN_PROMPTS[organ],
+        }
+        try:
+            self._llm_requests.put_nowait(continuation)
+        except queue.Full:
+            self.state["blackboard"]["organ_prompt_rejected"] = _timed(
+                {"task_id": task_id, "organ": organ, "reason": "llm_queue_full"},
+                time.monotonic_ns(),
+                producer="core",
+            )
 
     def _queue_llm_continuation(
         self,
@@ -3937,6 +4216,11 @@ class CoreLoop:
             "memory_id": next(iter(evidence_memory_ids), None),
             "evidence_memory_ids": list(evidence_memory_ids),
             "continuation": continuation,
+            "root_request_id": (
+                continuation.get("root_task_id")
+                if isinstance(continuation, dict)
+                else None
+            ),
             "materialization_attempt": materialization_attempt,
         }
         try:
@@ -4052,6 +4336,7 @@ class CoreLoop:
         attempt: int,
         previous_failure: dict[str, Any] | None = None,
     ) -> None:
+        raise RuntimeError("training materialization is disabled in the first-edition loop")
         proposal_id = str(proposal["proposal_id"])
         self._materializations[proposal_id] = {
             "proposal_memory_id": proposal_memory_id,
@@ -4294,6 +4579,7 @@ class CoreLoop:
                 evidence_memory_ids=evidence,
                 continuation={
                     "tool_result": result,
+                    "root_task_id": request.get("root_task_id"),
                     "reference_frame_warning": "current screen may have changed",
                 },
             )
@@ -4303,7 +4589,7 @@ class CoreLoop:
         status = self.state["model_status"]["vlm"]
         try:
             if self.vlm_backend is None:
-                path = self.state["model_config"].get("vlm_path", "")
+                path = self.state["model_config"].get("qwen_path", "")
                 if path:
                     status.update(
                         {
@@ -4334,15 +4620,15 @@ class CoreLoop:
                     return
                 self._cancel_vlm.clear()
                 try:
-                    if self.vlm_backend is None and self._vlm_model is None:
-                        path = self.state["model_config"].get("vlm_path", "")
+                    if self.vlm_backend is None and self._qwen_model is None:
+                        path = self.state["model_config"].get("qwen_path", "")
                         with self._model_load_lock:
                             self._load_vlm(path)
                     self._process_vlm_request(request)
                 except Exception as exc:
                     self._publish_vlm_failure(request, exc)
                     reusable = (
-                        self._vlm_model is not None
+                        self._qwen_model is not None
                         or self.vlm_backend is not None
                     )
                     status.update(
@@ -4373,57 +4659,9 @@ class CoreLoop:
             self._record_error("vlm", exc, critical=False)
 
     def _load_vlm(self, path: str) -> None:
-        import torch
-        import transformers
-        from transformers import AutoProcessor, BitsAndBytesConfig
-
-        model_path = Path(path).expanduser()
-        if not model_path.exists():
-            raise FileNotFoundError(f"VLM path does not exist: {model_path}")
-        if not torch.cuda.is_available():
-            raise RuntimeError("4-bit VLM requires an available CUDA device")
-        try:
-            import bitsandbytes  # noqa: F401
-            import accelerate  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError("4-bit VLM requires bitsandbytes and accelerate") from exc
-        model_class = getattr(
-            transformers,
-            "AutoModelForImageTextToText",
-            getattr(transformers, "AutoModelForVision2Seq", None),
-        )
-        if model_class is None:
-            raise RuntimeError("installed transformers has no supported VLM auto class")
-        quantization = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-        )
+        self._load_qwen(path)
         self.state["model_status"]["vlm"].update(
-            {"state": "loading", "path": str(model_path)}
-        )
-        self._vlm_processor = AutoProcessor.from_pretrained(
-            str(model_path), local_files_only=True, trust_remote_code=True
-        )
-        self._vlm_model = model_class.from_pretrained(
-            str(model_path),
-            local_files_only=True,
-            trust_remote_code=True,
-            quantization_config=quantization,
-            device_map="auto",
-        )
-        if not bool(getattr(self._vlm_model, "is_loaded_in_4bit", False)):
-            raise RuntimeError("VLM did not actually load in 4-bit mode")
-        self.state["model_status"]["vlm"].update(
-            {
-                "state": "ready",
-                "device": str(next(self._vlm_model.parameters()).device),
-                "quantization": "4bit-nf4",
-                "is_loaded_in_4bit": True,
-                "model": str(model_path),
-                "error": None,
-            }
+            self.state["model_status"]["qwen"]
         )
 
     def _process_vlm_request(self, request: dict[str, Any]) -> None:
@@ -4431,11 +4669,12 @@ class CoreLoop:
         if status.get("state") not in {"ready", "queued"}:
             raise RuntimeError(status.get("error") or "VLM is not ready")
         started_ns = time.monotonic_ns()
+        self.state["model_status"]["qwen"]["mode"] = "vision"
         status.update({"state": "running", "started_at_ns": started_ns})
         if self.vlm_backend is not None:
             analysis = self.vlm_backend(request)
         else:
-            analysis = self._generate_vlm(request)
+            analysis = self._generate_with_vision(request)
         if self._cancel_vlm.is_set():
             status.update(
                 {
@@ -4550,6 +4789,7 @@ class CoreLoop:
                 evidence_memory_ids=evidence,
                 continuation={
                     "tool_request_id": request["request_id"],
+                    "root_task_id": request.get("root_task_id"),
                     "reference_frame_id": request["frame_id"],
                     "reference_frame_timestamp_ns": request["frame_timestamp_ns"],
                     "screen_memory_id": image_id,
@@ -4569,7 +4809,7 @@ class CoreLoop:
             duration_ms=(finished_ns - started_ns) / 1_000_000,
         )
 
-    def _generate_vlm(self, request: dict[str, Any]) -> str:
+    def _generate_with_vision(self, request: dict[str, Any]) -> str:
         import torch
         from PIL import Image
         from transformers import StoppingCriteria, StoppingCriteriaList
@@ -4584,8 +4824,11 @@ class CoreLoop:
         image = request["image"]
         if image.shape[-1] == 4:
             image = image[..., :3][..., ::-1]
-        processor = self._vlm_processor
-        model = self._vlm_model
+        processor = self._qwen_processor
+        model = self._qwen_model
+        if processor is None or model is None:
+            raise RuntimeError("Qwen is not loaded")
+        self.state["model_status"]["qwen"]["mode"] = "vision"
         pil_image = Image.fromarray(image)
         height, width = image.shape[:2]
         prompt = (
@@ -4631,12 +4874,18 @@ class CoreLoop:
             )
         device = next(model.parameters()).device
         inputs = {name: value.to(device) for name, value in inputs.items()}
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         with torch.inference_mode():
             output = model.generate(
                 **inputs,
                 max_new_tokens=256,
                 do_sample=False,
                 stopping_criteria=StoppingCriteriaList([CancelOnEvent()]),
+            )
+        if torch.cuda.is_available():
+            self.state["model_status"]["qwen"]["last_inference_peak_bytes"] = int(
+                torch.cuda.max_memory_allocated()
             )
         prompt_length = int(inputs["input_ids"].shape[1])
         generated = output[:, prompt_length:]
@@ -5363,6 +5612,7 @@ class CoreLoop:
                 results.append(result)
                 self._remember_chain(action, result)
                 continue
+            action["action_id"] = f"action_{time.time_ns()}_{uuid.uuid4().hex[:8]}"
             try:
                 self._output_requests.put_nowait(action)
             except queue.Full:

@@ -22,7 +22,6 @@ def wait_until(predicate, timeout_s: float = 5.0) -> None:
 
 def protocol(**updates):
     value = {
-        "protocol_version": 2,
         "reply": "",
         "thinking_summary": "visible summary",
         "world_interpretation_update": {},
@@ -33,12 +32,24 @@ def protocol(**updates):
         "active_tnn": [],
         "memory_actions": [],
         "action_candidates": [],
-        "tool_requests": [],
         "training_proposal": None,
-        "training_materialization": None,
-        "observation_completion": None,
+        "prompt_request": None,
     }
+    actions = updates.pop("action_candidates", None)
+    updates.pop("tool_requests", None)
+    updates.pop("observation_completion", None)
+    updates.pop("training_materialization", None)
     value.update(updates)
+    if actions is not None:
+        value["action_candidates"] = [
+            {
+                "action_type": item["action_type"],
+                "payload": item["payload"],
+                "horizon_ms": item.get("valid_for_ms", 1000),
+                "reason_summary": item.get("reason_summary", ""),
+            }
+            for item in actions
+        ]
     return value
 
 
@@ -109,20 +120,12 @@ def test_protocol_v2_cleans_bounded_actions_and_rejects_unknown_tool(tmp_path):
         raw, {"request_id": "r", "kind": "user", "message": "move"}
     )
     assert clean["action_candidates"][0]["payload"]["x"] == 3
-    with pytest.raises(ValueError, match="unknown LLM tool"):
+    assert clean["action_candidates"][0]["candidate_id"].startswith("llm:")
+    with pytest.raises(ValueError, match="available organ"):
         core._coerce_llm_result(
             {
                 **raw,
-                "tool_requests": [
-                    {
-                        "request_id": "bad",
-                        "tool": "shell",
-                        "prompt": "x",
-                        "reason_summary": "x",
-                        "required_fields": [],
-                        "evidence_memory_ids": [],
-                    }
-                ],
+                "prompt_request": "shell",
             },
             {"request_id": "r", "kind": "user", "message": "move"},
         )
@@ -168,7 +171,11 @@ def test_llm_vlm_tool_freezes_frame_and_continues_same_self_queue(tmp_path, monk
     memory.start_writer()
     try:
         core.start()
-        core.submit_user_message("what is visible")
+        core._queue_frozen_vlm_request(
+            request_id="vision-1",
+            prompt="identify visible object",
+            origin="llm_tool",
+        )
         wait_until(lambda: any(item["trigger_kind"] == "vlm_result" for item in calls))
         continuation = next(
             item["continuation"] for item in calls
@@ -278,7 +285,7 @@ def test_slow_action_observes_before_after_and_completes_valued_experience(
             if (memory.read(memory_id) or {}).get("observation_bundle_version") == 1
         )
         assert bundle["observation_bundle_version"] == 1
-        assert bundle["candidate_id"] == "click-1"
+        assert bundle["candidate_id"].startswith("llm:")
         assert bundle["before"]["frame_id"] == 1
         assert bundle["after"]["frame_id"] == 2
         assert bundle["after"]["vlm_result_memory_id"]
@@ -340,7 +347,7 @@ def test_blocked_llm_candidate_has_no_executed_action_id(tmp_path, monkeypatch):
         memory.stop_writer()
 
 
-def test_training_proposal_materializes_repairs_trains_and_loads_actor(
+def test_training_proposal_is_stored_without_hidden_materialization_protocol(
     tmp_path, monkeypatch
 ):
     memory = Memorizer(tmp_path / "memory")
@@ -425,18 +432,12 @@ def test_training_proposal_materializes_repairs_trains_and_loads_actor(
     try:
         core.start()
         core.submit_user_message("learn this repeated operation")
-        wait_until(lambda: "learned-actor" in state["loaded_tnn"], timeout_s=8.0)
-        assert [
-            item["materialization_attempt"] for item in calls
-            if item["trigger_kind"] == "training_materialization"
-        ] == [1, 2]
-        assert memory.search(payload_type="training_materialization_failure")
-        assert memory.search(payload_type="generated_tnn_source")
-        assert memory.search(payload_type="source_safety_report")
-        assert state["autonomy_status"]["latest_source_check"]["status"] == "passed"
-        assert state["autonomy_status"]["materialization_status"] == "submitted_to_dock"
-        assert (tmp_path / "dock" / "workspace" / "learn-order-2" / "model.py").is_file()
-        assert not list((tmp_path / "dock" / "workspace").rglob("qnn/model.py"))
+        wait_until(lambda: bool(memory.search(payload_type="training_proposal")))
+        assert not [
+            item for item in calls if item["trigger_kind"] == "training_materialization"
+        ]
+        assert not state["loaded_tnn"]
+        assert state["autonomy_status"]["training_proposal_status"] == "stored"
     finally:
         core.stop()
         memory.stop_writer()
@@ -477,7 +478,7 @@ def test_materialization_rejects_path_escape_and_dangerous_source(tmp_path):
     assert not (tmp_path / "workspace" / "safe-order").exists()
 
 
-def test_materialization_stops_after_three_structured_failures(tmp_path, monkeypatch):
+def test_materialization_stage_is_not_part_of_first_edition_output(tmp_path, monkeypatch):
     proposal = {
         "proposal_id": "bounded-failure",
         "target_tnn": {
@@ -534,10 +535,10 @@ def test_materialization_stops_after_three_structured_failures(tmp_path, monkeyp
     try:
         core.start()
         core.submit_user_message("materialize with bounded correction")
-        wait_until(lambda: state["autonomy_status"]["materialization_status"] == "failed")
+        wait_until(lambda: bool(memory.search(payload_type="training_proposal")))
         memory.flush()
-        assert attempts == [1, 2, 3]
-        assert len(memory.search(payload_type="training_materialization_failure")) == 3
+        assert attempts == []
+        assert not memory.search(payload_type="training_materialization_failure")
         assert not state["training_orders"]
         assert not state["loaded_tnn"]
     finally:

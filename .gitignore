@@ -2,6 +2,7 @@
 # Python cache & build artifacts
 # ============================================================
 __pycache__/
+.testdeps/
 *.pyc
 *.pyo
 *.egg-info/
@@ -65,6 +66,17 @@ eve/nextwork.md
 # Runtime output (episode logs, benchmarks)
 # ============================================================
 runs/
+
+# EVE persistent personal state (code files in these directories remain tracked)
+eve/memory/objects/
+eve/memory/payloads/
+eve/memory/catalog.jsonl
+eve/memory/events.jsonl
+eve/memory/indexes/
+eve/memory/summaries/
+eve/memory/views/
+eve/memory/TNNweights/
+eve/core/state/
 
 # ============================================================
 # Non-essential root markdown

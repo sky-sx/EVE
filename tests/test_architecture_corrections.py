@@ -21,7 +21,6 @@ def wait_until(predicate, timeout_s: float = 3.0) -> None:
 
 def protocol_reply(reply: str = "ok") -> dict:
     return {
-        "protocol_version": 2,
         "reply": reply,
         "thinking_summary": "visible summary",
         "world_interpretation_update": {},
@@ -32,10 +31,8 @@ def protocol_reply(reply: str = "ok") -> dict:
         "active_tnn": [],
         "memory_actions": [],
         "action_candidates": [],
-        "tool_requests": [],
         "training_proposal": None,
-        "training_materialization": None,
-        "observation_completion": None,
+        "prompt_request": None,
     }
 
 

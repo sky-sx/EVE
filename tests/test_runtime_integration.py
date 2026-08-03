@@ -66,7 +66,7 @@ def test_async_memory_flush_numpy_and_incremental_catalog(tmp_path):
     image = np.arange(48, dtype=np.uint8).reshape(4, 4, 3)
     image_id = memory.create(image, "screen_image")
     assert np.array_equal(memory.read(image_id), image)
-    assert memory.get_unit(image_id).storage_path.endswith(".npy")
+    assert memory.get_record(image_id).storage_path.endswith(".npy")
     records = [
         json.loads(line)
         for line in memory.catalog_path.read_text(encoding="utf-8").splitlines()
@@ -123,6 +123,7 @@ def test_profiles_are_mock_and_observe_completes_full_chain(tmp_path, monkeypatc
     application = EVEApplication(
         profile="observe",
         run_dir=tmp_path,
+        memory_dir=tmp_path / "memory-observe",
         input_buffer=synthetic_buffer("observe"),
         allow_mock_actions=False,
     )
@@ -159,6 +160,7 @@ def test_smoke_cli_escape_and_capture_error_have_clean_exit_codes(
         [
             "--profile", "smoke", "--duration", "0.1",
             "--run-dir", str(tmp_path / "cli-smoke"),
+            "--memory-dir", str(tmp_path / "memory-cli-smoke"),
         ]
     ) == 0
 
@@ -169,6 +171,7 @@ def test_smoke_cli_escape_and_capture_error_have_clean_exit_codes(
     application = EVEApplication(
         profile="smoke",
         run_dir=tmp_path / "escape",
+        memory_dir=tmp_path / "memory-escape",
         input_buffer=synthetic_buffer(),
     )
     application.start()
@@ -198,6 +201,7 @@ def test_tnn_error_isolated_and_all_workers_stop(tmp_path, monkeypatch):
     application = EVEApplication(
         profile="smoke",
         run_dir=tmp_path,
+        memory_dir=tmp_path / "memory-tnn-error",
         input_buffer=synthetic_buffer(),
     )
 
@@ -234,6 +238,7 @@ def test_memory_writer_failure_becomes_critical_runtime_failure(tmp_path, monkey
     application = EVEApplication(
         profile="smoke",
         run_dir=tmp_path,
+        memory_dir=tmp_path / "memory-writer-error",
         input_buffer=synthetic_buffer(),
     )
 

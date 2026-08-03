@@ -15,13 +15,21 @@ from typing import Any, Callable
 
 
 @dataclass(frozen=True)
-class MemoryUnit:
+class CatalogRecord:
     memory_id: str
     payload_type: str
     created_at_ns: int
     storage_path: str
     content_hash: str
     size_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class MemoryUnit:
+    """The semantic minimum: one MemoryID and its immutable payload."""
+
+    memory_id: str
+    payload: Any
 
 
 @dataclass(frozen=True)
@@ -61,15 +69,24 @@ class Memorizer:
         if queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
         self.base_dir = Path(base_dir)
-        self.payload_dir = self.base_dir / "payloads"
+        self.payload_dir = self.base_dir / "objects"
         self.tnn_dir = self.base_dir / "TNNweights"
         self.catalog_path = self.base_dir / "catalog.jsonl"
         self.event_catalog_path = self.base_dir / "events.jsonl"
+        self.index_dir = self.base_dir / "indexes"
+        self.summary_dir = self.base_dir / "summaries"
+        self.view_dir = self.base_dir / "views"
+        self.view_paths = {
+            name: self.view_dir / f"{name}.json" for name in ("stm", "mtm", "ltm")
+        }
         self.payload_dir.mkdir(parents=True, exist_ok=True)
         self.tnn_dir.mkdir(parents=True, exist_ok=True)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        self.summary_dir.mkdir(parents=True, exist_ok=True)
+        self.view_dir.mkdir(parents=True, exist_ok=True)
         self.stm_limit = stm_limit
         self.queue_capacity = queue_capacity
-        self.catalog: dict[str, MemoryUnit] = {}
+        self.catalog: dict[str, CatalogRecord] = {}
         self.stm: list[str] = []
         self.mtm: set[str] = set()
         self.ltm: set[str] = set()
@@ -89,6 +106,41 @@ class Memorizer:
         self._failed_count = 0
         self.load_catalog()
         self._load_events()
+        self._load_views()
+
+    @staticmethod
+    def migrate_legacy_directory(source: str | Path, destination: str | Path) -> dict[str, Any]:
+        """One-time verified copy; the legacy directory is never removed."""
+        source = Path(source)
+        destination = Path(destination)
+        if not source.is_dir() or source.resolve() == destination.resolve():
+            return {"migrated": False, "files": 0, "backup": None}
+        files = [path for path in source.rglob("*") if path.is_file()]
+        if not files:
+            return {"migrated": False, "files": 0, "backup": None}
+        backup = source.with_name(f"{source.name}.backup-{time.time_ns()}")
+        shutil.copytree(source, backup)
+        destination.mkdir(parents=True, exist_ok=True)
+        hashes: dict[str, str] = {}
+        for path in files:
+            relative = path.relative_to(source)
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            encoded = path.read_bytes()
+            digest = hashlib.sha256(encoded).hexdigest()
+            hashes[str(relative)] = digest
+            if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+                raise FileExistsError(f"memory migration conflict: {relative}")
+            if not target.exists():
+                shutil.copy2(path, target)
+        verified = {
+            str(path.relative_to(destination)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in destination.rglob("*") if path.is_file()
+            and str(path.relative_to(destination)) in hashes
+        }
+        if verified != hashes:
+            raise RuntimeError("memory migration hash verification failed")
+        return {"migrated": True, "files": len(files), "backup": str(backup), "hashes": hashes}
 
     @property
     def writer_running(self) -> bool:
@@ -96,6 +148,12 @@ class Memorizer:
             self._writer_thread is not None
             and self._writer_thread.is_alive()
         )
+
+    def ensure_views(self) -> None:
+        """Materialize the three inspectable ID views, including empty views."""
+        with self._lock:
+            if any(not path.is_file() for path in self.view_paths.values()):
+                self._write_views_locked()
 
     def start_writer(self) -> None:
         if self.writer_running:
@@ -237,8 +295,13 @@ class Memorizer:
             return np.load(path, allow_pickle=False)
         return json.loads(encoded.decode("utf-8"))
 
-    def get_unit(self, memory_id: str) -> MemoryUnit | None:
+    def get_record(self, memory_id: str) -> CatalogRecord | None:
         return self.catalog.get(memory_id)
+
+    def get_unit(self, memory_id: str) -> MemoryUnit | None:
+        if memory_id not in self.catalog:
+            return None
+        return MemoryUnit(memory_id=memory_id, payload=self.read(memory_id))
 
     def contains(self, memory_id: str) -> bool:
         """Return whether an ID is persisted or accepted by the async writer."""
@@ -256,8 +319,11 @@ class Memorizer:
             if unit is None:
                 return False
             path = (self.base_dir / unit.storage_path).resolve()
-            payload_root = self.payload_dir.resolve()
-            if payload_root not in path.parents:
+            allowed_roots = {
+                self.payload_dir.resolve(),
+                (self.base_dir / "payloads").resolve(),
+            }
+            if not any(root in path.parents for root in allowed_roots):
                 raise ValueError("catalog path escapes payload directory")
             if path.exists():
                 path.unlink()
@@ -266,6 +332,7 @@ class Memorizer:
             self.mtm.discard(memory_id)
             self.ltm.discard(memory_id)
             self._append_catalog({"op": "delete", "memory_id": memory_id})
+            self._write_views_locked()
             return True
 
     def load_to_mtm(self, memory_id: str) -> None:
@@ -274,6 +341,7 @@ class Memorizer:
                 raise KeyError(memory_id)
             self.mtm.add(memory_id)
             self._append_catalog({"op": "load_mtm", "memory_id": memory_id})
+            self._write_views_locked()
 
     def unload_from_mtm(self, memory_id: str) -> None:
         with self._lock:
@@ -281,6 +349,7 @@ class Memorizer:
                 raise KeyError(memory_id)
             self.mtm.discard(memory_id)
             self._append_catalog({"op": "unload_mtm", "memory_id": memory_id})
+            self._write_views_locked()
 
     def persist_to_ltm(self, memory_id: str) -> None:
         with self._lock:
@@ -288,6 +357,7 @@ class Memorizer:
                 raise KeyError(memory_id)
             self.ltm.add(memory_id)
             self._append_catalog({"op": "persist_ltm", "memory_id": memory_id})
+            self._write_views_locked()
 
     def remove_from_ltm(self, memory_id: str) -> None:
         with self._lock:
@@ -295,12 +365,40 @@ class Memorizer:
                 raise KeyError(memory_id)
             self.ltm.discard(memory_id)
             self._append_catalog({"op": "remove_ltm", "memory_id": memory_id})
+            self._write_views_locked()
 
     def _append_to_stm_locked(self, memory_id: str) -> None:
         self.stm.append(memory_id)
         while len(self.stm) > self.stm_limit:
             evicted = self.stm.pop(0)
             self._append_catalog({"op": "evict_stm", "memory_id": evicted})
+        self._write_views_locked()
+
+    def _write_views_locked(self) -> None:
+        values = {"stm": list(self.stm), "mtm": sorted(self.mtm), "ltm": sorted(self.ltm)}
+        for name, ids in values.items():
+            temporary = self.view_dir / f".{name}.{uuid.uuid4().hex}.tmp"
+            try:
+                temporary.write_text(
+                    json.dumps({"memory_ids": ids}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                temporary.replace(self.view_paths[name])
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def _load_views(self) -> None:
+        with self._lock:
+            for name in ("stm", "mtm", "ltm"):
+                path = self.view_paths[name]
+                if not path.is_file():
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                ids = [str(item) for item in data.get("memory_ids", ()) if str(item) in self.catalog]
+                if name == "stm":
+                    self.stm = ids[-self.stm_limit:]
+                else:
+                    setattr(self, name, set(ids))
 
     @property
     def ltm_count(self) -> int:
@@ -601,8 +699,8 @@ class Memorizer:
         tnn_id: str,
         version: str | None = None,
     ) -> dict[str, str]:
-        matches: list[tuple[MemoryUnit, dict[str, Any]]] = []
-        direct = self.get_unit(tnn_id)
+        matches: list[tuple[CatalogRecord, dict[str, Any]]] = []
+        direct = self.get_record(tnn_id)
         with self._lock:
             catalog_values = list(self.catalog.values())
         candidates = (
@@ -673,7 +771,7 @@ class Memorizer:
             record = json.loads(line)
             operation = record.get("op")
             if operation == "create":
-                unit = MemoryUnit(**record["unit"])
+                unit = CatalogRecord(**record["unit"])
                 self.catalog[unit.memory_id] = unit
                 self.stm.append(unit.memory_id)
             elif operation == "delete":
@@ -749,7 +847,7 @@ class Memorizer:
     ) -> None:
         created_at_ns = time.time_ns()
         path, encoded = self._write_payload(memory_id, payload)
-        unit = MemoryUnit(
+        unit = CatalogRecord(
             memory_id=memory_id,
             payload_type=payload_type,
             created_at_ns=created_at_ns,
