@@ -89,7 +89,7 @@ def test_user_prompt_contains_current_visual_facts_and_perception_is_code_owned(
         )
         core.submit_user_message("屏幕上有什么？")
         wait_until(lambda: bool(state["conversation"]))
-        visual = contexts[-1]["world_view"]["perception_facts"]["visual"]
+        visual = contexts[-1]["world_view"]["relevant_perception"]["visual"]
         assert "检测到 object，置信度约 0.90" in contexts[-1]["world_view"][
             "visual_summary"
         ]
@@ -135,6 +135,13 @@ def test_protocol_repair_once_and_metrics_are_visible(tmp_path):
         assert status["schema_failure_count"] == 1
         assert status["repair_count"] == 1
         assert status["success_count"] == 1
+        repair = calls[1]
+        assert repair["request_kind"] == "schema_repair"
+        assert set(repair) == {
+            "request_kind", "required_fields", "field_types", "error_type",
+            "error", "invalid_output_summary",
+        }
+        assert not ({"world_view", "blackboard_view", "recent_conversation"} & set(repair))
     finally:
         core.stop()
         memory.stop_writer()
@@ -187,6 +194,7 @@ def test_autonomous_dedup_and_user_priority(tmp_path):
         local_llm_backend=lambda _context: protocol_reply(), trainer=object(),
     )
     core._last_autonomous_ns = -10**18
+    core._mark_autonomous_event("test")
     core._maybe_enqueue_autonomous()
     core._maybe_enqueue_autonomous()
     assert core._llm_requests.qsize() == 1
@@ -234,6 +242,38 @@ def test_shared_inference_lock_and_flags_recover_after_exception(tmp_path):
     assert state["model_status"]["local_llm"]["repair_inflight"] is False
     assert core._qwen_inference_lock.acquire(blocking=False) is True
     core._qwen_inference_lock.release()
+
+
+def test_single_user_message_has_one_generation_no_repair_or_continuation(tmp_path):
+    calls = []
+
+    def backend(context):
+        calls.append(context)
+        return protocol_reply("hello")
+
+    state = create_runtime_state(output_mode="disabled")
+    memory = Memorizer(tmp_path / "memory")
+    core = CoreLoop(
+        InputBuffer(), memory, state=state, log_dir=tmp_path,
+        local_llm_backend=backend,
+    )
+    memory.start_writer()
+    try:
+        core.start()
+        core.submit_user_message("one small message")
+        wait_until(lambda: state["model_status"]["local_llm"]["success_count"] == 1)
+        time.sleep(0.3)
+        status = state["model_status"]["local_llm"]
+        assert len(calls) == 1
+        assert status["attempt_count"] == 1
+        assert status["repair_count"] == 0
+        assert status["llm_inflight"] is False
+        assert status["repair_inflight"] is False
+        assert status["autonomous_pending"] is False
+        assert core._llm_requests.empty()
+    finally:
+        core.stop()
+        memory.stop_writer()
 
 
 def test_snapshot_v2_excludes_transient_state_and_feedback_is_explicit(tmp_path):

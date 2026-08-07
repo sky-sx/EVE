@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import inspect
 import time
 import sys
 import types
@@ -11,11 +13,18 @@ import pytest
 from eve.core.loop import (
     EVE_FIRST_EDITION_FIELDS,
     EVE_FIRST_EDITION_PROMPT,
+    REPAIR_CONTEXT_MAX_TOKENS,
+    REPAIR_MAX_NEW_TOKENS,
+    TEXT_CONTEXT_MAX_TOKENS,
+    TEXT_MAX_NEW_TOKENS,
+    VISION_CONTEXT_MAX_TOKENS,
+    VISION_MAX_NEW_TOKENS,
     ORGAN_NAMES,
     ORGAN_PROMPTS,
     CoreLoop,
     create_runtime_state,
 )
+import eve.core.loop as loop_module
 from eve.input.buffer import InputBuffer
 from eve.memory.memorizer import Memorizer
 
@@ -45,8 +54,8 @@ def test_fixed_prompt_is_first_edition_and_lists_only_organs():
     assert tuple(ORGAN_PROMPTS) == ORGAN_NAMES
     for name in ORGAN_NAMES:
         assert name in EVE_FIRST_EDITION_PROMPT
-    assert "没有图片输入时不得声称看见画面" in EVE_FIRST_EDITION_PROMPT
-    assert "Output 成功反馈之前" in EVE_FIRST_EDITION_PROMPT
+    assert "没有 Vision 或结构化视觉事实时" in EVE_FIRST_EDITION_PROMPT
+    assert "没有 Output 成功反馈时" in EVE_FIRST_EDITION_PROMPT
     assert set(EVE_FIRST_EDITION_FIELDS) == {
         "action_candidates", "active_tnn", "blackboard_updates",
         "goodness_records", "goodness_update", "memory_actions",
@@ -54,6 +63,11 @@ def test_fixed_prompt_is_first_edition_and_lists_only_organs():
         "thinking_summary", "training_proposal",
         "world_interpretation_update",
     }
+    assert (TEXT_CONTEXT_MAX_TOKENS, VISION_CONTEXT_MAX_TOKENS) == (4096, 4096)
+    assert REPAIR_CONTEXT_MAX_TOKENS == 1536
+    assert (TEXT_MAX_NEW_TOKENS, VISION_MAX_NEW_TOKENS, REPAIR_MAX_NEW_TOKENS) == (
+        256, 160, 192
+    )
 
 
 def test_first_edition_shape_rejects_version_and_bounds_organ_prompt(tmp_path):
@@ -67,13 +81,9 @@ def test_first_edition_shape_rejects_version_and_bounds_organ_prompt(tmp_path):
     )
     assert clean["prompt_request"] == "mouse"
     core._handle_prompt_request(request, "mouse")
-    continuation = core._llm_requests.get_nowait()
-    assert continuation["root_request_id"] == "task-1"
-    assert continuation["organ_prompt"] == ORGAN_PROMPTS["mouse"]
-    core._handle_prompt_request(request, "mouse")
     assert core._llm_requests.empty()
     assert core.state["blackboard"]["organ_prompt_rejected"]["value"]["reason"] == (
-        "duplicate_prompt_request"
+        "common_organ_schema_is_already_inline"
     )
     with pytest.raises(ValueError, match="unknown"):
         core._coerce_llm_result(
@@ -324,6 +334,7 @@ def test_text_only_uses_tokenizer_without_pixel_values(tmp_path, monkeypatch):
 
         def __call__(self, prompt, **_kwargs):
             seen["prompt"] = prompt
+            seen["tokenizer_kwargs"] = _kwargs
             return {"input_ids": tensor([[1, 2]]), "attention_mask": tensor([[1, 1]])}
 
         def decode(self, values, **_kwargs):
@@ -343,6 +354,7 @@ def test_text_only_uses_tokenizer_without_pixel_values(tmp_path, monkeypatch):
         def generate(self, **inputs):
             assert "pixel_values" not in inputs
             assert not any(name.startswith("image_") for name in inputs)
+            seen["max_new_tokens"] = inputs["max_new_tokens"]
             return tensor([[1, 2, 3]])
 
     torch = types.ModuleType("torch")
@@ -362,7 +374,147 @@ def test_text_only_uses_tokenizer_without_pixel_values(tmp_path, monkeypatch):
     core._qwen_model = Model()
     assert core._generate_text_only(
         [{"role": "user", "content": "hello"}],
-        max_new_tokens=4,
+        max_new_tokens=64,
         suppress_reasoning=True,
     ) == "ok"
     assert seen["prompt"] == "text prompt"
+    assert seen["tokenizer_kwargs"]["truncation"] is True
+    assert seen["tokenizer_kwargs"]["max_length"] == 4096
+    assert seen["max_new_tokens"] == 64
+
+
+def test_context_budget_drops_low_priority_sections_without_cutting_json(tmp_path):
+    class CharTokenizer:
+        def apply_chat_template(self, messages, **_kwargs):
+            return "\n".join(item["content"] for item in messages)
+
+        def __call__(self, prompt, **_kwargs):
+            return {"input_ids": list(range(len(prompt)))}
+
+    core = CoreLoop(
+        InputBuffer(), Memorizer(tmp_path / "memory"), log_dir=tmp_path,
+        trainer=object(),
+    )
+    context = {
+        "trigger_kind": "user",
+        "current_message_or_task": "KEEP-CURRENT-USER-MESSAGE",
+        "current_goal": "KEEP-CURRENT-GOAL",
+        "world_view": {"changes_this_turn": {"new": "fact"}},
+        "related_memory": [{"summary": "x" * 500} for _ in range(5)],
+        "recent_conversation": [{"reply": "y" * 500} for _ in range(6)],
+        "blackboard_view": [{"value": "z" * 500} for _ in range(10)],
+        "memory_views": {"stm_ids": ["m"] * 100},
+        "tnn_view": [{"purpose": "t" * 500} for _ in range(5)],
+    }
+    fitted = core._fit_context_to_token_budget(
+        CharTokenizer(), "system", context, 500
+    )
+    rendered = json.dumps(fitted, ensure_ascii=False)
+    assert "KEEP-CURRENT-USER-MESSAGE" in rendered
+    assert "KEEP-CURRENT-GOAL" in rendered
+    assert len(rendered) + len("system\n") <= 500
+    json.loads(rendered)
+
+
+def test_memory_context_uses_metadata_and_bounds_explicit_evidence(
+    tmp_path, monkeypatch
+):
+    memory = Memorizer(tmp_path / "memory")
+    ids = [
+        memory.create({"secret": str(index) * 4000}, "observation")
+        for index in range(7)
+    ]
+    core = CoreLoop(InputBuffer(), memory, log_dir=tmp_path, trainer=object())
+    reads = []
+    real_read = memory.read
+
+    def tracked_read(memory_id):
+        reads.append(memory_id)
+        return real_read(memory_id)
+
+    monkeypatch.setattr(memory, "read", tracked_read)
+    automatic = core._llm_context(
+        {"request_id": "auto", "kind": "user", "message": "current"}
+    )
+    assert reads == []
+    assert len(automatic["related_memory"]) == 5
+    assert all("payload" not in item for item in automatic["related_memory"])
+    explicit = core._llm_context(
+        {
+            "request_id": "evidence", "kind": "user", "message": "current",
+            "evidence_memory_ids": ids,
+        }
+    )
+    assert reads == ids[:3]
+    assert len(explicit["explicit_evidence"]) == 3
+    assert all(
+        len(json.dumps(item["payload"], ensure_ascii=False)) <= 1900
+        for item in explicit["explicit_evidence"]
+    )
+
+
+def test_vision_generation_enforces_input_and_output_budgets(tmp_path, monkeypatch):
+    seen = {}
+
+    class Tensor(np.ndarray):
+        def to(self, _device):
+            return self
+
+    def tensor(values):
+        return np.asarray(values).view(Tensor)
+
+    class Processor:
+        def apply_chat_template(self, _messages, **kwargs):
+            seen["template_kwargs"] = kwargs
+            return {"input_ids": tensor([[1] * 4096])}
+
+        def batch_decode(self, _values, **_kwargs):
+            return ['{"summary":"ok","verified_detections":[],"corrections":[]}']
+
+    class Parameter:
+        device = "cpu"
+
+    class Model:
+        def parameters(self):
+            return iter([Parameter()])
+
+        def generate(self, **inputs):
+            seen["generate_kwargs"] = inputs
+            return tensor([[1] * 4097])
+
+    torch = types.ModuleType("torch")
+    torch.inference_mode = nullcontext
+    transformers = types.ModuleType("transformers")
+    transformers.StoppingCriteria = object
+    transformers.StoppingCriteriaList = list
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    core = CoreLoop(
+        InputBuffer(), Memorizer(tmp_path / "memory"), log_dir=tmp_path,
+        trainer=object(),
+    )
+    core._qwen_processor = Processor()
+    core._qwen_model = Model()
+    result = core._generate_with_vision(
+        {
+            "image": np.zeros((4, 4, 4), dtype=np.uint8),
+            "prompt": "look",
+            "runtime_visual_result": None,
+        }
+    )
+    assert '"summary":"ok"' in result
+    assert seen["template_kwargs"]["enable_thinking"] is False
+    assert seen["template_kwargs"]["tokenizer_kwargs"] == {
+        "truncation": True, "max_length": 4096,
+    }
+    assert seen["generate_kwargs"]["max_new_tokens"] == 160
+    assert seen["generate_kwargs"]["do_sample"] is False
+
+
+def test_runtime_prompt_source_has_no_removed_protocol_or_continuation_prompts():
+    source = inspect.getsource(loop_module)
+    for removed in (
+        "observation_completion", "training_materialization", "tool_requests",
+        '"kind": "organ_prompt"', "perception_facts",
+    ):
+        assert removed not in source

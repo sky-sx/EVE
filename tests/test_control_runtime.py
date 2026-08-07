@@ -253,7 +253,9 @@ def test_llm_protocol_rejects_legacy_or_incomplete_shapes(tmp_path):
         )
 
 
-def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypatch):
+def test_autonomous_self_update_requires_event_and_cools_down_from_completion(
+    tmp_path, monkeypatch
+):
     calls = []
 
     def backend(context):
@@ -285,24 +287,33 @@ def test_autonomous_self_update_repeats_without_user_messages(tmp_path, monkeypa
         log_dir=tmp_path,
         local_llm_backend=backend,
     )
-    monkeypatch.setattr(core, "_autonomous_interval_s", lambda: 0.05)
     memory.start_writer()
     try:
         core.start()
+        time.sleep(0.35)
+        assert calls == []
+        core._mark_autonomous_event("new_world_fact")
+        wait_until(lambda: len(calls) == 1)
         wait_until(
-            lambda: state["model_status"]["local_llm"]["success_count"] >= 3
-        )
-        assert state["world"]["interpretation"]["update_count"] >= 3
-        assert state["myself"]["cognition"]["last_self_tick"] >= 3
-        assert state["model_status"]["local_llm"]["failure_count"] == 0
-        assert state["conversation"] == []
-        wait_until(
-            lambda: state["node_status"]
-            .get("self_update_loop", {})
-            .get("actual_hz", 0)
+            lambda: state["model_status"]["local_llm"][
+                "last_self_update_completed_ns"
+            ]
             > 0
         )
-        assert state["node_status"]["self_update_loop"]["actual_hz"] > 0
+        completed_ns = state["model_status"]["local_llm"][
+            "last_self_update_completed_ns"
+        ]
+        assert completed_ns > 0
+        core._mark_autonomous_event("another_fact")
+        time.sleep(0.35)
+        assert len(calls) == 1
+        assert state["model_status"]["local_llm"]["next_thinking_due_ns"] >= (
+            completed_ns + 30_000_000_000
+        )
+        assert state["world"]["interpretation"]["update_count"] == 1
+        assert state["myself"]["cognition"]["last_self_tick"] == 1
+        assert state["model_status"]["local_llm"]["failure_count"] == 0
+        assert state["conversation"] == []
         assert state["loop_graph"]["edges"]
         wait_until(
             lambda: '"channel": "llm_protocol_output"'
@@ -329,7 +340,7 @@ def test_real_llm_user_request_uses_protocol_v2(tmp_path, monkeypatch):
         "_generate_local_llm",
         lambda context: json.dumps(
             {
-                "reply": f"直接回复：{context['user_message']}",
+                    "reply": f"直接回复：{context['current_message_or_task']}",
                 "thinking_summary": "",
                 "world_interpretation_update": {},
                 "myself_cognition_update": {},

@@ -36,9 +36,6 @@ def protocol(**updates):
         "prompt_request": None,
     }
     actions = updates.pop("action_candidates", None)
-    updates.pop("tool_requests", None)
-    updates.pop("observation_completion", None)
-    updates.pop("training_materialization", None)
     value.update(updates)
     if actions is not None:
         value["action_candidates"] = [
@@ -137,19 +134,7 @@ def test_llm_vlm_tool_freezes_frame_and_continues_same_self_queue(tmp_path, monk
     def llm(context):
         calls.append(context)
         if context["trigger_kind"] == "user":
-            return protocol(
-                reply="正在查看",
-                tool_requests=[
-                    {
-                        "request_id": "vision-1",
-                        "tool": "visual_interpretation",
-                        "prompt": "identify visible object",
-                        "reason_summary": "visual facts are insufficient",
-                        "required_fields": ["objects"],
-                        "evidence_memory_ids": [],
-                    }
-                ],
-            )
+            return protocol(reply="正在查看", prompt_request="vision")
         return protocol()
 
     buffer = InputBuffer()
@@ -178,7 +163,7 @@ def test_llm_vlm_tool_freezes_frame_and_continues_same_self_queue(tmp_path, monk
         )
         wait_until(lambda: any(item["trigger_kind"] == "vlm_result" for item in calls))
         continuation = next(
-            item["continuation"] for item in calls
+            item["continuation_feedback"] for item in calls
             if item["trigger_kind"] == "vlm_result"
         )
         assert continuation["tool_request_id"] == "vision-1"
@@ -191,112 +176,99 @@ def test_llm_vlm_tool_freezes_frame_and_continues_same_self_queue(tmp_path, monk
         memory.stop_writer()
 
 
-def test_slow_action_observes_before_after_and_completes_valued_experience(
+def test_one_automatic_vision_call_per_root_task(tmp_path):
+    buffer = InputBuffer()
+    sample = frame(1)
+    buffer.store("screen", sample, timestamp_ns=sample.captured_at_ns)
+    state = create_runtime_state()
+    state["model_status"]["vlm"]["state"] = "ready"
+    memory = Memorizer(tmp_path / "memory")
+    core = CoreLoop(
+        buffer, memory, state=state, log_dir=tmp_path,
+        vlm_backend=lambda _request: {}, trainer=object(),
+    )
+    try:
+        core._queue_frozen_vlm_request(
+            request_id="first", prompt="look", origin="llm_tool",
+            root_task_id="root",
+        )
+        with pytest.raises(RuntimeError, match="Vision call limit"):
+            core._queue_frozen_vlm_request(
+                request_id="second", prompt="look again", origin="action_observation",
+                root_task_id="root",
+            )
+    finally:
+        memory.stop_writer()
+
+
+def test_action_observation_requires_real_execution_and_valid_before_frame(tmp_path):
+    state = create_runtime_state(output_mode="mock")
+    state["myself"]["current_task"] = "compare the visible result"
+    core = CoreLoop(
+        InputBuffer(), Memorizer(tmp_path / "memory"), state=state,
+        log_dir=tmp_path, trainer=object(),
+    )
+    action = {
+        "candidate_id": "candidate",
+        "reason_summary": "compare result",
+        "expected_observation": {"observation_delay_ms": 50},
+    }
+    before = {
+        "frame_id": 1,
+        "frame_timestamp_ns": time.monotonic_ns(),
+        "screen_memory_id": "screen-before",
+    }
+    core._schedule_action_observation(
+        action,
+        {"executed": False, "simulated": True},
+        before,
+        {},
+    )
+    assert core._observation_requests.empty()
+    assert state["pending_observations"] == {}
+
+    core._schedule_action_observation(
+        action,
+        {"executed": True, "simulated": False},
+        before,
+        {},
+    )
+    assert core._observation_requests.qsize() == 1
+    assert state["pending_observations"]["candidate"]["state"] == "waiting_after_frame"
+
+
+def test_failed_action_observation_does_not_queue_text_continuation(
     tmp_path, monkeypatch
 ):
-    calls = []
-
-    def llm(context):
-        calls.append(context)
-        if context["trigger_kind"] == "user":
-            return protocol(
-                reply="尝试点击",
-                action_candidates=[
-                    {
-                        "candidate_id": "click-1",
-                        "action_type": "mouse",
-                        "payload": {"action": "click", "button": "left", "x": 4, "y": 5},
-                        "reason_summary": "bounded slow attempt",
-                        "evidence_memory_ids": [],
-                        "valid_for_ms": 2000,
-                        "expected_observation": {
-                            "what_may_change": ["visible object"],
-                            "observation_delay_ms": 80,
-                        },
-                    }
-                ],
-            )
-        if context["trigger_kind"] == "action_observation":
-            bundle_id = context["continuation"]["observation_bundle_memory_id"]
-            return protocol(
-                goodness_records=[
-                    {
-                        "record_id": "observed-value-1",
-                        "target": {"kind": "memory", "id": bundle_id},
-                        "score": 0.4,
-                        "confidence": 0.7,
-                        "value_basis": {
-                            "value_version": "task-values-v1",
-                            "scope": {"task": "visible change"},
-                            "anchors": {"negative": -1, "neutral": 0, "positive": 1},
-                        },
-                        "method": {"type": "teacher_direct", "producer": "local_llm"},
-                        "facts": [{"name": "visible_change", "value": True}],
-                        "reason": "visible evidence changed",
-                        "evidence_memory_ids": [bundle_id],
-                    }
-                ],
-                observation_completion={
-                    "observation_bundle_memory_id": bundle_id,
-                    "inferred_facts": [
-                        {
-                            "name": "visible_object_changed",
-                            "value": True,
-                            "source": "self_observation",
-                            "source_id": bundle_id,
-                            "confidence": 0.8,
-                        }
-                    ],
-                    "goodness_record_ids": ["observed-value-1"],
-                },
-            )
-        return protocol()
-
-    buffer = InputBuffer()
-    before = frame(1)
-    buffer.store("screen", before, timestamp_ns=before.captured_at_ns)
     memory = Memorizer(tmp_path / "memory")
-    state = create_runtime_state(output_mode="mock")
-    state["permissions"]["mouse"]["move"] = True
-    state["permissions"]["mouse"]["left_click"] = True
     core = CoreLoop(
-        buffer,
-        memory,
-        state=state,
-        log_dir=tmp_path,
-        local_llm_backend=llm,
-        vlm_backend=lambda _request: {
-            "objects": [{"class": "changed", "bbox": [2, 2, 7, 7]}]
-        },
+        InputBuffer(), memory, log_dir=tmp_path,
+        trainer=object(),
     )
-    monkeypatch.setattr(core, "_maybe_enqueue_autonomous", lambda: None)
-    memory.start_writer()
     try:
-        core.start()
-        core.submit_user_message("try the visible task")
-        wait_until(lambda: isinstance(state.get("latest_output"), dict))
-        after = frame(2)
-        buffer.store("screen", after, timestamp_ns=after.captured_at_ns)
-        wait_until(lambda: bool(memory.search(payload_type="experience")))
-        memory.flush()
-        bundle_id, bundle = next(
-            (memory_id, memory.read(memory_id))
-            for memory_id in memory.search(payload_type="observation_bundle")
-            if (memory.read(memory_id) or {}).get("observation_bundle_version") == 1
+        continuations = []
+        monkeypatch.setattr(
+            core, "_queue_llm_continuation",
+            lambda **kwargs: continuations.append(kwargs),
         )
-        assert bundle["observation_bundle_version"] == 1
-        assert bundle["candidate_id"].startswith("llm:")
-        assert bundle["before"]["frame_id"] == 1
-        assert bundle["after"]["frame_id"] == 2
-        assert bundle["after"]["vlm_result_memory_id"]
-        experience = memory.read(memory.search(payload_type="experience")[-1])
-        assert experience["status"] == "valued"
-        assert experience["environment"]["source"] == "self_observed_environment"
-        assert "environment_event_id" not in experience["environment"]
-        assert experience["goodness_memory_ids"]
-        assert memory.search(payload_type="goodness_record")
+        core._finalize_action_observation(
+            {
+                "candidate_id": "candidate",
+                "before": {"frame_id": 1, "frame_timestamp_ns": 1},
+                "after": {"frame_id": 2, "frame_timestamp_ns": 2},
+                "result": {
+                    "action_id": "action", "started_at_ns": 1,
+                    "finished_at_ns": 2,
+                },
+                "memory_ids": {},
+            },
+            {
+                "status": "failed", "label_status": "failed",
+                "result_memory_id": None,
+            },
+        )
+        assert continuations == []
     finally:
-        core.stop()
         memory.stop_writer()
 
 
@@ -392,33 +364,6 @@ def test_training_proposal_is_stored_without_hidden_materialization_protocol(
         calls.append(context)
         if context["trigger_kind"] == "user":
             return protocol(reply="proposal", training_proposal=proposal)
-        if context["trigger_kind"] == "training_materialization":
-            attempt = context["materialization_attempt"]
-            source = "def broken(:\n" if attempt == 1 else ACTOR_SOURCE
-            return protocol(
-                training_materialization={
-                    "proposal_id": "proposal-1",
-                    "files": [{"relative_path": "actor/model.py", "content": source}],
-                    "qnn_files": [],
-                    "training_order": {
-                        "order_id": f"learn-order-{attempt}",
-                        "target_tnn_id": "learned-actor",
-                        "version": "v1",
-                        "training_data": sample_ids,
-                        "evaluation_data": sample_ids,
-                        "regression_data": sample_ids,
-                        "minimum_samples": 2,
-                        "batch_size": 2,
-                        "epochs": 1,
-                        "acceptance": {"min_goodness": 0.5, "min_regression_goodness": 0.5},
-                        "runtime": {
-                            "input_refs": {"features": "blackboard:features"},
-                            "run_frequency_hz": 2.0,
-                            "output_ttl_ns": 500000000,
-                        },
-                    },
-                }
-            )
         return protocol()
 
     trainer = Trainer(memory, workspace_root=tmp_path / "dock" / "workspace")
@@ -433,9 +378,7 @@ def test_training_proposal_is_stored_without_hidden_materialization_protocol(
         core.start()
         core.submit_user_message("learn this repeated operation")
         wait_until(lambda: bool(memory.search(payload_type="training_proposal")))
-        assert not [
-            item for item in calls if item["trigger_kind"] == "training_materialization"
-        ]
+        assert len(calls) == 1
         assert not state["loaded_tnn"]
         assert state["autonomy_status"]["training_proposal_status"] == "stored"
     finally:
@@ -502,26 +445,9 @@ def test_materialization_stage_is_not_part_of_first_edition_output(tmp_path, mon
             "acceptance": {"min_goodness": 0, "min_regression_goodness": 0},
         },
     }
-    attempts = []
-
     def llm(context):
         if context["trigger_kind"] == "user":
             return protocol(reply="proposal", training_proposal=proposal)
-        if context["trigger_kind"] == "training_materialization":
-            attempts.append(context["materialization_attempt"])
-            return protocol(
-                training_materialization={
-                    "proposal_id": "bounded-failure",
-                    "files": [
-                        {"relative_path": "actor/model.py", "content": "def broken(:\n"}
-                    ],
-                    "qnn_files": [],
-                    "training_order": {
-                        "order_id": f"never-{context['materialization_attempt']}",
-                        "target_tnn_id": "never-created",
-                    },
-                }
-            )
         return protocol()
 
     memory = Memorizer(tmp_path / "memory")
@@ -537,8 +463,6 @@ def test_materialization_stage_is_not_part_of_first_edition_output(tmp_path, mon
         core.submit_user_message("materialize with bounded correction")
         wait_until(lambda: bool(memory.search(payload_type="training_proposal")))
         memory.flush()
-        assert attempts == []
-        assert not memory.search(payload_type="training_materialization_failure")
         assert not state["training_orders"]
         assert not state["loaded_tnn"]
     finally:
