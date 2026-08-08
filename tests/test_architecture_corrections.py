@@ -201,7 +201,7 @@ def test_autonomous_dedup_and_user_priority(tmp_path):
     assert status["autonomous_pending"] is True
     user_id = core.submit_user_message("priority")
     assert core._llm_requests.get_nowait()["request_id"] == user_id
-    assert core._llm_requests.get_nowait()["kind"] == "autonomous"
+    assert core._llm_requests.get_nowait()["kind"] == "self_update"
     memory.stop_writer()
 
 
@@ -233,15 +233,15 @@ def test_shared_inference_lock_and_flags_recover_after_exception(tmp_path):
     worker.start()
     assert entered.wait(1)
     assert state["model_status"]["local_llm"]["llm_inflight"] is True
-    assert core._qwen_inference_lock.acquire(blocking=False) is False
+    assert core._local_llm_inference_lock.acquire(blocking=False) is False
     release.set()
     worker.join(2)
     assert not worker.is_alive()
     assert isinstance(errors[0], RuntimeError)
     assert state["model_status"]["local_llm"]["llm_inflight"] is False
     assert state["model_status"]["local_llm"]["repair_inflight"] is False
-    assert core._qwen_inference_lock.acquire(blocking=False) is True
-    core._qwen_inference_lock.release()
+    assert core._local_llm_inference_lock.acquire(blocking=False) is True
+    core._local_llm_inference_lock.release()
 
 
 def test_single_user_message_has_one_generation_no_repair_or_continuation(tmp_path):

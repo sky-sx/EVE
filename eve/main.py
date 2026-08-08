@@ -92,22 +92,24 @@ class EVEApplication:
         self.core.load_snapshot(self.state_dir / "state_snapshot.json")
         if profile == "control" and use_default_local_models:
             model_config = self.state["model_config"]
-            model_config["qwen_path"] = (
-                model_config.get("qwen_path") or DEFAULT_QWEN_PATH
-            )
+            restored_local = model_config.get("local_llm_path")
+            restored_vlm = model_config.get("vlm_path") or model_config.get("qwen_path")
             model_config["local_llm_path"] = (
-                model_config["qwen_path"]
+                DEFAULT_LOCAL_LLM_PATH
+                if not restored_local or restored_local == restored_vlm
+                else restored_local
             )
             model_config["vlm_path"] = (
-                model_config["qwen_path"]
+                model_config.get("vlm_path") or DEFAULT_VLM_PATH
             )
+            model_config["qwen_path"] = model_config["vlm_path"]
             model_config["yolo_model_path"] = (
                 model_config.get("yolo_model_path") or DEFAULT_YOLO_PATH
             )
             for name, path in (
-                ("qwen", model_config["qwen_path"]),
                 ("local_llm", model_config["local_llm_path"]),
                 ("vlm", model_config["vlm_path"]),
+                ("qwen", model_config["vlm_path"]),
                 ("yolo", model_config["yolo_model_path"]),
             ):
                 self.state["model_status"][name].update(
@@ -280,6 +282,48 @@ class EVEApplication:
         keyboard.reset_stop()
         speak.reset_stop()
         log_event(self.run_dir, "emergency_reset", source="gui")
+
+    # Formal application commands shared by GUI callbacks and tests/Codex.
+    def cold_start(self) -> None:
+        log_event(self.run_dir, "application_command", command="cold_start")
+        self.start(load_smoke_node=False)
+
+    def pause(self) -> None:
+        log_event(self.run_dir, "application_command", command="pause")
+        self.core.pause("application_pause")
+
+    def resume(self) -> None:
+        log_event(self.run_dir, "application_command", command="resume")
+        self.core.resume()
+
+    def normal_stop(self) -> None:
+        log_event(self.run_dir, "application_command", command="normal_stop")
+        self.exit_reason = "normal_stop"
+        self.stop()
+
+    def send_user_message(self, text: str) -> str:
+        log_event(self.run_dir, "application_command", command="send_user_message")
+        return self.core.submit_user_message(text)
+
+    def request_visual_update(self) -> str:
+        log_event(self.run_dir, "application_command", command="request_visual_update")
+        return self.core.submit_runtime_visual_analysis()
+
+    def request_vlm(self) -> str:
+        log_event(self.run_dir, "application_command", command="request_vlm")
+        return self.core.submit_visual_interpretation()
+
+    def load_tnn(self, tnn_id: str) -> None:
+        self.core.request_tnn_load(tnn_id)
+
+    def unload_tnn(self, tnn_id: str) -> None:
+        self.core.request_tnn_unload(tnn_id)
+
+    def activate_tnn(self, tnn_id: str) -> bool:
+        return self.core.activate_tnn(tnn_id)
+
+    def pause_tnn(self, tnn_id: str) -> bool:
+        return self.core.pause_tnn(tnn_id)
 
     def change_permission(
         self, group: str, name: str | None, enabled: bool
@@ -692,8 +736,10 @@ class EVEControlWindow:
                 self.visual_result = self._readonly(qt, 170)
                 self.vlm_visual_result = self._readonly(qt, 130)
                 analyze = qt["QPushButton"]("YOLO/TNN 分析当前帧")
+                analyze.setObjectName("vision_request_button")
                 analyze.clicked.connect(self._request_visual)
                 vlm = qt["QPushButton"]("VLM 解释当前帧")
+                vlm.setObjectName("vlm_request_button")
                 vlm.clicked.connect(self._request_vlm_interpretation)
                 right.addWidget(self.visual_metrics)
                 right.addWidget(analyze)
@@ -717,6 +763,7 @@ class EVEControlWindow:
                 self.message_input.setPlaceholderText("输入给本地 LLM 的消息")
                 self.message_input.returnPressed.connect(self._send_message)
                 send = qt["QPushButton"]("发送")
+                send.setObjectName("send_message_button")
                 send.clicked.connect(self._send_message)
                 cancel = qt["QPushButton"]("停止当前生成")
                 cancel.clicked.connect(
@@ -776,15 +823,16 @@ class EVEControlWindow:
                 layout = qt["QVBoxLayout"](page)
                 row = qt["QHBoxLayout"]()
                 buttons = (
-                    ("冷启动", self._cold_start),
-                    ("暂停", lambda: self.application.core.pause("gui_pause")),
-                    ("恢复", self._resume),
-                    ("正常停机", self._normal_stop),
-                    ("急停", lambda: self._emergency("gui_button")),
-                    ("显式解除急停", self._clear_emergency),
+                    ("冷启动", "cold_start_button", self._cold_start),
+                    ("暂停", "pause_button", self.application.pause),
+                    ("恢复", "resume_button", self._resume),
+                    ("正常停机", "normal_stop_button", self._normal_stop),
+                    ("急停", "emergency_button", lambda: self._emergency("gui_button")),
+                    ("显式解除急停", "clear_emergency_button", self._clear_emergency),
                 )
-                for label, callback in buttons:
+                for label, object_name, callback in buttons:
                     button = qt["QPushButton"](label)
+                    button.setObjectName(object_name)
                     button.clicked.connect(callback)
                     row.addWidget(button)
                 layout.addLayout(row)
@@ -890,7 +938,7 @@ class EVEControlWindow:
                 layout = qt["QVBoxLayout"](page)
                 form = qt["QFormLayout"]()
                 config = self.application.state["model_config"]
-                self.local_path = qt["QLineEdit"](config["qwen_path"])
+                self.local_path = qt["QLineEdit"](config["local_llm_path"])
                 self.vlm_path = qt["QLineEdit"](config["vlm_path"])
                 self.yolo_path = qt["QLineEdit"](config["yolo_model_path"])
                 self.cloud_url = qt["QLineEdit"](config["cloud_base_url"])
@@ -901,7 +949,8 @@ class EVEControlWindow:
                 )
                 self.cloud_enabled = qt["QCheckBox"]()
                 self.cloud_enabled.setChecked(bool(config["cloud_enabled"]))
-                form.addRow("共享 Qwen 路径（文本与视觉，强制 4-bit NF4）", self.local_path)
+                form.addRow("本地语言 LLM 路径（统一语言认知）", self.local_path)
+                form.addRow("VLM 路径（视觉理解扩展）", self.vlm_path)
                 form.addRow("YOLO 运行时视觉路径", self.yolo_path)
                 form.addRow("云端 base_url", self.cloud_url)
                 form.addRow("云端 model", self.cloud_model)
@@ -983,18 +1032,17 @@ class EVEControlWindow:
                         return
                     self.application = self.application_factory()
                 self._run_operation(
-                    lambda: self.application.start(load_smoke_node=False)
+                    self.application.cold_start
                 )
 
             def _normal_stop(self) -> None:
                 if not self.application.has_active_runtime():
                     return
-                self.application.exit_reason = "gui_normal_stop"
-                self._run_operation(self.application.stop)
+                self._run_operation(self.application.normal_stop)
 
             def _resume(self) -> None:
                 try:
-                    self.application.core.resume()
+                    self.application.resume()
                 except Exception as exc:
                     self._background_error = str(exc)
 
@@ -1009,20 +1057,20 @@ class EVEControlWindow:
                 if not text:
                     return
                 try:
-                    self.application.core.submit_user_message(text)
+                    self.application.send_user_message(text)
                     self.message_input.clear()
                 except Exception as exc:
                     self._background_error = str(exc)
 
             def _request_visual(self) -> None:
                 try:
-                    self.application.core.submit_runtime_visual_analysis()
+                    self.application.request_visual_update()
                 except Exception as exc:
                     self._background_error = str(exc)
 
             def _request_vlm_interpretation(self) -> None:
                 try:
-                    self.application.core.submit_visual_interpretation()
+                    self.application.request_vlm()
                 except Exception as exc:
                     self._background_error = str(exc)
 
@@ -1043,9 +1091,8 @@ class EVEControlWindow:
                 try:
                     self.application.core.configure_models(
                         {
-                            "qwen_path": self.local_path.text().strip(),
                             "local_llm_path": self.local_path.text().strip(),
-                            "vlm_path": self.local_path.text().strip(),
+                            "vlm_path": self.vlm_path.text().strip(),
                             "yolo_model_path": self.yolo_path.text().strip(),
                             "cloud_base_url": self.cloud_url.text().strip(),
                             "cloud_model": self.cloud_model.text().strip(),
@@ -1090,23 +1137,23 @@ class EVEControlWindow:
                 if not tnn_id:
                     return
                 try:
-                    self.application.core.request_tnn_load(tnn_id)
+                    self.application.load_tnn(tnn_id)
                 except Exception as exc:
                     self._background_error = str(exc)
 
             def _unload_tnn(self) -> None:
                 tnn_id = self.tnn_id_input.text().strip()
                 if tnn_id:
-                    self.application.core.request_tnn_unload(tnn_id)
+                    self.application.unload_tnn(tnn_id)
 
             def _activate_tnn(self) -> None:
                 tnn_id = self.tnn_id_input.text().strip()
-                if tnn_id and not self.application.core.activate_tnn(tnn_id):
+                if tnn_id and not self.application.activate_tnn(tnn_id):
                     self._background_error = "TNN 激活失败；请查看 TNN 错误"
 
             def _pause_tnn(self) -> None:
                 tnn_id = self.tnn_id_input.text().strip()
-                if tnn_id and not self.application.core.pause_tnn(tnn_id):
+                if tnn_id and not self.application.pause_tnn(tnn_id):
                     self._background_error = "TNN 暂停失败；请查看 TNN 错误"
 
             def refresh(self) -> None:
@@ -1247,11 +1294,12 @@ class EVEControlWindow:
                     f"CC={cuda.get('compute_capability', '未验证')} | "
                     f"torch CUDA={cuda.get('torch_cuda_version', '未验证')} | "
                     f"tensor test={cuda.get('tensor_test_passed', '未验证')}\n"
-                    f"Qwen resource={state['model_status']['qwen'].get('state')} | "
-                    f"quantization={state['model_status']['qwen'].get('quantization')} | "
-                    f"verified_4bit={state['model_status']['qwen'].get('is_loaded_in_4bit', False)} | "
-                    f"Linear4bit={state['model_status']['qwen'].get('linear4bit_count', 0)} | "
-                    "shared_by=self_update_loop,vlm_tool"
+                    f"local LLM={state['model_status']['local_llm'].get('state')} | "
+                    f"path={state['model_config'].get('local_llm_path')}\n"
+                    f"VLM={state['model_status']['vlm'].get('state')} | "
+                    f"path={state['model_config'].get('vlm_path')} | "
+                    f"quantization={state['model_status']['vlm'].get('quantization')} | "
+                    f"verified_4bit={state['model_status']['vlm'].get('is_loaded_in_4bit', False)}"
                 )
                 required = [
                     "capture", "buffer", "core", "self_update_loop", "vlm_tool", "yolo",

@@ -29,6 +29,7 @@ TEXT_CONTEXT_MAX_TOKENS = 4096
 VISION_CONTEXT_MAX_TOKENS = 4096
 REPAIR_CONTEXT_MAX_TOKENS = 1536
 TEXT_MAX_NEW_TOKENS = 256
+MATERIALIZATION_MAX_NEW_TOKENS = 2048
 VISION_MAX_NEW_TOKENS = 160
 REPAIR_MAX_NEW_TOKENS = 192
 MAX_AUTOMATIC_MEMORIES = 5
@@ -45,9 +46,7 @@ MAX_OBSERVATION_DELAY_MS = 3_000
 VLM_TOOL_COOLDOWN_NS = 1_000_000_000
 CORE_MODEL_DIR = Path(__file__).resolve().parent
 DEFAULT_QWEN_PATH = str(CORE_MODEL_DIR / "qwen")
-# Transitional public names point at the same physical Qwen weights.  Runtime
-# loading is canonicalized through qwen_path and never loads DeepSeek.
-DEFAULT_LOCAL_LLM_PATH = DEFAULT_QWEN_PATH
+DEFAULT_LOCAL_LLM_PATH = str(CORE_MODEL_DIR / "deepseek-7b")
 DEFAULT_VLM_PATH = DEFAULT_QWEN_PATH
 DEFAULT_YOLO_PATH = str(CORE_MODEL_DIR / "yolo26" / "weights" / "yolo26n.pt")
 MOUSE_ATOMS = (
@@ -80,8 +79,9 @@ thinking_summary 只能是简短、可见的 self 更新摘要。没有 Vision �
 
 只输出一个紧凑 JSON 对象，顶层字段必须且只能是：{fields}。
 只写本轮新增、改变或需要执行的内容，不复述完整 World、Memory 或 Blackboard；与本轮无关的
-对象和数组必须为空。没有用户回复时 reply 可为空；没有训练需求时 training_proposal 必须为
-null；没有动作时 action_candidates 必须为 []；不得因缺少新事件自行制造任务。
+对象和数组必须为空。active_tnn 是例外：null 表示保持现状，数组表示显式设置完整活动集合。
+没有用户回复时 reply 可为空；没有训练需求时 training_proposal 必须为 null；没有动作时
+action_candidates 必须为 []；不得因缺少新事件自行制造任务。
 
 World.perception 由代码持有，你只能通过 world_interpretation_update 更新 interpretation、
 uncertainty 或 task_state。reply 只显示在 GUI，不会自动触发 speak。常用器官格式已在下方给出，
@@ -94,7 +94,7 @@ ORGAN_PROMPTS = {
     "speak": "action_candidates: action_type=speak; payload.text is required; reply alone does not speak.",
     "vision": "prompt_request=vision freezes one frame; one automatic Vision call per root task; do not repeat it.",
     "memory": "memory_actions.action=create/load_to_mtm/unload_from_mtm/persist_to_ltm/remove_from_ltm/delete/create_event.",
-    "dock": "training_proposal is only a bounded proposal; Dock is not an Agent and no materialization prompt is available.",
+    "dock": "training_proposal describes a repeated workload; the same LLM may materialize it into checked model.py and TrainingOrder, while Dock only validates and trains.",
 }
 EVE_FIRST_EDITION_PROMPT += "\n\n器官短表：\n" + "\n".join(
     f"- {name}: {schema}" for name, schema in ORGAN_PROMPTS.items()
@@ -104,6 +104,14 @@ REPAIR_SYSTEM_PROMPT = (
     "plan, request Vision, create actions, or add training proposals. The top-level "
     "fields must be exactly: " + ", ".join(EVE_FIRST_EDITION_FIELDS)
 )
+MATERIALIZATION_SYSTEM_PROMPT = """You are the same EVE language LLM continuing an accepted
+training proposal. Materialize one bounded TinyNN; do not create another Agent. Return only JSON
+with exactly proposal_id, teacher_prompt, files, qnn_files, and training_order. files must contain
+exactly actor/model.py. qnn_files is empty unless a temporary training-only QNN is necessary.
+Generated Python may only use torch, torch.nn, torch.optim, math, typing, dataclasses, and
+eve.dock.tinynn. The Actor must implement TinyNN and expose create_tnn(). training_order must match
+eve.dock.trainer.TrainingOrder, include target_tnn_id, data selection, acceptance criteria, runtime,
+and must not include model_path or model_memory_id because Dock supplies the checked path."""
 _NAMED_KEYS = {
     "ENTER", "SPACE", "TAB", "BACKSPACE", "DELETE", "HOME", "END",
     "PAGEUP", "PAGEDOWN", "UP", "DOWN", "LEFT", "RIGHT", "SHIFT",
@@ -202,6 +210,15 @@ def _normalize_key(value: Any) -> str:
         return key
     upper = key.upper()
     return _KEY_ALIASES.get(upper, _KEY_ALIASES.get(key, upper))
+
+
+def _merge_patch(target: dict[str, Any], patch: dict[str, Any]) -> None:
+    """Apply an incremental state patch; omitted keys are preserved."""
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge_patch(target[key], value)
+        else:
+            target[key] = value
 
 
 def _required_permissions(action: dict[str, Any]) -> list[str]:
@@ -368,6 +385,10 @@ def create_runtime_state(
         },
         "myself": {
             "current_task": "",
+            "current_understanding": "",
+            "current_uncertainties": [],
+            "current_focus": [],
+            "current_intention": "",
             "what_im_thinking": "",
             "cognition": {
                 "current_understanding": "",
@@ -1212,13 +1233,16 @@ class CoreLoop:
         )
         self._tnn_futures: dict[str, Future[dict[str, Any]]] = {}
         self._model_threads: list[threading.Thread] = []
-        self._qwen_model: Any = None
-        self._qwen_processor: Any = None
+        self._local_llm_model: Any = None
+        self._local_llm_tokenizer: Any = None
+        self._vlm_model: Any = None
+        self._vlm_processor: Any = None
         self._yolo_detector: Any = None
         self._yolo_force_event = threading.Event()
         self._yolo_load_started = threading.Event()
         self._model_load_lock = threading.Lock()
-        self._qwen_inference_lock = threading.Lock()
+        self._local_llm_inference_lock = threading.Lock()
+        self._vlm_inference_lock = threading.Lock()
         self._request_serial = 0
         self._last_autonomous_ns = 0
         self._thread: threading.Thread | None = None
@@ -1256,20 +1280,11 @@ class CoreLoop:
         if unknown:
             raise ValueError(f"unknown model config: {sorted(unknown)}")
         self.state["model_config"].update(config)
-        qwen_path = str(
-            config.get("qwen_path")
-            or config.get("local_llm_path")
-            or config.get("vlm_path")
-            or self.state["model_config"].get("qwen_path", "")
-        )
-        if qwen_path:
-            self.state["model_config"].update(
-                {
-                    "qwen_path": qwen_path,
-                    "local_llm_path": qwen_path,
-                    "vlm_path": qwen_path,
-                }
-            )
+        # qwen_path remains a compatibility mirror for the visual model only.
+        if "vlm_path" in config:
+            self.state["model_config"]["qwen_path"] = str(config["vlm_path"])
+        elif "qwen_path" in config and "vlm_path" not in config:
+            self.state["model_config"]["vlm_path"] = str(config["qwen_path"])
 
     def submit_user_message(self, message: str) -> str:
         if not self.state["cold_started"]:
@@ -1480,7 +1495,7 @@ class CoreLoop:
         if (
             self.state["output_mode"] == "mock"
             and self.vlm_backend is None
-            and self._qwen_model is None
+            and self._vlm_model is None
         ):
             raise RuntimeError("mock mode does not load a real VLM for action observation")
         if frame is None:
@@ -2410,8 +2425,10 @@ class CoreLoop:
                     break
                 if isinstance(pending, dict):
                     pending.pop("image", None)
-        self._qwen_model = None
-        self._qwen_processor = None
+        self._local_llm_model = None
+        self._local_llm_tokenizer = None
+        self._vlm_model = None
+        self._vlm_processor = None
         self._yolo_detector = None
         llm_status = self.state["model_status"]["local_llm"]
         llm_status.update(
@@ -2826,6 +2843,9 @@ class CoreLoop:
                     action_template=runtime.get("action_template"),
                 )
                 record["state"] = "load_queued"
+                self.state["autonomy_status"]["materialization_status"] = (
+                    "trained_and_load_queued"
+                )
             except Exception as exc:
                 record["state"] = "load_failed"
                 record["error"] = f"{type(exc).__name__}: {exc}"
@@ -2837,7 +2857,7 @@ class CoreLoop:
         status = self.state["model_status"]["local_llm"]
         try:
             if self.local_llm_backend is None:
-                path = self.state["model_config"].get("qwen_path", "")
+                path = self.state["model_config"].get("local_llm_path", "")
                 if path:
                     with self._model_load_lock:
                         self._load_local_llm(path)
@@ -2852,9 +2872,6 @@ class CoreLoop:
                         "device": "injected",
                         "quantization": "test_backend",
                     }
-                )
-                self.state["model_status"]["qwen"].update(
-                    {"state": "ready", "mode": "text-only", "device": "injected"}
                 )
             while not self._model_stop.is_set():
                 try:
@@ -2918,9 +2935,52 @@ class CoreLoop:
             self._record_error("local_llm", exc, critical=False)
 
     def _load_local_llm(self, path: str) -> None:
-        self._load_qwen(path)
-        self.state["model_status"]["local_llm"].update(
-            self.state["model_status"]["qwen"]
+        """Load the independent text-only cognition model."""
+        if self._local_llm_model is not None and self._local_llm_tokenizer is not None:
+            return
+        import torch
+        import transformers
+        from transformers import AutoTokenizer, BitsAndBytesConfig
+
+        model_path = Path(path).expanduser()
+        if not model_path.exists():
+            raise FileNotFoundError(f"local LLM path does not exist: {model_path}")
+        model_class = getattr(transformers, "AutoModelForCausalLM", None)
+        if model_class is None:
+            raise RuntimeError("installed transformers has no causal language model loader")
+        status = self.state["model_status"]["local_llm"]
+        status.update({"state": "loading", "path": str(model_path), "role": "unified_language_cognition"})
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(model_path), local_files_only=True, trust_remote_code=True
+        )
+        load_options: dict[str, Any] = {
+            "local_files_only": True,
+            "trust_remote_code": True,
+        }
+        if torch.cuda.is_available():
+            load_options.update(
+                {
+                    "device_map": "auto",
+                    "quantization_config": BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                    ),
+                }
+            )
+        model = model_class.from_pretrained(str(model_path), **load_options)
+        self._local_llm_tokenizer = tokenizer
+        self._local_llm_model = model
+        device = str(next(model.parameters()).device)
+        status.update(
+            {
+                "state": "ready",
+                "device": device,
+                "model": str(model_path),
+                "quantization": "4bit-nf4" if torch.cuda.is_available() else "native-cpu",
+                "error": None,
+            }
         )
 
     @staticmethod
@@ -2935,16 +2995,16 @@ class CoreLoop:
             "total": int(total),
         }
 
-    def _load_qwen(self, path: str) -> None:
-        """Load the sole multimodal Qwen instance used by text and vision."""
-        if self._qwen_model is not None and self._qwen_processor is not None:
+    def _load_vlm_model(self, path: str) -> None:
+        """Load the independent multimodal model used only for visual interpretation."""
+        if self._vlm_model is not None and self._vlm_processor is not None:
             return
         import torch
         import transformers
         from transformers import AutoProcessor, BitsAndBytesConfig
 
         model_path = Path(
-            self.state["model_config"].get("qwen_path") or path
+            self.state["model_config"].get("vlm_path") or path
         ).expanduser()
         if not model_path.exists():
             raise FileNotFoundError(f"Qwen path does not exist: {model_path}")
@@ -3000,8 +3060,8 @@ class CoreLoop:
         device_map = dict(getattr(model, "hf_device_map", {}) or {})
         parameter_devices = sorted({str(parameter.device) for parameter in model.parameters()})
         after = self._cuda_vram_snapshot(torch)
-        self._qwen_processor = processor
-        self._qwen_model = model
+        self._vlm_processor = processor
+        self._vlm_model = model
         status.update(
             {
                 "state": "ready",
@@ -3018,7 +3078,6 @@ class CoreLoop:
                 "error": None,
             }
         )
-        self.state["model_status"]["local_llm"].update(status)
         self.state["model_status"]["vlm"].update(status)
 
     @staticmethod
@@ -3043,7 +3102,6 @@ class CoreLoop:
             or status.get("repair_inflight")
             or status.get("autonomous_pending")
             or not self._llm_requests.empty()
-            or not status.get("autonomous_event_pending")
         ):
             return
         if status.get("state") != "ready":
@@ -3052,17 +3110,23 @@ class CoreLoop:
         interval_s = self._autonomous_interval_s()
         status["autonomous_interval_s"] = interval_s
         completed_ns = int(status.get("last_self_update_completed_ns", 0))
+        reference_ns = completed_ns or self._started_at_ns
         status["next_thinking_due_ns"] = int(
-            completed_ns + interval_s * 1_000_000_000
+            reference_ns + interval_s * 1_000_000_000
         )
-        if completed_ns and now_ns - completed_ns < interval_s * 1_000_000_000:
+        periodic_due = now_ns - reference_ns >= interval_s * 1_000_000_000
+        event_pending = bool(status.get("autonomous_event_pending"))
+        event_due = event_pending and (
+            not completed_ns or now_ns - completed_ns >= 250_000_000
+        )
+        if not periodic_due and not event_due:
             return
         request_id = f"autonomous_{time.time_ns()}"
         try:
             self._llm_requests.put_nowait(
                 {
                     "request_id": request_id,
-                    "kind": "autonomous",
+                    "kind": "self_update",
                     "message": "进行一次自主的 LLM-based self update。",
                     "requested_at_ns": now_ns,
                     "memory_id": None,
@@ -3080,6 +3144,7 @@ class CoreLoop:
                 {
                     "request_id": request_id,
                     "interval_s": interval_s,
+                    "trigger": "event" if event_due else "periodic",
                     "queue_depth": self._llm_requests.qsize(),
                 },
             )
@@ -3092,7 +3157,7 @@ class CoreLoop:
         configured = self.state["model_config"].get(
             "autonomous_interval_s", DEFAULT_AUTONOMOUS_INTERVAL_S
         )
-        return max(30.0, float(configured))
+        return max(0.1, float(configured))
 
     def _mark_autonomous_event(self, reason: str) -> None:
         status = self.state["model_status"]["local_llm"]
@@ -3106,7 +3171,6 @@ class CoreLoop:
         if status.get("state") not in {"ready", "queued", "schema_blocked"}:
             raise RuntimeError(status.get("error") or "local LLM is not ready")
         started_ns = time.monotonic_ns()
-        self.state["model_status"]["qwen"]["mode"] = "text-only"
         status.update(
             {
                 "state": "running",
@@ -3117,6 +3181,18 @@ class CoreLoop:
         )
         status["attempt_count"] = int(status.get("attempt_count", 0)) + 1
         status["last_trigger_kind"] = request["kind"]
+        if request.get("kind") == "training_materialization":
+            self._process_training_materialization(request)
+            finished_ns = time.monotonic_ns()
+            status.update(
+                {
+                    "state": "ready",
+                    "finished_at_ns": finished_ns,
+                    "last_request_state": "completed",
+                    "last_request_error": None,
+                }
+            )
+            return
         context = self._llm_context(request)
         raw = self._invoke_local_llm(context)
         if self._cancel_generation.is_set():
@@ -3240,6 +3316,94 @@ class CoreLoop:
         status["success_count"] = int(status.get("success_count", 0)) + 1
         status["last_error"] = None
 
+    def _process_training_materialization(self, request: dict[str, Any]) -> None:
+        proposal = request.get("proposal")
+        if not isinstance(proposal, dict):
+            raise TypeError("materialization request requires a proposal")
+        proposal_id = str(proposal.get("proposal_id", ""))
+        attempt = int(request.get("attempt", 1))
+        context = {
+            "request_kind": "training_materialization",
+            "proposal": self._prompt_safe_value(proposal),
+            "proposal_memory_id": request.get("proposal_memory_id"),
+            "attempt": attempt,
+            "previous_error": str(request.get("previous_error", ""))[:1000],
+            "current_self": self._prompt_safe_value(self.state["myself"]),
+            "instruction": "Materialize the proposal now using the exact schema in the system prompt.",
+        }
+        try:
+            raw = self._invoke_local_llm(context)
+            value = raw if isinstance(raw, dict) else self._parse_model_json(str(raw))
+            required = {"proposal_id", "teacher_prompt", "files", "qnn_files", "training_order"}
+            if set(value) != required:
+                raise ValueError("training materialization fields do not match the required schema")
+            if str(value["proposal_id"]) != proposal_id:
+                raise ValueError("materialization proposal_id does not match")
+            if not isinstance(value["teacher_prompt"], str):
+                raise TypeError("teacher_prompt must be text")
+            order_payload = value["training_order"]
+            if not isinstance(order_payload, dict):
+                raise TypeError("training_order must be an object")
+            order_payload = dict(order_payload)
+            order_payload.pop("model_path", None)
+            order_payload.pop("model_memory_id", None)
+            order_payload.setdefault("order_id", f"train_{proposal_id}_{attempt}")
+            order_payload.setdefault("target_tnn_id", str(proposal["target_tnn"]["tnn_id"]))
+            order_payload.setdefault("task_id", str(self.state["myself"].get("current_task", "")))
+            evidence = proposal.get("evidence", {})
+            order_payload.setdefault("training_data", list(evidence.get("experience_memory_ids", [])))
+            order_payload.setdefault("goodness_data", list(evidence.get("goodness_memory_ids", [])))
+            value = {**value, "training_order": order_payload}
+            order, source_report = self.trainer.materialize_training(value, attempt=attempt)
+            teacher_memory_id = self.memorizer.create(
+                {
+                    "proposal_id": proposal_id,
+                    "teacher_prompt": value["teacher_prompt"],
+                },
+                "teacher_prompt",
+            )
+            order_id = self.submit_training_order(order)
+            report = {
+                **source_report,
+                "teacher_prompt_memory_id": teacher_memory_id,
+                "training_order_id": order_id,
+                "status": "queued",
+            }
+            self.state["autonomy_status"].update(
+                {
+                    "materialization_status": "queued",
+                    "materialization_attempt": attempt,
+                    "latest_source_check": report,
+                }
+            )
+            self.state["blackboard"]["latest_materialization"] = _timed(
+                report, time.monotonic_ns(), producer="local_llm"
+            )
+            self.memorizer.enqueue(report, "training_materialization", priority="critical")
+            debug_log(self.log_dir, "training_materialization_queued", report)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            self.state["autonomy_status"].update(
+                {"materialization_status": "failed", "materialization_attempt": attempt}
+            )
+            debug_log(
+                self.log_dir,
+                "training_materialization_failed",
+                {"proposal_id": proposal_id, "attempt": attempt, "error": error},
+            )
+            if attempt < 2:
+                retry = dict(request)
+                retry.update(
+                    {
+                        "request_id": f"materialize_{proposal_id}_{time.time_ns()}",
+                        "attempt": attempt + 1,
+                        "previous_error": error,
+                    }
+                )
+                self._llm_requests.put_nowait(retry)
+                self.state["autonomy_status"]["materialization_status"] = "retry_queued"
+                return
+            raise
     @staticmethod
     def _prompt_safe_value(value: Any, *, depth: int = 0) -> Any:
         if value is None or isinstance(value, (bool, int, float)):
@@ -3312,6 +3476,53 @@ class CoreLoop:
                     "payload": safe_payload,
                 }
             )
+        return rows
+
+    def _recalled_memories(self, request: dict[str, Any]) -> list[dict[str, Any]]:
+        """Retrieve a few relevant memories and include their bounded payloads."""
+        myself = self.state["myself"]
+        query_values = [
+            request.get("message", ""),
+            myself.get("current_task", ""),
+            myself.get("current_understanding", ""),
+            myself.get("current_focus", []),
+            myself.get("current_uncertainties", []),
+        ]
+        query_text = json.dumps(query_values, ensure_ascii=False, default=repr).casefold()
+        terms = {
+            item for item in re.findall(r"[\w\u4e00-\u9fff]{2,}", query_text)
+            if item not in {"null", "true", "false"}
+        }
+        candidate_ids = list(dict.fromkeys([
+            *list(self.memorizer.stm)[-50:],
+            *sorted(self.memorizer.mtm)[-50:],
+            *sorted(self.memorizer.ltm)[-50:],
+        ]))
+        ranked: list[tuple[float, int, str]] = []
+        for memory_id in candidate_ids:
+            payload = self.memorizer.read(memory_id)
+            if payload is None:
+                continue
+            encoded = json.dumps(
+                self._prompt_safe_value(payload), ensure_ascii=False, default=repr
+            ).casefold()
+            score = float(sum(1 for term in terms if term in encoded))
+            record = self.memorizer.get_record(memory_id)
+            created_at = int(record.created_at_ns) if record else 0
+            if score > 0:
+                ranked.append((score, created_at, memory_id))
+        if not ranked:
+            ranked = [
+                (0.0, int(self.memorizer.get_record(mid).created_at_ns), mid)
+                for mid in candidate_ids[-2:]
+                if self.memorizer.get_record(mid) is not None
+            ]
+        ordered = sorted(ranked, reverse=True)
+        selected = [item[2] for item in ordered[:MAX_AUTOMATIC_MEMORIES]]
+        relevance_by_id = {memory_id: score for score, _, memory_id in ordered}
+        rows = self._explicit_evidence(selected)
+        for row in rows:
+            row["relevance"] = relevance_by_id.get(row["memory_id"], 0.0)
         return rows
 
     def _compact_permissions(self) -> dict[str, Any]:
@@ -3391,14 +3602,10 @@ class CoreLoop:
                 request.get("memory_id"),
                 *explicit_ids,
             ]
-        automatic_ids = [
-            memory_id for memory_id in self.memorizer.stm
-            if memory_id not in set(str(item) for item in explicit_ids if item)
-        ][-MAX_AUTOMATIC_MEMORIES:]
+        related_memory = self._recalled_memories(request)
+        explicit_set = {str(item) for item in explicit_ids if item}
         related_memory = [
-            row for row in (
-                self._memory_metadata(memory_id) for memory_id in automatic_ids
-            ) if row is not None
+            row for row in related_memory if row["memory_id"] not in explicit_set
         ]
         explicit_evidence = self._explicit_evidence(explicit_ids)
         recent_conversation = [
@@ -3463,6 +3670,18 @@ class CoreLoop:
             },
             "self_view": {
                 "current_goal": self.state["myself"].get("current_task", ""),
+                "current_task": self.state["myself"].get("current_task", ""),
+                "current_understanding": self.state["myself"].get("current_understanding", ""),
+                "current_uncertainties": self._prompt_safe_value(
+                    self.state["myself"].get("current_uncertainties", [])
+                ),
+                "current_focus": self._prompt_safe_value(
+                    self.state["myself"].get("current_focus", [])
+                ),
+                "current_intention": self.state["myself"].get("current_intention", ""),
+                "cognition": self._prompt_safe_value(
+                    self.state["myself"].get("cognition", {})
+                ),
                 "thinking_summary": self.state["myself"].get("what_im_thinking", ""),
                 "tendencies": self._prompt_safe_value(
                     self.state["myself"].get("tendencies", {})
@@ -3531,7 +3750,7 @@ class CoreLoop:
                 "goodness_update": "object",
                 "goodness_records": "array",
                 "blackboard_updates": "array",
-                "active_tnn": "array",
+                "active_tnn": "array|null (null preserves current active set)",
                 "memory_actions": "array",
                 "training_proposal": "object|null",
                 "prompt_request": "string|null",
@@ -3546,7 +3765,7 @@ class CoreLoop:
         self, context: dict[str, Any], *, repair: bool = False
     ) -> Any:
         status = self.state["model_status"]["local_llm"]
-        with self._qwen_inference_lock:
+        with self._local_llm_inference_lock:
             status["llm_inflight"] = True
             status["repair_inflight"] = bool(repair)
             try:
@@ -3559,15 +3778,27 @@ class CoreLoop:
 
     def _generate_local_llm(self, context: dict[str, Any]) -> str:
         repair = context.get("request_kind") == "schema_repair"
-        system = REPAIR_SYSTEM_PROMPT if repair else EVE_FIRST_EDITION_PROMPT
+        materialization = context.get("request_kind") == "training_materialization"
+        system = (
+            REPAIR_SYSTEM_PROMPT
+            if repair
+            else MATERIALIZATION_SYSTEM_PROMPT
+            if materialization
+            else EVE_FIRST_EDITION_PROMPT
+        )
         context_budget = (
             REPAIR_CONTEXT_MAX_TOKENS if repair else TEXT_CONTEXT_MAX_TOKENS
         )
-        max_new_tokens = REPAIR_MAX_NEW_TOKENS if repair else TEXT_MAX_NEW_TOKENS
-        processor = self._qwen_processor
-        if processor is None:
-            raise RuntimeError("Qwen is not loaded")
-        tokenizer = getattr(processor, "tokenizer", processor)
+        max_new_tokens = (
+            REPAIR_MAX_NEW_TOKENS
+            if repair
+            else MATERIALIZATION_MAX_NEW_TOKENS
+            if materialization
+            else TEXT_MAX_NEW_TOKENS
+        )
+        tokenizer = self._local_llm_tokenizer
+        if tokenizer is None:
+            raise RuntimeError("local language model is not loaded")
         fitted = self._fit_context_to_token_budget(
             tokenizer, system, context, context_budget
         )
@@ -3660,7 +3891,7 @@ class CoreLoop:
             if fits():
                 return candidate
         raise ValueError(
-            f"high-priority Qwen context exceeds the {budget}-token budget"
+            f"high-priority language-model context exceeds the {budget}-token budget"
         )
 
     def _generate_text_only(
@@ -3681,12 +3912,10 @@ class CoreLoop:
                 del input_ids, scores, kwargs
                 return cancel_event.is_set()
 
-        processor = self._qwen_processor
-        model = self._qwen_model
-        if processor is None or model is None:
-            raise RuntimeError("Qwen is not loaded")
-        tokenizer = getattr(processor, "tokenizer", processor)
-        self.state["model_status"]["qwen"]["mode"] = "text-only"
+        tokenizer = self._local_llm_tokenizer
+        model = self._local_llm_model
+        if tokenizer is None or model is None:
+            raise RuntimeError("local language model is not loaded")
         prompt = self._render_chat_prompt(tokenizer, messages)
         del suppress_reasoning
         inputs = output = generated = None
@@ -3703,7 +3932,7 @@ class CoreLoop:
                 str(name).startswith(("image_", "video_")) for name in inputs
             ):
                 raise RuntimeError(
-                    "text-only Qwen input unexpectedly contains vision tensors"
+                    "text-only language-model input unexpectedly contains vision tensors"
                 )
             device = next(model.parameters()).device
             inputs = {name: value.to(device) for name, value in inputs.items()}
@@ -4201,10 +4430,10 @@ class CoreLoop:
             )
 
         active_tnn = value["active_tnn"]
-        if not isinstance(active_tnn, list):
-            raise TypeError("active_tnn must be an array")
-        desired = [str(item) for item in active_tnn]
-        if (
+        if active_tnn is not None and not isinstance(active_tnn, list):
+            raise TypeError("active_tnn must be an array or null")
+        desired = None if active_tnn is None else [str(item) for item in active_tnn]
+        if desired is not None and (
             len(set(desired)) > MAX_LOADED_TNN
             or set(desired) - set(self.state["loaded_tnn"])
         ):
@@ -4241,7 +4470,12 @@ class CoreLoop:
     def _apply_llm_result(
         self, request: dict[str, Any], result: dict[str, Any]
     ) -> None:
-        desired = {str(item) for item in result["active_tnn"]}
+        active_tnn_update = result["active_tnn"]
+        desired = (
+            None
+            if active_tnn_update is None
+            else {str(item) for item in active_tnn_update}
+        )
         now_ns = time.monotonic_ns()
         world_update = result["world_interpretation_update"]
         cognition_update = result["myself_cognition_update"]
@@ -4281,8 +4515,14 @@ class CoreLoop:
         with self.state["_state_lock"]:
             for section, value in world_update.items():
                 if isinstance(value, dict):
-                    self.state["world"][section] = dict(value)
-            self.state["myself"]["cognition"].update(cognition_update)
+                    _merge_patch(self.state["world"][section], value)
+            _merge_patch(self.state["myself"]["cognition"], cognition_update)
+            for key in (
+                "current_task", "current_understanding", "current_uncertainties",
+                "current_focus", "current_intention",
+            ):
+                if key in cognition_update:
+                    self.state["myself"][key] = cognition_update[key]
             self.state["myself"]["what_im_thinking"] = str(
                 result["thinking_summary"]
             )[:1000]
@@ -4303,7 +4543,7 @@ class CoreLoop:
                 self.state["blackboard"][update["key"]] = _timed(
                     update.get("value"), now_ns, update["ttl_ns"], "local_llm"
                 )
-            if not self.set_active_tnn(desired):
+            if desired is not None and not self.set_active_tnn(desired):
                 raise ValueError("active_tnn update rejected")
             if request["kind"] == "user":
                 self.state["conversation"].append(exchange)
@@ -4317,6 +4557,16 @@ class CoreLoop:
             self.state["model_status"]["local_llm"]["last_summary"] = str(
                 result["thinking_summary"]
             )[:1000]
+        debug_log(
+            self.log_dir,
+            "runtime_state_patch",
+            {
+                "request_id": request["request_id"],
+                "world_patch": world_update,
+                "self_patch": cognition_update,
+                "active_tnn_patch": active_tnn_update,
+            },
+        )
         reply_id = self.memorizer.enqueue(
             exchange,
             (
@@ -4372,7 +4622,29 @@ class CoreLoop:
                 now_ns,
                 producer="local_llm",
             )
-            self.state["autonomy_status"]["training_proposal_status"] = "stored"
+            self.state["autonomy_status"].update(
+                {
+                    "training_proposal_status": "materialization_queued",
+                    "materialization_status": "queued",
+                    "materialization_attempt": 1,
+                }
+            )
+            self._llm_requests.put_nowait(
+                {
+                    "request_id": f"materialize_{proposal['proposal_id']}_{time.time_ns()}",
+                    "kind": "training_materialization",
+                    "message": "继续将已确认的训练提案物化为具体 TNN。",
+                    "requested_at_ns": time.monotonic_ns(),
+                    "proposal_memory_id": proposal_id,
+                    "proposal": proposal,
+                    "attempt": 1,
+                }
+            )
+            debug_log(
+                self.log_dir,
+                "training_proposal_materialization_queued",
+                {"proposal_id": proposal["proposal_id"], "memory_id": proposal_id},
+            )
         for candidate in result.get("action_candidates", []):
             self._accept_llm_action_candidate(candidate, request)
         prompt_request = result.get("prompt_request")
@@ -4632,7 +4904,7 @@ class CoreLoop:
         status = self.state["model_status"]["vlm"]
         try:
             if self.vlm_backend is None:
-                path = self.state["model_config"].get("qwen_path", "")
+                path = self.state["model_config"].get("vlm_path", "")
                 if path:
                     status.update(
                         {
@@ -4663,15 +4935,15 @@ class CoreLoop:
                     return
                 self._cancel_vlm.clear()
                 try:
-                    if self.vlm_backend is None and self._qwen_model is None:
-                        path = self.state["model_config"].get("qwen_path", "")
+                    if self.vlm_backend is None and self._vlm_model is None:
+                        path = self.state["model_config"].get("vlm_path", "")
                         with self._model_load_lock:
                             self._load_vlm(path)
                     self._process_vlm_request(request)
                 except Exception as exc:
                     self._publish_vlm_failure(request, exc)
                     reusable = (
-                        self._qwen_model is not None
+                        self._vlm_model is not None
                         or self.vlm_backend is not None
                     )
                     status.update(
@@ -4704,10 +4976,7 @@ class CoreLoop:
             self._record_error("vlm", exc, critical=False)
 
     def _load_vlm(self, path: str) -> None:
-        self._load_qwen(path)
-        self.state["model_status"]["vlm"].update(
-            self.state["model_status"]["qwen"]
-        )
+        self._load_vlm_model(path)
 
     def _process_vlm_request(self, request: dict[str, Any]) -> None:
         status = self.state["model_status"]["vlm"]
@@ -4717,7 +4986,7 @@ class CoreLoop:
         self.state["model_status"]["qwen"]["mode"] = "vision"
         status.update({"state": "running", "started_at_ns": started_ns})
         llm_status = self.state["model_status"]["local_llm"]
-        with self._qwen_inference_lock:
+        with self._vlm_inference_lock:
             llm_status["llm_inflight"] = True
             try:
                 if self.vlm_backend is not None:
@@ -4875,8 +5144,8 @@ class CoreLoop:
                 return cancel_event.is_set()
 
         image = request["image"]
-        processor = self._qwen_processor
-        model = self._qwen_model
+        processor = self._vlm_processor
+        model = self._vlm_model
         if processor is None or model is None:
             raise RuntimeError("Qwen is not loaded")
         self.state["model_status"]["qwen"]["mode"] = "vision"
@@ -6033,19 +6302,8 @@ class CoreLoop:
             ),
         }
         resources["models"] = {
-            "Qwen": {
-                "state": self.state["model_status"]["qwen"].get("state"),
-                "quantization": self.state["model_status"]["qwen"].get(
-                    "quantization"
-                ),
-                "is_loaded_in_4bit": self.state["model_status"]["qwen"].get(
-                    "is_loaded_in_4bit", False
-                ),
-                "linear4bit_count": self.state["model_status"]["qwen"].get(
-                    "linear4bit_count", 0
-                ),
-                "shared_by": ["self_update_loop", "vlm_tool"],
-            },
+            "local_llm": dict(self.state["model_status"]["local_llm"]),
+            "vlm": dict(self.state["model_status"]["vlm"]),
             "YOLO": dict(self.state["model_status"]["yolo"]),
         }
         self.state["node_status"]["capture"] = {
@@ -6168,7 +6426,7 @@ class CoreLoop:
             "run_count": int(llm_status.get("success_count", 0)),
             "failure_count": int(llm_status.get("failure_count", 0)),
             "last_error": llm_status.get("last_error"),
-            "bound_resource": "Qwen",
+            "bound_resource": "local_llm",
         }
         self.state["node_status"]["tnn_scheduler"] = {
             "state": "running" if self.running else "stopped",
@@ -6210,7 +6468,7 @@ class CoreLoop:
             "actual_hz": int(self.state["runtime_stats"].get("vlm_calls", 0)) / elapsed_s,
             "queue_size": self._vlm_requests.qsize(),
             "last_error": vlm_status.get("last_request_error"),
-            "bound_resource": "Qwen",
+            "bound_resource": "vlm",
         }
         self.state["node_status"]["action_observation"] = {
             "state": "running" if self.running else "stopped",

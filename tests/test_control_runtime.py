@@ -56,7 +56,7 @@ def test_local_models_have_repo_defaults_and_old_snapshot_is_rejected(
     assert runtime.state["model_config"]["local_llm_path"] == (
         DEFAULT_LOCAL_LLM_PATH
     )
-    assert runtime.state["model_config"]["qwen_path"] == DEFAULT_LOCAL_LLM_PATH
+    assert runtime.state["model_config"]["qwen_path"] == DEFAULT_VLM_PATH
     assert runtime.state["model_config"]["vlm_path"] == DEFAULT_VLM_PATH
     assert runtime.state["model_config"]["yolo_model_path"] == DEFAULT_YOLO_PATH
     assert runtime.state["model_status"]["local_llm"]["state"] == "configured"
@@ -121,6 +121,9 @@ def test_control_gui_has_eight_pages_and_does_not_cold_start(
     assert window.tnn_table.columnCount() == 16
     assert window.loop_graph_view is not None
     assert "debug.jsonl" in window.debug_log_path.text()
+    assert window.findChild(qt["QPushButton"], "cold_start_button") is not None
+    assert window.findChild(qt["QPushButton"], "send_message_button") is not None
+    assert window.findChild(qt["QPushButton"], "vision_request_button") is not None
     window._set_stable_text(
         window.world_view, "\n".join(f"line {index}" for index in range(200))
     )
@@ -154,6 +157,44 @@ def test_control_gui_has_eight_pages_and_does_not_cold_start(
 
     window.close()
     gui.processEvents()
+
+
+def test_qtest_cold_start_uses_same_application_command_as_direct_call(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr("eve.main._global_escape_pressed", lambda: False)
+    from PySide6.QtTest import QTest
+
+    qt = _load_qt()
+    gui = qt["QApplication"].instance() or qt["QApplication"]([])
+    clicked = EVEApplication(
+        profile="control", run_dir=tmp_path / "clicked",
+        memory_dir=tmp_path / "clicked_memory", input_buffer=synthetic_buffer(),
+        use_default_local_models=False,
+    )
+    direct = EVEApplication(
+        profile="control", run_dir=tmp_path / "direct",
+        memory_dir=tmp_path / "direct_memory", input_buffer=synthetic_buffer(),
+        use_default_local_models=False,
+    )
+    window = EVEControlWindow.create(clicked)
+    window.show()
+    try:
+        button = window.findChild(qt["QPushButton"], "cold_start_button")
+        QTest.mouseClick(button, qt["Qt"].MouseButton.LeftButton)
+        wait_until(lambda: clicked.running)
+        direct.cold_start()
+        assert clicked.state["lifecycle"]["state"] == direct.state["lifecycle"]["state"]
+        assert clicked.state["loop_status"]["core"] == direct.state["loop_status"]["core"]
+        assert clicked.buffer.capture_running == direct.buffer.capture_running
+    finally:
+        if direct.has_active_runtime():
+            direct.normal_stop()
+        if clicked.has_active_runtime():
+            clicked.normal_stop()
+        window.close()
+        gui.processEvents()
 
 
 def test_control_cold_start_pause_emergency_reset_and_clean_stop(
@@ -253,7 +294,7 @@ def test_llm_protocol_rejects_legacy_or_incomplete_shapes(tmp_path):
         )
 
 
-def test_autonomous_self_update_requires_event_and_cools_down_from_completion(
+def test_self_update_event_can_wake_before_periodic_deadline(
     tmp_path, monkeypatch
 ):
     calls = []
@@ -306,12 +347,10 @@ def test_autonomous_self_update_requires_event_and_cools_down_from_completion(
         assert completed_ns > 0
         core._mark_autonomous_event("another_fact")
         time.sleep(0.35)
-        assert len(calls) == 1
-        assert state["model_status"]["local_llm"]["next_thinking_due_ns"] >= (
-            completed_ns + 30_000_000_000
-        )
-        assert state["world"]["interpretation"]["update_count"] == 1
-        assert state["myself"]["cognition"]["last_self_tick"] == 1
+        assert len(calls) == 2
+        assert state["model_status"]["local_llm"]["next_thinking_due_ns"] >= completed_ns
+        assert state["world"]["interpretation"]["update_count"] == 2
+        assert state["myself"]["cognition"]["last_self_tick"] == 2
         assert state["model_status"]["local_llm"]["failure_count"] == 0
         assert state["conversation"] == []
         assert state["loop_graph"]["edges"]

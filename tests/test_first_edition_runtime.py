@@ -199,7 +199,7 @@ def test_body_candidate_is_rejected_when_permission_is_closed(tmp_path):
     assert "action_id" not in results[0]
 
 
-def test_qwen_loader_creates_one_shared_model_and_processor(tmp_path, monkeypatch):
+def test_vlm_loader_is_independent_and_4bit(tmp_path, monkeypatch):
     calls = {"processor": 0, "model": 0}
 
     class Cuda:
@@ -275,19 +275,19 @@ def test_qwen_loader_creates_one_shared_model_and_processor(tmp_path, monkeypatc
         InputBuffer(), Memorizer(tmp_path / "memory"), log_dir=tmp_path,
         trainer=object(),
     )
-    core.state["model_config"]["qwen_path"] = str(qwen_path)
-    core._load_local_llm(str(qwen_path))
-    model = core._qwen_model
-    processor = core._qwen_processor
+    core.state["model_config"]["vlm_path"] = str(qwen_path)
     core._load_vlm(str(qwen_path))
+    model = core._vlm_model
+    processor = core._vlm_processor
 
     assert calls["processor"] == 1
     assert calls["model"] == 1
     assert calls["quantization"]["load_in_4bit"] is True
     assert calls["quantization"]["bnb_4bit_quant_type"] == "nf4"
     assert calls["quantization"]["bnb_4bit_use_double_quant"] is True
-    assert core._qwen_model is model
-    assert core._qwen_processor is processor
+    assert core._vlm_model is model
+    assert core._vlm_processor is processor
+    assert core._local_llm_model is None
     assert core.state["model_status"]["qwen"]["hf_device_map"] == {
         "model": "cuda:0"
     }
@@ -370,8 +370,8 @@ def test_text_only_uses_tokenizer_without_pixel_values(tmp_path, monkeypatch):
         InputBuffer(), Memorizer(tmp_path / "memory"), log_dir=tmp_path,
         trainer=object(),
     )
-    core._qwen_processor = Processor()
-    core._qwen_model = Model()
+    core._local_llm_tokenizer = Tokenizer()
+    core._local_llm_model = Model()
     assert core._generate_text_only(
         [{"role": "user", "content": "hello"}],
         max_new_tokens=64,
@@ -416,7 +416,7 @@ def test_context_budget_drops_low_priority_sections_without_cutting_json(tmp_pat
     json.loads(rendered)
 
 
-def test_memory_context_uses_metadata_and_bounds_explicit_evidence(
+def test_memory_context_reads_bounded_payloads_for_recall_and_explicit_evidence(
     tmp_path, monkeypatch
 ):
     memory = Memorizer(tmp_path / "memory")
@@ -436,16 +436,17 @@ def test_memory_context_uses_metadata_and_bounds_explicit_evidence(
     automatic = core._llm_context(
         {"request_id": "auto", "kind": "user", "message": "current"}
     )
-    assert reads == []
-    assert len(automatic["related_memory"]) == 5
-    assert all("payload" not in item for item in automatic["related_memory"])
+    assert 1 <= len(automatic["related_memory"]) <= 5
+    assert reads
+    assert all("payload" in item for item in automatic["related_memory"])
+    reads.clear()
     explicit = core._llm_context(
         {
             "request_id": "evidence", "kind": "user", "message": "current",
             "evidence_memory_ids": ids,
         }
     )
-    assert reads == ids[:3]
+    assert set(ids[:3]) <= set(reads)
     assert len(explicit["explicit_evidence"]) == 3
     assert all(
         len(json.dumps(item["payload"], ensure_ascii=False)) <= 1900
@@ -493,8 +494,8 @@ def test_vision_generation_enforces_input_and_output_budgets(tmp_path, monkeypat
         InputBuffer(), Memorizer(tmp_path / "memory"), log_dir=tmp_path,
         trainer=object(),
     )
-    core._qwen_processor = Processor()
-    core._qwen_model = Model()
+    core._vlm_processor = Processor()
+    core._vlm_model = Model()
     result = core._generate_with_vision(
         {
             "image": np.zeros((4, 4, 4), dtype=np.uint8),
@@ -514,7 +515,7 @@ def test_vision_generation_enforces_input_and_output_budgets(tmp_path, monkeypat
 def test_runtime_prompt_source_has_no_removed_protocol_or_continuation_prompts():
     source = inspect.getsource(loop_module)
     for removed in (
-        "observation_completion", "training_materialization", "tool_requests",
+        "observation_completion", "tool_requests",
         '"kind": "organ_prompt"', "perception_facts",
     ):
         assert removed not in source

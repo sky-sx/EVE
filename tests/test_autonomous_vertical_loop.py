@@ -319,7 +319,7 @@ def test_blocked_llm_candidate_has_no_executed_action_id(tmp_path, monkeypatch):
         memory.stop_writer()
 
 
-def test_training_proposal_is_stored_without_hidden_materialization_protocol(
+def test_training_proposal_is_materialized_by_same_llm_and_sent_to_dock(
     tmp_path, monkeypatch
 ):
     memory = Memorizer(tmp_path / "memory")
@@ -362,8 +362,32 @@ def test_training_proposal_is_stored_without_hidden_materialization_protocol(
 
     def llm(context):
         calls.append(context)
-        if context["trigger_kind"] == "user":
+        if context.get("trigger_kind") == "user":
             return protocol(reply="proposal", training_proposal=proposal)
+        if context.get("request_kind") == "training_materialization":
+            return {
+                "proposal_id": "proposal-1",
+                "teacher_prompt": "distill the recorded visible-state mapping",
+                "files": [{"relative_path": "actor/model.py", "content": ACTOR_SOURCE}],
+                "qnn_files": [],
+                "training_order": {
+                    "order_id": "auto-order",
+                    "target_tnn_id": "learned-actor",
+                    "training_data": sample_ids,
+                    "evaluation_data": sample_ids,
+                    "regression_data": sample_ids,
+                    "minimum_samples": 1,
+                    "epochs": 1,
+                    "acceptance": {
+                        "min_goodness": 0.5,
+                        "min_regression_goodness": 0.5,
+                    },
+                    "runtime": {
+                        "input_refs": {"features": "blackboard:features"},
+                        "run_frequency_hz": 2.0,
+                    },
+                },
+            }
         return protocol()
 
     trainer = Trainer(memory, workspace_root=tmp_path / "dock" / "workspace")
@@ -377,10 +401,13 @@ def test_training_proposal_is_stored_without_hidden_materialization_protocol(
     try:
         core.start()
         core.submit_user_message("learn this repeated operation")
-        wait_until(lambda: bool(memory.search(payload_type="training_proposal")))
-        assert len(calls) == 1
-        assert not state["loaded_tnn"]
-        assert state["autonomy_status"]["training_proposal_status"] == "stored"
+        wait_until(lambda: bool(state["training_orders"]))
+        wait_until(lambda: "learned-actor" in state["loaded_tnn"])
+        assert len(calls) == 2
+        assert state["autonomy_status"]["training_proposal_status"] == "materialization_queued"
+        assert state["autonomy_status"]["materialization_status"] == "trained_and_load_queued"
+        assert "learned-actor" in state["active_tnn"]
+        assert memory.search(payload_type="teacher_prompt")
     finally:
         core.stop()
         memory.stop_writer()
