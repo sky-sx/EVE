@@ -1,0 +1,78 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.deps/
+.test-tmp/
+*.egg-info/
+
+# Python / build / local tools
+*.py[cod]
+.venv*/
+venv/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+build/
+dist/
+.cache/
+cache/
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+
+# Secrets: only sanitized example configuration is publishable
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Model artifacts and checkpoints (publish a report instead)
+models/
+weights/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.gguf
+*.ggml
+*.h5
+*.hdf5
+
+# Raw / bulk data. Keep reviewed small samples in samples/ instead.
+data/
+datasets/
+raw/
+raw_data/
+raw_logs/
+artifacts/
+outputs/
+logs/
+*.log
+*.log.*
+*.jsonl
+*.ndjson
+*.parquet
+*.arrow
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# Ignore run contents, but allow one reviewed small key log.
+# Ignore children rather than runs/ itself so the exception works.
+/runs/*
+!/runs/latest.log
+
+# Explicit sample exceptions, when needed, go here as exact file paths.
+# Example (uncomment only after review): !/samples/controls.jsonl
+# Gitignore does not enforce size/count limits or untrack existing files.
