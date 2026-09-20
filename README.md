@@ -8,6 +8,7 @@
 
 | 内容 | 对应报告 | 当前报告状态 |
 |---|---|---|
+| ACNT Stage Zero 实验验证 | [正式实验报告](reports/stage_zero_report.md) | 五 seeds 已完成；NOT SUPPORTED |
 | 模型权重与 checkpoint | [模型产物报告](reports/model_artifacts_report.md) | 模板，待填写核验结果 |
 | 大数据集与原始数据 | [数据集摘要报告](reports/dataset_summary_report.md) | 模板，待填写核验结果 |
 | 批量、历史与原始日志 | [日志摘要报告](reports/logs_summary_report.md) | 模板，待填写核验结果 |
@@ -39,7 +40,7 @@ Phase 1–15 已完成。当时全套 **146 项测试通过**；独立命令行 
 
 本次四项最小修复后，完整 `pytest -q` 为 **153 passed**；新增验证内部 VJP、快照传播、ReadIn 脉冲及 sigmoid 校准。
 
-**未运行 Stage 0**，未接真实键鼠执行、声音合成或正式训练数据。
+**Stage Zero 已完成正式五 seed 实验**：每 seed 1,080 次训练、270 次初始化测评、270 次冻结测评。严格 exact-match 奖励在全部阶段为零，结论 **NOT SUPPORTED**；这表示当前实验未观察到映射学习。最新完整测试 **208 passed**，无跳过或失败。未接真实键鼠执行或声音合成，正式 Runtime 数学和版本保持不变。详见 [完整报告](reports/stage_zero_report.md)、[预检记录](reports/stage_zero_preflight.md) 和 [实验协议](experiments/stage_zero/DESIGN.md)。
 
 架构依据为 docs/canonical_architecture.txt、任务 docs/implementation_task.md，以及优先级更高的后续用户澄清 docs/clarifications.md。逐阶段文件、公式和测试记录见 docs/phase_report.md。
 
@@ -53,7 +54,7 @@ python -m pytest -q
 python -m acnt --steps 12 --log-file runs/demo/mechanical.jsonl --summary-file runs/demo/summary.json
 ```
 
-当前机器实际使用 Python 3.12.14、PyTorch 2.13.0+cpu、pytest 9.1.1。在 D:\EVE\EVE0.6 执行：
+Phase 1–15 的历史验收环境为 Python 3.12.14、PyTorch 2.13.0+cpu、pytest 9.1.1。Stage Zero 正式运行使用 Python 3.11.9、PyTorch 2.10.0+cu130、RTX 5080 / CUDA 13.0。以下保留历史命令。在 D:\EVE\EVE0.6 执行：
 
 ```powershell
 $env:PYTHONPATH = 'D:\EVE\EVE_0_5\.testdeps'
@@ -70,6 +71,16 @@ $acntPython = 'C:\Users\12633\.cache\codex-runtimes\codex-primary-runtime\depend
 - mechanical.jsonl：四类 ReadOut 完整机械日志。
 - ticks.jsonl：逐步状态和训练标量诊断。
 
+## Stage Zero 复现
+
+```powershell
+python -m experiments.stage_zero --output runs/stage_zero/reproduction --device cuda --seeds 11 22 33 44 55 --train-episodes 1080 --evaluation-episodes 270 --window 270
+python -m experiments.stage_zero.audit runs/stage_zero/reproduction
+```
+
+输出目录必须不存在。无 CUDA 时可用 `--device cpu`；短 smoke 使用一个 seed、27 次训练和 27 次测评。
+正式原始 CSV/JSON/checkpoint 保存在本地 `runs/stage_zero/formal-20260920/`，不会作为 bulk 数据上传；报告保留全部 seed、27 类结果及失败分析。
+
 ## 代码
 
 | 文件 | 职责 |
@@ -83,8 +94,9 @@ $acntPython = 'C:\Users\12633\.cache\codex-runtimes\codex-primary-runtime\depend
 | acnt/hand.py | 明确的 82 键 mock 布局、鼠标名称、训练器日志筛选 |
 | acnt/mechanical.py | 内存及 JSONL 日志 |
 | acnt/__main__.py | mock runtime 与命令行入口 |
+| experiments/stage_zero/ | 独立 Stage Zero driver、环境、测评、原始日志审计；不调用 Runtime.step |
 
-所有计算使用 FP32，当前验收为 CPU。Block 无 batch 维；Adapter 单体支持单样本或一个 batch 维，接 Core 时只接受单样本。LN 使用非仿射 population variance，epsilon=1e-5。
+所有计算使用 FP32；早期验收为 CPU，Stage Zero 已完成 CPU/CUDA smoke 与 CUDA 正式实验。Block 无 batch 维；Adapter 单体支持单样本或一个 batch 维，接 Core 时只接受单样本。LN 使用非仿射 population variance，epsilon=1e-5。
 
 A/At 从旧到新存储并共同淘汰，递推从新到旧，W_c[idx] 使用当前队列索引。每次 h 从零开始，最新项 delta_t=0、gamma=0.5。按用户修订，gamma=sigmoid((delta_t_ms/1000)/ticktime)，ticktime 为正数秒。
 
