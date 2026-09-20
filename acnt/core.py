@@ -1,6 +1,6 @@
-"""Small sequential Block scheduler; no organ or adapter behavior."""
+"""Snapshot-based Block scheduler; no organ or adapter behavior."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from time import monotonic_ns
 from torch import Tensor, nn
 
@@ -10,8 +10,8 @@ from .block import Block
 class Core(nn.Module):
     """An existing Block stays in this collection even while inactive.
 
-    Updates are sequential: a later Block reads an earlier Block's new z.
-    A self-edge always reads z from before that Block's current update.
+    Every update in one step reads the same committed source snapshot,
+    including self-edges. New states are visible in the next step.
     """
 
     def __init__(self, blocks: Sequence[Block]) -> None:
@@ -64,7 +64,11 @@ class Core(nn.Module):
             raise ValueError("time must not move backwards")
         return elapsed_ms / 1000.0 >= block.ticktime
 
-    def update_block(self, block_id: int, *, now_ms: int | None = None, force: bool = False, track_grad: bool = False) -> Tensor:
+    def source_snapshot(self) -> dict[int, Tensor]:
+        """Detached old states, captured once for the whole scheduling event."""
+        return {block.block_id: block.z.detach().clone() for block in self.blocks if block.active}
+
+    def update_block(self, block_id: int, *, now_ms: int | None = None, force: bool = False, track_grad: bool = False, source_snapshot: Mapping[int, Tensor] | None = None) -> Tensor:
         """Update a due active Block; ReadIn may later force one early update."""
         self._check_id(block_id)
         block = self.blocks[block_id]
@@ -72,8 +76,12 @@ class Core(nn.Module):
         due = self.is_due(block_id, check_ms)
         if not block.active or (not force and not due):
             return block.z
-        active_z = {block.block_id: block.z for block in self.blocks if block.active}
-        return block.update(now_ms=now_ms, active_z=active_z, track_grad=track_grad)
+        active_z = self.source_snapshot() if source_snapshot is None else source_snapshot
+        output = block.update(now_ms=now_ms, active_z=active_z, track_grad=track_grad)
+        if block.o is not None:
+            # Replace the buffer, leaving the current local graph intact for VJP.
+            block.o = block.o.new_zeros(block.o.shape)
+        return output
 
     def step(self, *, now_ms: int | None = None, order: Sequence[int] | None = None) -> dict[int, Tensor]:
         """Visit all Blocks, or an explicit subset/order for asynchronous runs.
@@ -88,4 +96,5 @@ class Core(nn.Module):
             raise ValueError("a Block may appear only once per step")
         check_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
         due_ids = [i for i in ids if self.blocks[i].active and self.is_due(i, check_ms)]
-        return {i: self.update_block(i, now_ms=now_ms) for i in due_ids}
+        sources = self.source_snapshot()
+        return {i: self.update_block(i, now_ms=now_ms, source_snapshot=sources) for i in due_ids}

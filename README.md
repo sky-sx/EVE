@@ -35,7 +35,9 @@
 
 ## 当前实现状态
 
-Phase 1–15 已完成。全套 **146 项测试通过**；独立命令行 mock 验收连续运行 **64 步**，生成 256 条机械日志，16 次同刻 mock teacher，产生 31 种 active 集合。参数保持有限值，88 个参数张量发生变化。这里只验证执行链，不证明学习有效。
+Phase 1–15 已完成。当时全套 **146 项测试通过**；独立命令行 mock 验收连续运行 **64 步**，生成 256 条机械日志，16 次同刻 mock teacher，产生 31 种 active 集合。参数保持有限值，88 个参数张量发生变化。这里只验证执行链，不证明学习有效。
+
+本次四项最小修复后，完整 `pytest -q` 为 **153 passed**；新增验证内部 VJP、快照传播、ReadIn 脉冲及 sigmoid 校准。
 
 **未运行 Stage 0**，未接真实键鼠执行、声音合成或正式训练数据。
 
@@ -86,7 +88,7 @@ $acntPython = 'C:\Users\12633\.cache\codex-runtimes\codex-primary-runtime\depend
 
 A/At 从旧到新存储并共同淘汰，递推从新到旧，W_c[idx] 使用当前队列索引。每次 h 从零开始，最新项 delta_t=0、gamma=0.5。按用户修订，gamma=sigmoid((delta_t_ms/1000)/ticktime)，ticktime 为正数秒。
 
-Core 只更新到期且 active 的 Block。self-edge 读取更新前 z；顺序更新后继读取前继新 z。inactive 保留状态和历史，不参加当前输入求和。新 ReadIn 可无视 route 和未到期调度，强制对应 Block 在当前轮激活并更新一次，轮末恢复原 active。
+Core 只更新到期且 active 的 Block。每轮所有 due/forced Block（含 self-edge）读取同一轮前 committed z 快照，新 z 下一传播轮才可见。inactive 保留状态和历史，不参加当前输入求和。新 ReadIn 可无视 route 和未到期调度，强制对应 Block 在当前轮激活并更新一次，轮末恢复原 active。ReadIn o 是一次性脉冲，更新后归零；全零样本仍是新事件。
 
 ## Adapter 与机械边界
 
@@ -104,12 +106,12 @@ Runtime.step 顺序执行 Block、route、hand、speak、goodness 和参数更�
 
 仅同刻 g/g* 校准 A_g：L=1/2*(g-g*)²，使用当前局部 dg/dparameter。旧 teacher 不缓存、不复用，不校准其他时刻预测或 B_g。其他参数的 g_eff 取同刻 teacher（若有），否则取当前 g；delta=g_eff-更新前g_bar。
 
-每个实际参数张量独立保存资格项。旧 A、来源 z（含 self）是 detached 局部输入；当前 a/h/z/readout 保留一轮局部图，形成资格项后丢弃，不跨世界或旧历史反向传播。Block 与连续 ReadOut 取输出均值导数，hand 连续项只含 dx/dy。离散项取 sum(stopgrad((a-p)/tau)*q) 的局部导数，不对 p、threshold 或 world 求导。
+每个实际参数张量独立保存资格项。旧 A、来源 z（含 self）是 detached 局部输入；当前 a/h/z/readout 保留一轮局部图，形成资格项后丢弃，不跨世界或旧历史反向传播。Block 使用固定随机反馈 L=sum_r B_i^(r)*(a-p)/tau 的 VJP；ReadIn adapter 随当前局部图获得资格项。连续 ReadOut 保留均值导数，hand 连续项只含 dx/dy。离散 adapter 取 sum(stopgrad((a-p)/tau)*q) 的局部导数，直接离散梯度不重复进入 Block，不对 p、threshold 或 world 求导。
 
 e=exp(-delta_seconds/tau)*e_previous+local_derivative。noise tau 与 decay tau 均等于 Block.ticktime。延迟 goodness 到达时再次按实际延迟衰减，合并同一参数的内部、连续、离散资格项，更新参数后乘 rho，随后更新 g_bar 的 EMA。A_g 完全排除一般参数更新。
 
 默认 learning_rate=0.001、rho=0.9、EMA alpha=0.1、初始 g_bar=0.5；可显式配置。mock CLI 使用 learning_rate=0.0001、参数裁剪 [-10,10]、ticktime=0.25 秒。
 
-非仿射 LN 使 mean(z) 理论上恒为零，内部平均资格项也理论为零，FP32 可能有舍入残差。这一用户指定规则没有被替换；连续/离散 ReadOut 的局部贡献仍可非零。参数变化只证明更新链执行，不代表训练成功。
+非仿射 LN 使 mean(z) 理论上恒为零，因此内部学习已改为 neuron-specific VJP，并回归验证普通 Block / ReadIn tag 明确非零。固定 feedback_seed 默认为 0，反馈保存为 buffer，不进入 forward 或 Goodness 参数更新。Goodness 输出使用 sigmoid，同刻校准规则不变；参数 clipping 保留。详见 docs/clarifications.md。这些测试不代表 Stage 0 已经收敛。
 
 Runtime.enable_plasticity(...) 可显式配置超参数，Runtime.step 默认启用塑性。可分开调用 update_blocks、generate_*，然后 learn_goodness(signal, delivered_ms=...) 验证延迟；teacher 按生成时刻配对，资格迹按送达时刻衰减。

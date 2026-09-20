@@ -107,3 +107,12 @@ def test_invalid_mask_does_not_partially_apply(mask):
     with pytest.raises(ValueError, match="one bool"):
         core.set_active_mask(mask)
     assert core.active_ids == (0, 1, 2)
+
+
+def test_core_snapshot_makes_visitation_order_irrelevant():
+    left, right = make_core(), make_core()
+    for now in (0, 1, 2):
+        left.step(now_ms=now, order=[0, 1, 2])
+        right.step(now_ms=now, order=[2, 0, 1])
+        for a, b in zip(left.blocks, right.blocks):
+            assert_unchanged(a, snapshot(b))

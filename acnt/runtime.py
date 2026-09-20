@@ -1,6 +1,6 @@
 """The six selected adapters wired to six distinct canonical Blocks."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 import math
@@ -74,7 +74,7 @@ class Runtime(nn.Module):
         self.plasticity: Plasticity | None = None
         self._local_z: dict[int, Tensor] = {}
 
-    def enable_plasticity(self, **hyperparameters) -> Plasticity:
+    def enable_plasticity(self, *, feedback_seed: int = 0, **hyperparameters) -> Plasticity:
         reverse = {block_id: name for name, block_id in self.organ_blocks.items()}
         groups = {}
         for i, block in enumerate(self.core.blocks):
@@ -84,6 +84,14 @@ class Runtime(nn.Module):
                 parameters.update({f"adapter.{name}": parameter for name, parameter in self.adapters[organ].named_parameters()})
             groups[i] = parameters
         self.plasticity = Plasticity(groups, {i: block.ticktime for i, block in enumerate(self.core.blocks)}, **hyperparameters)
+        # DERIVED: random e-prop feedback is a learning-layer implementation choice.
+        # Buffers are fixed, checkpointed, and absent from theta and forward.
+        generator = torch.Generator(device="cpu").manual_seed(feedback_seed)
+        for i, block in enumerate(self.core.blocks):
+            for name, dimension in (("hand", self.adapters["hand"].discrete_controls),
+                                    ("route", len(self.core.blocks))):
+                feedback = torch.randn(block.neuron_size, dimension, generator=generator) / math.sqrt(dimension)
+                self.register_buffer(f"feedback_{i}_{name}", feedback.to(block.b))
         self._local_z.clear()
         return self.plasticity
 
@@ -162,12 +170,24 @@ class Runtime(nn.Module):
         continuous = raw[count:]
         if self.plasticity is not None:
             self.plasticity.continuous[self.organ_blocks["hand"]].observe_mean(continuous, now_ms=now_ms)
-            self.plasticity.control[self.organ_blocks["hand"]].observe_control(discrete, now_ms=now_ms)
+            self._observe_discrete("hand", discrete, now_ms=now_ms)
         self._emit("hand", {
             "discrete": dict(zip(HAND_DISCRETE_NAMES, discrete.a.tolist())),
             "continuous": {"dx": float(continuous[0].detach()), "dy": float(continuous[1].detach())},
         }, now_ms)
         return HandSignal(discrete, continuous)
+
+    def _observe_discrete(self, name: str, signal: DiscreteSignal, *, now_ms: int) -> None:
+        bank = self.plasticity.control[self.organ_blocks[name]]
+        score = bank.observe_control(
+            signal, now_ms=now_ms,
+            parameter_names=[key for key in bank.parameters if key.startswith("adapter.")],
+        )
+        # Each ReadOut contributes once. Linearity of VJP sums simultaneous L's.
+        # Only Blocks updated this round have a local graph; old tags still decay.
+        for i, z in self._local_z.items():
+            learning_signal = getattr(self, f"feedback_{i}_{name}") @ score
+            self.plasticity.internal[i].observe_vector(z, learning_signal, now_ms=now_ms)
 
     def generate_speak(self, *, now_ms: int = 0) -> Tensor:
         controls = self.decode_readout("speak")
@@ -204,7 +224,7 @@ class Runtime(nn.Module):
         raw = adapter(block.z.detach())
         if raw.shape != (1,):
             raise ValueError("goodness must produce exactly one scalar")
-        g = raw.reshape(()).clamp(0., 1.)
+        g = torch.sigmoid(raw.reshape(()))
         prediction = g.detach().clone()
         loss = None
         # Current-only calibration is the user's explicit temporal rule.
@@ -241,7 +261,7 @@ class Runtime(nn.Module):
         if self.plasticity is not None:
             # Keep all original sampled proposals for eligibility. Role
             # overrides below must not be substituted into this probability.
-            self.plasticity.control[self.organ_blocks["route"]].observe_control(signal, now_ms=now_ms)
+            self._observe_discrete("route", signal, now_ms=now_ms)
         mask = signal.a.tolist()
         # Role invariants take precedence over route's stochastic proposals.
         mask[self.organ_blocks["route"]] = True
@@ -269,15 +289,18 @@ class Runtime(nn.Module):
         block = self.core.blocks[self.organ_blocks[name]]
         return self.adapters[name](self._local_z.get(block.block_id, block.z))
 
-    def update_blocks(self, *, now_ms: int | None = None, readins: Mapping[str, Tensor] | None = None) -> dict[int, Tensor]:
+    def update_blocks(self, *, now_ms: int | None = None, readins: Mapping[str, Tensor] | None = None, order: Sequence[int] | None = None) -> dict[int, Tensor]:
         """New input forces one update, even if route did not select its Block.
 
-        Forced ReadIns also contribute as active sources for this computation
-        round. Afterwards their underlying active choices are restored.
+        Forced ReadIns contribute only their OLD committed source states.
+        Their new states can propagate next round; active choices are restored.
         """
         inputs = {} if readins is None else dict(readins)
         if not set(inputs).issubset(READINS):
             raise ValueError("external inputs may only target eye or ear")
+        ids = list(range(len(self.core.blocks))) if order is None else list(order)
+        if sorted(ids) != list(range(len(self.core.blocks))):
+            raise ValueError("order must visit every Block exactly once")
         now_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
         self._local_z.clear()
         self.core.set_active(self.organ_blocks["route"], True)
@@ -293,12 +316,14 @@ class Runtime(nn.Module):
             self.core.set_active(i, True)
         try:
             outputs = {}
-            for i, block in enumerate(self.core.blocks):
+            sources = self.core.source_snapshot()
+            for i in ids:
+                block = self.core.blocks[i]
                 if block.active and (i in forced or self.core.is_due(i, now_ms)):
-                    outputs[i] = self.core.update_block(i, now_ms=now_ms, force=i in forced, track_grad=self.plasticity is not None)
+                    outputs[i] = self.core.update_block(i, now_ms=now_ms, force=i in forced, track_grad=self.plasticity is not None, source_snapshot=sources)
                     if self.plasticity is not None:
                         self._local_z[i] = outputs[i]
-                        self.plasticity.internal[i].observe_mean(outputs[i], now_ms=now_ms)
+                        self.plasticity.internal[i].advance(now_ms)
             return outputs
         finally:
             for i, active in previous_active.items():

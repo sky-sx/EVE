@@ -32,14 +32,26 @@ class EligibilityBank:
                 trace.mul_(decay)
         self.last_ms = now_ms
 
-    def observe_scalar(self, scalar: Tensor, *, now_ms: int) -> None:
+    def observe_scalar(self, scalar: Tensor, *, now_ms: int, parameter_names=None) -> None:
         if scalar.shape != () or not torch.isfinite(scalar):
             raise ValueError("local contraction must be one finite scalar")
-        parameters = tuple(self.parameters.values())
-        derivatives = torch.autograd.grad(scalar, parameters, allow_unused=True, retain_graph=True) if scalar.requires_grad else (None,) * len(parameters)
+        self.observe_vector(scalar, torch.ones_like(scalar), now_ms=now_ms, parameter_names=parameter_names)
+
+    def observe_vector(self, output: Tensor, learning_signal: Tensor, *, now_ms: int, parameter_names=None) -> None:
+        """Accumulate sum_k L_k dz_k/dtheta without materializing a Jacobian."""
+        if output.numel() == 0 or output.shape != learning_signal.shape:
+            raise ValueError("output and learning signal must have matching nonempty shapes")
+        if not torch.isfinite(output).all() or not torch.isfinite(learning_signal).all():
+            raise ValueError("output and learning signal must be finite")
+        selected = self.parameters if parameter_names is None else {name: self.parameters[name] for name in parameter_names}
+        parameters = tuple(selected.values())
+        derivatives = torch.autograd.grad(
+            outputs=output, inputs=parameters, grad_outputs=learning_signal.detach(),
+            allow_unused=True, retain_graph=True,
+        ) if output.requires_grad and parameters else (None,) * len(parameters)
         local = {
             name: torch.zeros_like(parameter) if derivative is None else derivative.detach()
-            for (name, parameter), derivative in zip(self.parameters.items(), derivatives)
+            for (name, parameter), derivative in zip(selected.items(), derivatives)
         }
         if any(not torch.isfinite(value).all() for value in local.values()):
             raise FloatingPointError("non-finite local eligibility")
@@ -50,15 +62,15 @@ class EligibilityBank:
     def observe_mean(self, output: Tensor, *, now_ms: int) -> None:
         if output.numel() == 0:
             raise ValueError("cannot average an empty output")
-        # User-confirmed output-axis contraction: (1/n) sum_k dz_k/dtheta.
+        # Retained only for existing continuous ReadOut paths, never Block z.
         self.observe_scalar(output.mean(), now_ms=now_ms)
 
-    def observe_control(self, signal: DiscreteSignal, *, now_ms: int) -> Tensor:
+    def observe_control(self, signal: DiscreteSignal, *, now_ms: int, parameter_names=None) -> Tensor:
         # Score-function estimator of the ACTUAL sampled event. Do not
         # differentiate p, hard threshold or the external world.
         d_logpi = ((signal.a.to(signal.q.dtype) - signal.p) / signal.tau).detach()
         # Independent discrete controls contribute a SUM, not an average.
-        self.observe_scalar((d_logpi * signal.q).sum(), now_ms=now_ms)
+        self.observe_scalar((d_logpi * signal.q).sum(), now_ms=now_ms, parameter_names=parameter_names)
         return d_logpi
 
     def clear(self) -> None:

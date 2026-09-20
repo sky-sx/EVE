@@ -25,11 +25,12 @@ vector<vector <FP32> >W_c[hold_tick](neure size of B_i)(2*neure size of B_i)：�
 vector<FP32>b_c[hold_tick](neure size of B_i)：计算cfc时的偏置bias b_c；
 sigma()函数，定义为逐元素x变为(1+e^-x)^-1;
 LN()层归一化函数
-对于block，一次更新为
-如果 B_i 有 readin adapter：
-    o = readin_adapter(外部输入)；
-没有：o=0；
-r = o + b + sum_{j active} W_ij * z_j;
+对于block，同一个调度事件内所有 due/forced Block 读取统一 committed Z_old 快照；
+本轮任一 Block 新 z 不供同轮其他 Block 使用，下一传播轮才可见，不依赖 ID 或 visitation order。
+如果 B_i 有本次新 readin 事件（包括全零样本）：
+    o = readin_adapter(外部输入)，强制更新一次；
+没有新事件：o=0；
+r = o + b + sum_{j active} W_ij * z_j; 此处 z_j 均取本轮 Z_old；
 a = LN(r[0 : neure size of B_i] ⊙ sigma(r[neure size of B_i : 2*neure size of B_i]));
 t_last = time(0);
 if(A.size()==hold_tick)A.pop();
@@ -49,6 +50,7 @@ for idx =  A.size()-1 ..0:
     h = (1 - gamma) * h_c + gamma * h;
 end for
 z_i = h;
+ReadIn 的 o 只用于本次更新，随后归零；保留本轮局部图供资格项提取，不重放旧刺激。
 关于route：
 	route对应的block强制永久激活；
 关于readin：
@@ -62,17 +64,17 @@ z_i = h;
 	B_g不是readin，因此没有readin adapter，o=0；
 	B_g按block一次更新规则更新，得到z_g；
 	当B_g goodness人控开关开启时：
-	g_ = clamp(A_g(z_g), 0, 1)；
+	g_ = sigmoid(A_g(z_g))；
 	g作为goodness readout的唯一输出，用于训练；
 	当B_g goodness人控开关关闭时：
 	仅正常输出g到机械日志，不返回任何状态给core；也就是goodness输出失败只记录机械日志，不告知core；
 	B_g的active由人工开关控制；
-	goodness输出只有一维标量g∈[0,1]；不设并列输出轴；
+	goodness输出只有一维标量g∈(0,1)（精确算术；FP32 极端值可能舍入到边界）；不设并列输出轴；
 	定义：
-		g = clamp(A_g(z_g), 0, 1)，内部自评输出；
+		g = sigmoid(A_g(z_g))，内部自评输出；
 		g* ∈ [0,1]，可选外部好度标签/目标；
 		g_eff：有效好度训练标量。同一时刻存在准确g*时，g_eff = g*，即g*覆盖g；否则g_eff = g。	训练时，除A_g外，其他block和adapter的参数以g_eff为唯一标量信号更新；
-	A_g不通过最大化g训练，只通过校准损失训练，例如L_g = 1/2(g - g*)^2或BCE；
+	A_g不通过最大化g训练，只通过同刻校准损失L_g = 1/2(g - g*)^2训练；
 	同一个对象允许g_{t1}(o) ≠ g_{t2}(o)；
 	tips:goodness其实就是在实时拟合实现对teacher好度输出散点的连续化和超分辨
 关于运行时实时参数塑性训练采用eprop：
@@ -80,20 +82,22 @@ z_i = h;
 	对每个 B_i，
 	θ_i={W_{i,j} | j∈所有block，含i=j} ∪ {b_i} ∪ {W_{c,i}[k], b_{c,i}[k] | k=0..hold_tick-1} ∪ {adapter_i}；
 	其中 adapter_i 只在 B_i 对应某 readin 或某 readout 时存在；因 readin 与 readout 对应不同 block，故至多一个；无对应则无 adapter。训练时 adapter 参数与 block 参数同一，但资格迹按每个具体参数张量分别维护。
-	每个θ_i有资格迹e_θ_i，按局部计算图偏导递推：
-		e_θ_i(t)=λ_i(t)e_θ_i(t^-)+∂z_i(t)/∂θ_i；
-	非goodness readout adapter输出y_i：
-		e_θ_i^y(t)=λ_i(t)e_θ_i^y(t^-)+∂y_i(t)/∂θ_i；
-		λ_i(t)=exp(-Δt/τ_i)，τ_i由B_i.ticktime导出。W_ij用B_i的r,a,h,A,At与B_j的z_j；W_c/b_c用A,At,h,h_c；adapter用其输入输出局部量。
-	g_bar为训练统计量，滑动平均。g_eff到达时δ=g_eff-g_bar。除A_g外：
-		θ_i←θ_i+η_i δ e_θ_i；
-	非goodness readout adapter：
-		θ_i←θ_i+η_i δ e_θ_i^y。
-		更新后e_θ←ρe_θ，或按episode边界清零。学习率、ρ、裁剪范围皆为超参数。
-	A_g走校准损失：
-		L_g=1/2(g_eff-g*)^2或BCE；
-		θ_g←θ_g-η_g ∂L_g/∂θ_g；
-		∂L_g/∂θ_g由e_θ_g计算，BCE时用对应Sigmoid交叉熵梯度。
+	Block 内部局部因子 e_i,k,theta=[partial z_i,k / partial theta_i]_local；不再使用 grad(mean(z))。
+	固定反馈 B_i^(r) 的形状为 n_i × D_r，r 为 hand 或 route；L_i=sum_r B_i^(r)d_logpi_r。
+	T_i,theta=sum_k L_i,k e_i,k,theta，以 VJP 计算，不显式构造完整 Jacobian。
+	DERIVED: random e-prop feedback is a learning-layer implementation choice.
+	反馈为固定 seed 的零均值正态随机矩阵，按 1/sqrt(D_r) 缩放，作为 buffer 保存；
+	反馈不可训练、不属于 theta、不进入 forward、不接受 Goodness 更新。
+	ReadIn adapter 通过当前 o 的 Block 局部 VJP 获取资格项，旧 z/A detached，不使用 BPTT。
+	E_i,theta(t)=lambda_i(t)E_i,theta(t^-)+T_i,theta(t)。没有本轮更新则无新内部项。
+	连续 speak / hand dxdy 保留原有 mean(y) 的局部导数与衰减资格迹；不重新设计连续策略。
+	离散 hand / route adapter 只累积 sum d_logpi * dq/dtheta_adapter，不给 Block 重复累计直接离散梯度。
+	lambda_i(t)=exp(-delta_seconds/tau_i)，tau_i=B_i.ticktime。
+	g_bar 为训练滑动平均，延迟 g_eff 到达时 delta=g_eff-g_bar，除 A_g 外：
+		theta_i <- theta_i + eta_i * delta * (E_internal + E_continuous + E_control)。
+	参数保护 clipping 保留；更新后 E <- rho*E，再更新 g_bar，或按 episode 边界清零。
+	A_g 仅采用同刻 g/g* 的校准损失 L_g=1/2*(g-g*)^2，只更新 A_g，不回溯或复用 teacher。
+	B_g 参数与其他 Block 一样走上述唯一 Goodness 更新。
 对ACNT训练，我们的原始数据准备要有：
 	中英文音频长录音；
 	动画，纪录片等，包含音频和图像；
@@ -186,13 +190,13 @@ a=0表示此次真实轨迹中该操作实际未发生；
 	+
 	((a_i(t)-p_i(t))/τ_i)
 	*
-	∂q_i(t)/∂θ_i；
+	∂q_i(t)/∂θ_adapter_i；
 若一个readout同时具有多个彼此独立的离散控制量，则每个控制量分别形成对应局部项并累积到其相关参数资格迹；
 未来g_eff到达后，仍使用唯一标量：
 	δ = g_eff - g_bar；
 并更新：
 	θ_i ← θ_i + η_i δ e_θ_i^ctrl；
-该机制与原block内部eprop资格迹并存，都是同一θ_i的局部资格信息；
+此处直接 score-function 梯度仅属于离散 adapter 参数；Block 参数走固定反馈 VJP，避免重复累计；
 不增加第二个reward，不增加route goodness，不增加exploration goodness；
 
 因此当前离散控制训练可以概括为：

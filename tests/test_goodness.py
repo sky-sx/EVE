@@ -1,3 +1,5 @@
+import math
+
 from dataclasses import fields
 
 import pytest
@@ -25,8 +27,9 @@ def assert_parameters_unchanged(runtime, before):
         torch.testing.assert_close(value, before[name], rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("raw,expected", [(-2., 0.), (0.25, 0.25), (2., 1.)])
-def test_goodness_is_one_clamped_scalar_without_teacher(make_runtime, raw, expected):
+@pytest.mark.parametrize("raw", [-2., 0.25, 2.])
+def test_goodness_is_one_sigmoid_scalar_without_teacher(make_runtime, raw):
+    expected = float(torch.sigmoid(torch.tensor(raw)))
     runtime = make_runtime()
     configure_prediction(runtime, raw)
     before = parameter_snapshot(runtime)
@@ -52,7 +55,7 @@ def test_goodness_is_one_clamped_scalar_without_teacher(make_runtime, raw, expec
 @pytest.mark.parametrize("teacher", [0., 0.75, 1.])
 def test_same_time_teacher_replaces_effective_signal_but_loss_uses_prediction(make_runtime, teacher):
     runtime = make_runtime()
-    adapter, _ = configure_prediction(runtime, 0.25)
+    adapter, _ = configure_prediction(runtime, math.log(0.25 / 0.75))
 
     signal = runtime.generate_goodness(now_ms=500, teacher=teacher, calibration_lr=0.1)
 
@@ -60,13 +63,13 @@ def test_same_time_teacher_replaces_effective_signal_but_loss_uses_prediction(ma
     assert signal.teacher == teacher
     assert signal.g_eff == teacher
     assert signal.calibration_loss == pytest.approx(0.5 * (0.25 - teacher) ** 2)
-    assert float(adapter.linear.bias.detach()) == pytest.approx(0.25 - 0.1 * (0.25 - teacher))
+    assert float(adapter.linear.bias.detach()) == pytest.approx(math.log(0.25 / 0.75) - 0.1 * (0.25 - teacher) * 0.25 * 0.75)
 
 
 def test_calibration_uses_current_local_derivative_and_changes_only_goodness_adapter(make_runtime):
     runtime = make_runtime()
     z = torch.tensor([1., -2., 0.5])
-    adapter, _ = configure_prediction(runtime, 0.25, z)
+    adapter, _ = configure_prediction(runtime, math.log(0.25 / 0.75), z)
     before = parameter_snapshot(runtime)
 
     signal = runtime.generate_goodness(
@@ -75,11 +78,11 @@ def test_calibration_uses_current_local_derivative_and_changes_only_goodness_ada
 
     assert signal.calibration_loss == pytest.approx(0.125)
     assert float(signal.g) == 0.25  # Return the prediction made before calibration.
-    torch.testing.assert_close(adapter.linear.weight, 0.05 * z.unsqueeze(0))
-    torch.testing.assert_close(adapter.linear.bias, torch.tensor([0.3]))
+    torch.testing.assert_close(adapter.linear.weight, 0.05 * 0.25 * 0.75 * z.unsqueeze(0))
+    torch.testing.assert_close(adapter.linear.bias, torch.tensor([math.log(0.25 / 0.75) + 0.05 * 0.25 * 0.75]))
     assert set(runtime.calibration_eligibility) == {"linear.weight", "linear.bias"}
-    torch.testing.assert_close(runtime.calibration_eligibility["linear.weight"], z.unsqueeze(0))
-    torch.testing.assert_close(runtime.calibration_eligibility["linear.bias"], torch.ones(1))
+    torch.testing.assert_close(runtime.calibration_eligibility["linear.weight"], 0.25 * 0.75 * z.unsqueeze(0))
+    torch.testing.assert_close(runtime.calibration_eligibility["linear.bias"], torch.full((1,), 0.25 * 0.75))
     for name, value in runtime.named_parameters():
         if not name.startswith("adapters.goodness."):
             torch.testing.assert_close(value, before[name], rtol=0, atol=0)
@@ -91,7 +94,7 @@ def test_calibration_uses_current_local_derivative_and_changes_only_goodness_ada
 
 def test_sparse_teacher_is_neither_retroactive_nor_reused(make_runtime):
     runtime = make_runtime()
-    adapter, block = configure_prediction(runtime, 0.25, torch.tensor([1., 0., 0.]))
+    adapter, block = configure_prediction(runtime, math.log(0.25 / 0.75), torch.tensor([1., 0., 0.]))
     initial = parameter_snapshot(runtime)
     earlier = runtime.generate_goodness(now_ms=0)
     assert_parameters_unchanged(runtime, initial)
@@ -100,8 +103,8 @@ def test_sparse_teacher_is_neither_retroactive_nor_reused(make_runtime):
         block.z.copy_(torch.tensor([0., 2., 0.]))
     matched = runtime.generate_goodness(now_ms=250, teacher=0.75, calibration_lr=0.1)
     # Only the state at t=250 enters the local derivative; t=0 is not replayed.
-    torch.testing.assert_close(adapter.linear.weight, torch.tensor([[0., 0.1, 0.]]))
-    torch.testing.assert_close(adapter.linear.bias, torch.tensor([0.3]))
+    torch.testing.assert_close(adapter.linear.weight, torch.tensor([[0., 0.1 * 0.25 * 0.75, 0.]]))
+    torch.testing.assert_close(adapter.linear.bias, torch.tensor([math.log(0.25 / 0.75) + 0.05 * 0.25 * 0.75]))
     calibrated = parameter_snapshot(runtime)
     with torch.no_grad():
         block.z.copy_(torch.tensor([0., 0., 3.]))
@@ -110,34 +113,34 @@ def test_sparse_teacher_is_neither_retroactive_nor_reused(make_runtime):
     assert float(earlier.g) == 0.25
     assert earlier.teacher is None and earlier.calibration_loss is None
     assert float(matched.g) == 0.25 and matched.g_eff == 0.75
-    assert float(later.g) == pytest.approx(0.3)
-    assert later.g_eff == pytest.approx(0.3)
+    assert float(later.g) == pytest.approx(1 / (1 + math.exp(-(math.log(0.25 / 0.75) + 0.05 * 0.25 * 0.75))))
+    assert later.g_eff == pytest.approx(1 / (1 + math.exp(-(math.log(0.25 / 0.75) + 0.05 * 0.25 * 0.75))))
     assert later.teacher is None and later.calibration_loss is None
     assert runtime.calibration_eligibility == {}
     assert_parameters_unchanged(runtime, calibrated)
 
 
-@pytest.mark.parametrize("raw,expected", [(-1., 0.), (2., 1.)])
-def test_saturated_goodness_has_zero_calibration_derivative(make_runtime, raw, expected):
+@pytest.mark.parametrize("raw", [-2., 2.])
+def test_goodness_outside_old_clamp_range_still_calibrates(make_runtime, raw):
     runtime = make_runtime()
-    configure_prediction(runtime, raw, torch.tensor([1., 2., 3.]))
-    before = parameter_snapshot(runtime)
-
+    adapter, _ = configure_prediction(runtime, raw, torch.tensor([1., 2., 3.]))
     signal = runtime.generate_goodness(now_ms=0, teacher=0.5, calibration_lr=0.1)
-
+    expected = float(torch.sigmoid(torch.tensor(raw)))
+    assert 0 < float(signal.g) < 1
     assert float(signal.g) == expected
     assert signal.g_eff == 0.5
-    assert signal.calibration_loss == pytest.approx(0.125)
-    assert runtime.calibration_eligibility
+    assert signal.calibration_loss == pytest.approx(0.5 * (expected - 0.5) ** 2)
     for eligibility in runtime.calibration_eligibility.values():
-        assert torch.count_nonzero(eligibility) == 0
-    assert_parameters_unchanged(runtime, before)
+        assert torch.isfinite(eligibility).all() and eligibility.abs().sum() > 0
+    assert float(adapter.linear.bias.detach()) == pytest.approx(raw - 0.1 * (expected - 0.5) * expected * (1 - expected))
+    after = runtime.generate_goodness(now_ms=1)
+    assert abs(float(after.g) - 0.5) < abs(expected - 0.5)
 
 
 @pytest.mark.parametrize("teacher_time_ms", [0, 500, 250.0])
 def test_mismatched_or_noninteger_teacher_timestamp_rejected_before_mutation(make_runtime, teacher_time_ms):
     runtime = make_runtime()
-    configure_prediction(runtime, 0.25)
+    configure_prediction(runtime, math.log(0.25 / 0.75))
     before = parameter_snapshot(runtime)
 
     with pytest.raises(ValueError, match="timestamp"):
@@ -149,7 +152,7 @@ def test_mismatched_or_noninteger_teacher_timestamp_rejected_before_mutation(mak
 @pytest.mark.parametrize("teacher", [-0.01, 1.01, float("nan"), float("inf"), -float("inf")])
 def test_invalid_teacher_rejected_before_mutation(make_runtime, teacher):
     runtime = make_runtime()
-    configure_prediction(runtime, 0.25)
+    configure_prediction(runtime, math.log(0.25 / 0.75))
     before = parameter_snapshot(runtime)
 
     with pytest.raises(ValueError, match="teacher"):

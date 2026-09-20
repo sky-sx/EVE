@@ -66,7 +66,7 @@ def test_inactive_nonzero_source_excluded_from_sum():
     assert len(core.blocks[1].At) == len(core.blocks[1].A) == 0
 
 
-def test_sequential_order_reads_already_updated_state():
+def test_same_round_reads_old_state_and_next_round_reads_committed_state():
     core = make_core((2, 2))
     first, second = core.blocks
     with torch.no_grad():
@@ -75,12 +75,15 @@ def test_sequential_order_reads_already_updated_state():
         second.W_ij[0][0].copy_(torch.tensor([1., -1.]))
         second.W_ij[1].zero_()
     core.step(now_ms=1)
-    torch.testing.assert_close(second.r, second.W_ij[0] @ first.z)
+    torch.testing.assert_close(second.r, torch.zeros_like(second.r))
+    previous = first.z.clone()
+    core.step(now_ms=2)
+    torch.testing.assert_close(second.r, second.W_ij[0] @ previous)
     assert abs(second.r[0].item()) > 0.1
 
 
 @pytest.mark.parametrize("sizes", [(2, 3), (2, 3, 4, 5)])
-def test_repeated_sequential_and_asynchronous_updates(sizes):
+def test_repeated_snapshot_and_asynchronous_updates(sizes):
     core = make_core(sizes)
     for tick in range(50):
         order = list(reversed(range(len(sizes)))) if tick % 2 else [tick % len(sizes)]
@@ -92,3 +95,28 @@ def test_repeated_sequential_and_asynchronous_updates(sizes):
 def test_incompatible_topology_rejected():
     with pytest.raises(ValueError, match="source neuron sizes"):
         Core([Block(0, 2, [2, 9]), Block(1, 3, [2, 3])])
+
+
+def test_relabeling_block_ids_preserves_corresponding_states():
+    from copy import deepcopy
+    original = make_core((3, 3, 3))
+    with torch.no_grad():
+        for i, block in enumerate(original.blocks):
+            block.b.copy_(torch.tensor([0.1, -0.3, 0.7, 0.2, -0.1, 0.4]) * (i + 1))
+            block.z.copy_(torch.tensor([0.2, -0.4, 0.1]) * (i + 1))
+    original.step(now_ms=0)
+    permutation = [2, 0, 1]  # new ID -> old ID; remap all incoming edges too.
+    blocks = []
+    for new_id, old_id in enumerate(permutation):
+        block = deepcopy(original.blocks[old_id])
+        block.block_id = new_id
+        block.W_ij = torch.nn.ParameterList([deepcopy(original.blocks[old_id].W_ij[j]) for j in permutation])
+        blocks.append(block)
+    relabeled = Core(blocks)
+    original.step(now_ms=1)
+    relabeled.step(now_ms=1)
+    for new_id, old_id in enumerate(permutation):
+        left, right = original.blocks[old_id], relabeled.blocks[new_id]
+        for name in ("r", "a", "h", "z"):
+            torch.testing.assert_close(getattr(left, name), getattr(right, name), rtol=1e-5, atol=1e-6)
+        assert list(left.At) == list(right.At)

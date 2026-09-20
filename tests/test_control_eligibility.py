@@ -65,7 +65,8 @@ def test_hand_control_keeps_continuous_axes_out_of_score_trace(make_runtime):
     expected = (hand.discrete.a.float() - hand.discrete.p.detach()) / hand.discrete.tau
     torch.testing.assert_close(trace[:85], expected)
     torch.testing.assert_close(trace[85:], torch.zeros(2))
-    assert sum(value.abs().sum() for name, value in learner.control[block_id].values.items() if name.startswith("block.")) > 0
+    assert sum(value.abs().sum() for name, value in learner.control[block_id].values.items() if name.startswith("block.")) == 0
+    assert sum(value.abs().sum() for name, value in learner.internal[block_id].values.items() if name.startswith("block.")) > 0
 
 
 def test_execution_switch_does_not_change_local_sample_or_eligibility(make_runtime):
