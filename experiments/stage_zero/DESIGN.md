@@ -1,4 +1,4 @@
-# ACNT Stage Zero protocol (written before implementation / training)
+# ACNT Stage Zero protocol (Teacher revision declared before training)
 
 Baseline: `be9c1cf604b5e3e66d57774cd1ab1704df68fdd5`, clean main;
 GitHub commit API resolved remote main to the same SHA on 2026-09-20.
@@ -35,8 +35,8 @@ Three rounds allow Eye -> ordinary Block -> Hand propagation through OLD
 snapshots. This is repeated stimulus presentation, not a retained pulse.
 Only the final round samples Hand and generates local eligibility, with a
 current Eye local graph. Earlier graphs are discarded; no temporal backprop.
-Action time is episode start +500 ms. The environment computes strict binary
-exact-one-hot goodness, delivered at action time +250 ms. No further actions
+Action time is episode start +500 ms. The environment looks up frozen Teacher
+mean M[correct_pressed, wrong_count], delivered at action time +250 ms. No further actions
 intervene. The next episode starts 250 ms after delivery. Logical time is
 simulated without wall-clock sleep. Core state/history persist across samples.
 
@@ -62,7 +62,7 @@ eligibility between phases, preserve learned parameters and baseline; use the
 same reset protocol before initial and frozen evaluation. Do not reset within
 a phase. Frozen evaluation uses a new sequence and separate action RNG.
 
-Every episode records all 27 q/p values and actions, target, exact reward,
+Every episode records all 27 q/p values and actions, target, independent exact match, Teacher goodness and action bucket,
 target-bit hit, non-target false activation rate, active count, logical times,
 parameter norm/change, eligibility norm, baseline, NaN/Inf counts and expected
 exact probability (diagnostic product only, never a loss). Preserve every seed,
@@ -70,7 +70,39 @@ per-class summaries, windowed curves, per-tensor parameter changes, source
 hashes, config, environment and runtime metadata. Raw data remain local under
 runs/stage_zero; publish a compact report consistent with repository policy.
 
-Report SUPPORTED only for reproducible reward/tendency/frozen improvement;
+Report SUPPORTED only for reproducible exact-success/tendency/frozen improvement;
 PARTIAL for mixed evidence; NOT SUPPORTED if no learning is observed under
 this protocol. Random parameter drift alone is not evidence of task learning.
-If strict reward starves the learner, retain that outcome without changing it.
+Teacher goodness improvement alone cannot qualify as learned behavior.
+
+
+## Frozen visual Teacher revision, 2026-09-21
+
+Starting commit: 43677b0bce2d10dfdbe217fc8c7670583054644e (remote HEAD verified).
+Keep the previous formal budget: CUDA FP32, seeds 11/22/33/44/55, 270 initial,
+1080 training, 270 frozen episodes each; window 270. No acnt/*.py changes.
+The original binary run remains historical evidence, not the current reward path.
+
+Run complete tests, then offline calibration smoke (1 sample/cell), then formal
+calibration (5 samples/cell), inspect all 54 cell means and population standard
+deviations before training. DeepSeek deepseek-flash receives an actual lossless
+PNG of VisualEnvironment.render(target), action order, 27-bit Hand output and
+pressed button names. Hidden target/bucket labels exist only in local audit data.
+A fixed local RNG chooses target and wrong controls independently of ACNT seeds.
+The exact Chinese prompt/version and HTTP settings are retained in the table.
+No label, future outcome, gradient, confidence or subreward is sent to the model.
+No monotonicity enforcement, manual score adjustment or result-driven recalibration.
+
+Calibration reads DEEPSEEK_API_KEY or an explicitly supplied --api-key-file in
+read-only mode into memory. No key is printed, persisted or copied. Invalid numeric
+answers have bounded retries; failures abort without fabricating a table. Standard
+library HTTP/PNG tooling adds no runtime dependencies. The complete table is
+frozen only after every cell succeeds. Variance/std describe calibration only.
+
+Initial/training/frozen all query the identical table mean; exact_goodness is
+an audit-only exact-one-hot metric. No API call, GoodnessAdapter or Goodness
+ReadOut exists in training. Each run saves the full table, byte SHA256 and
+calibration metadata; each seed also saves the exact table. Audit recomputes
+buckets, mean, exact match, delta, delay, eligibility decay and prior invariants.
+The conservative evidence rubric remains based on exact success, probability
+directions and frozen retention, never scalar increase or parameter movement.

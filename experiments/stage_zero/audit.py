@@ -13,14 +13,14 @@ import json
 import math
 from pathlib import Path
 
-from .environment import ACTIONS
+from .environment import ACTIONS, TeacherTable
 from .evaluation import summarize, learning_curve, classify_evidence
 
 
-NUMERIC = ("goodness", "target_q", "target_probability", "non_target_probability",
+NUMERIC = ("goodness", "teacher_goodness", "target_q", "target_probability", "non_target_probability",
            "non_target_false_rate", "exact_probability", "eligibility_norm_at_action",
            "g_bar_before", "g_bar", "parameter_norm", "parameter_delta_norm", "eligibility_norm")
-INTEGER = ("episode", "phase_episode", "visual_time_ms", "logical_time_ms", "target_class",
+INTEGER = ("correct_pressed", "wrong_count", "episode", "phase_episode", "visual_time_ms", "logical_time_ms", "target_class",
            "goodness_delivery_time", "correct_exact_match", "target_bit_correct", "active_action_count")
 
 
@@ -41,7 +41,7 @@ def load_rows(path):
     return rows
 
 
-def validate_row(row, protocol):
+def validate_row(row, protocol, teacher_table):
     assert all(math.isfinite(row[key]) for key in NUMERIC), "nonfinite log"
     assert row["nan_count"] == row["inf_count"] == 0, "nonfinite state"
     q, p, bits = (row[key] for key in ("q", "p", "action_bits"))
@@ -51,8 +51,14 @@ def validate_row(row, protocol):
     assert all(0 <= value <= 1 for value in p), "invalid probability"
     target = row["target_class"]
     assert row["target_action"] == ACTIONS[target], "target mapping"
-    reward = float(bits[target] and sum(bits) == 1)
-    assert row["goodness"] == row["correct_exact_match"] == reward, "strict reward mismatch"
+    assert 0 <= target < 27, "invalid target"
+    correct = int(bits[target])
+    wrong = sum(bit for i, bit in enumerate(bits) if i != target)
+    exact = int(correct == 1 and wrong == 0)
+    reward = teacher_table.lookup(correct, wrong)
+    assert row["correct_pressed"] == correct and row["wrong_count"] == wrong, "action bucket mismatch"
+    assert row["goodness"] == row["teacher_goodness"] == reward, "Teacher table value mismatch"
+    assert row["correct_exact_match"] == exact, "exact match mismatch"
     assert row["sampled_actions"] == [name for name, bit in zip(ACTIONS, bits) if bit], "action log"
     assert row["active_action_count"] == sum(bits), "active count"
     assert row["target_bit_correct"] == int(bits[target]), "target hit"
@@ -75,11 +81,21 @@ def validate_row(row, protocol):
         assert row["g_bar"] == row["g_bar_before"], "evaluation changed baseline"
 
 
+def validate_table_artifact(directory, metadata, config):
+    table = TeacherTable.load(directory / "teacher_goodness.json")
+    assert table.sha256 == metadata["teacher_table_sha256"] == config["teacher_table_sha256"], "Teacher table hash mismatch"
+    assert (directory / "teacher_goodness.sha256").read_text().strip() == table.sha256, "Teacher table hash sidecar"
+    assert table.metadata == metadata["teacher_calibration"], "Teacher metadata mismatch"
+    assert json.loads((directory / "teacher_calibration_metadata.json").read_text(encoding="utf-8")) == table.metadata, "Teacher metadata copy"
+    return table
+
+
 def audit(directory: Path):
     directory = Path(directory)
-    metadata = json.loads((directory / "run_metadata.json").read_text())
-    config = json.loads((directory / "config.json").read_text())
+    metadata = json.loads((directory / "run_metadata.json").read_text(encoding="utf-8"))
+    config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
     assert metadata["completed"], "run incomplete"
+    teacher_table = validate_table_artifact(directory, metadata, config)
     root = Path(__file__).resolve().parents[2]
     mismatches = [name for name, digest in metadata["source_sha256"].items()
                   if hashlib.sha256((root / name.replace("\\", "/")).read_bytes()).hexdigest() != digest]
@@ -91,10 +107,12 @@ def audit(directory: Path):
         rows = load_rows(seed_dir / "episode_log.csv")
         expected_count = config["training_episodes"] + 2 * config["evaluation_episodes"]
         assert len(rows) == expected_count
-        summary = json.loads((seed_dir / "summary.json").read_text())
+        summary = json.loads((seed_dir / "summary.json").read_text(encoding="utf-8"))
+        assert summary["teacher_table_sha256"] == teacher_table.sha256, "seed table hash"
+        assert (seed_dir / "teacher_goodness.json").read_bytes() == teacher_table.raw, "seed table copy"
         for index, row in enumerate(rows):
             assert row["episode"] == index
-            validate_row(row, config)
+            validate_row(row, config, teacher_table)
         for phase, count in (("initial", config["evaluation_episodes"]),
                              ("training", config["training_episodes"]),
                              ("frozen", config["evaluation_episodes"])):
@@ -111,11 +129,13 @@ def audit(directory: Path):
         assert summary["feedback_unchanged"] and summary["all_tensors_on_device"]
         training = [r for r in rows if r["phase"] == "training"]
         changed = [r["phase_episode"] for r in training if r["parameter_delta_norm"] > 0]
-        params = json.loads((seed_dir / "parameter_summary.json").read_text())
-        visual = json.loads((seed_dir / "visual_diagnostics.json").read_text())
+        params = json.loads((seed_dir / "parameter_summary.json").read_text(encoding="utf-8"))
+        visual = json.loads((seed_dir / "visual_diagnostics.json").read_text(encoding="utf-8"))
         seed_metrics.append({
             "seed": seed, "rows_checked": len(rows),
-            "positive_rewards": sum(r["goodness"] for r in rows),
+            "exact_successes": sum(r["correct_exact_match"] for r in rows),
+            "positive_teacher_scores": sum(r["teacher_goodness"] > 0 for r in rows),
+            "mean_teacher_goodness": math.fsum(r["teacher_goodness"] for r in rows) / len(rows),
             "training_episodes_with_parameter_change": len(changed),
             "last_nonzero_update_training_episode_1based": max(changed) + 1 if changed else None,
             "final_g_bar": training[-1]["g_bar"],
@@ -144,6 +164,7 @@ def audit(directory: Path):
                        **{k: v for k, v in summarize(window).items() if k != "per_class"}})
     return {"audit_date_utc": datetime.now(timezone.utc).isoformat(),
             "git_commit": metadata["git_commit"], "all_logged_source_hashes_match": True,
+            "teacher_table_sha256": teacher_table.sha256, "teacher_table_verified": True,
             "validated_rows": len(pooled), "seeds": seed_metrics, "phases": phases,
             "pooled_training_curve": curves, "conclusion": classify_evidence(aggregate_expected),
             "raw_files": [{"path": str(p.relative_to(directory)), "bytes": p.stat().st_size,

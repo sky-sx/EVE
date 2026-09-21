@@ -1,7 +1,7 @@
 """Stage Zero boundary and actual ACNT learning-path integration tests.
 
 The positive reward below is an explicitly synthetic wiring test. It does not
-replace the strict environment reward used by the experiment runner.
+replace the frozen Teacher table used by the experiment runner.
 """
 
 import builtins
@@ -12,6 +12,8 @@ import os
 
 import pytest
 import torch
+
+from test_stage_zero_environment import teacher_table
 from torch.nn import functional as F
 
 import acnt.adapters as adapters
@@ -151,7 +153,7 @@ def test_uses_real_independent_logistic_sampling(model, frame, monkeypatch):
     assert model._local_z == {}
 
 
-def test_no_supervised_loss_optimizer_or_target_enters_network(model, monkeypatch):
+def test_no_supervised_loss_optimizer_or_target_enters_network(model, monkeypatch, teacher_table):
     assert "target" not in inspect.signature(model.act).parameters
     for name in ("cross_entropy", "nll_loss", "binary_cross_entropy",
                  "binary_cross_entropy_with_logits", "softmax", "log_softmax"):
@@ -164,9 +166,11 @@ def test_no_supervised_loss_optimizer_or_target_enters_network(model, monkeypatc
     monkeypatch.setattr(torch.Tensor, "backward", _forbidden)
     monkeypatch.setattr(torch.autograd, "backward", _forbidden)
     row = run_episode(model, VisualEnvironment(), 2, episode=0, phase_episode=0,
-                      phase="training", start_ms=0, generator=_generator(), learn=True)
+                      phase="training", start_ms=0, generator=_generator(), learn=True, teacher_table=teacher_table)
     bits = json.loads(row["action_bits"])
-    assert row["goodness"] == float(bits[2] and sum(bits) == 1)
+    assert row["correct_exact_match"] == float(bits[2] and sum(bits) == 1)
+    assert row["goodness"] == teacher_table.lookup(int(bits[2]), sum(bits) - bits[2])
+    assert row["goodness"] != row["correct_exact_match"]
     assert row["goodness_delivery_time"] - row["logical_time_ms"] == 250
     assert row["nan_count"] == row["inf_count"] == 0
 
@@ -228,7 +232,7 @@ def test_goodness_rejects_wrong_delivery_time_without_update(model, frame, offse
     assert model.pending == (action_ms, True)
 
 
-def test_actual_eprop_delay_decay_update_baseline_and_fixed_feedback(model, frame, monkeypatch):
+def test_actual_continuous_eprop_delay_decay_update_baseline_and_fixed_feedback(model, frame, monkeypatch):
     control_calls, vjp_calls, goodness_calls = [], [], []
     observe_control = EligibilityBank.observe_control
     observe_vector = EligibilityBank.observe_vector
@@ -268,14 +272,14 @@ def test_actual_eprop_delay_decay_update_baseline_and_fixed_feedback(model, fram
     # Discrete adapter eligibility must not leak direct Hand gradients into Block.
     assert all(torch.count_nonzero(t) == 0 for n, t in traces[2][1].items() if n.startswith("block."))
     _assert_finite(model)
-    # Synthetic positive scalar tests the wiring only; main runner uses exact_goodness.
-    delta = model.deliver_goodness(1.0, now_ms=action_ms + 250)
-    assert goodness_calls == [(1.0, 750)]
-    assert delta == 0.5 and model.plasticity.g_bar == pytest.approx(0.55)
+    # Synthetic positive scalar tests the wiring only; main runner reads frozen Teacher means.
+    delta = model.deliver_goodness(0.75, now_ms=action_ms + 250)
+    assert goodness_calls == [(0.75, 750)]
+    assert delta == 0.25 and model.plasticity.g_bar == pytest.approx(0.525)
     changed = 0
     for block_id, group in model.plasticity.groups.items():
         for name, parameter in group.items():
-            expected = before[block_id][name] + 0.001 * 0.5 * sum(
+            expected = before[block_id][name] + 0.001 * 0.25 * sum(
                 trace[block_id][name] * math.exp(-1) for trace in traces)
             torch.testing.assert_close(parameter, expected, rtol=1e-5, atol=1e-8)
             changed += not torch.equal(parameter, before[block_id][name])
@@ -307,7 +311,7 @@ def test_feedback_cannot_affect_forward_or_action(frame):
     assert all(torch.count_nonzero(t) == 0 for bank in right.plasticity.internal.values() for t in bank.values.values())
 
 
-def test_no_learning_and_frozen_evaluation_never_update(model, frame, monkeypatch):
+def test_no_learning_and_frozen_evaluation_never_update(model, frame, monkeypatch, teacher_table):
     initial = model.parameter_vector()
     action_ms, _ = model.act(frame, start_ms=0, generator=_generator(), learn=False)
     assert model.deliver_goodness(1.0, now_ms=action_ms + 250) is None
@@ -326,7 +330,7 @@ def test_no_learning_and_frozen_evaluation_never_update(model, frame, monkeypatc
     for index, target in enumerate((0, 25, 26)):
         row = run_episode(model, VisualEnvironment(), target, episode=index,
                           phase_episode=index, phase="frozen", start_ms=index * 1000,
-                          generator=_generator(), learn=False)
+                          generator=_generator(), learn=False, teacher_table=teacher_table)
         assert row["learning_enabled"] is False and row["parameter_delta_norm"] == 0
         assert row["eligibility_norm"] == 0 and row["delta"] is None
         assert row["nan_count"] == row["inf_count"] == 0
@@ -373,3 +377,14 @@ def test_cuda_real_path_smoke():
     model.deliver_goodness(1.0, now_ms=action_ms + 250)
     assert not torch.equal(before, model.parameter_vector())
     _assert_finite(model)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), -0.01, 1.01])
+def test_goodness_rejects_nonfinite_or_out_of_range_without_update(model, frame, value):
+    action_ms, _ = model.act(frame, start_ms=0, generator=_generator(), learn=True)
+    before, trace = model.parameter_vector(), model.eligibility_vector()
+    with pytest.raises(ValueError, match="finite"):
+        model.deliver_goodness(value, now_ms=action_ms + 250)
+    assert torch.equal(before, model.parameter_vector())
+    assert torch.equal(trace, model.eligibility_vector())
+    assert model.pending == (action_ms, True)

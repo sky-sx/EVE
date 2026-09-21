@@ -1,10 +1,17 @@
 """Fixed visual stimuli and scalar feedback for the Stage Zero experiment.
 
 Class indices exist only on the environment side.  The network receives the
-rendered RGB tensor; ``exact_goodness`` returns only a scalar environment reward.
+rendered RGB tensor; exact match is an audit metric, never learning feedback.
 """
 
 from __future__ import annotations
+
+import hashlib
+import json
+import math
+from pathlib import Path
+import statistics
+from dataclasses import dataclass
 
 import random
 import string
@@ -94,7 +101,7 @@ class VisualEnvironment:
             "glyph_top_left": [(self.height - 7 * self.pixel_size) // 2,
                                (self.width - 5 * self.pixel_size) // 2],
             "augmentation": None,
-            "goodness": "1 iff the target control alone is active; otherwise 0",
+            "goodness": "frozen Teacher table mean indexed by (correct_pressed, wrong_count)",
         }
 
 
@@ -117,8 +124,8 @@ def balanced_targets(episodes: int, seed: int) -> list[int]:
     return targets
 
 
-def exact_goodness(target: int, actions: torch.Tensor) -> float:
-    """Strict binary reward, including rejection of every multi-action output."""
+def action_quality_bucket(target: int, actions: torch.Tensor) -> tuple[int, int]:
+    """Environment-only bucket for a strict 27-bit boolean Hand action."""
     _validate_target(target)
     if not isinstance(actions, torch.Tensor):
         raise TypeError("actions must be a torch.Tensor")
@@ -126,4 +133,73 @@ def exact_goodness(target: int, actions: torch.Tensor) -> float:
         raise ValueError("actions must have shape [27]")
     if actions.dtype != torch.bool:
         raise TypeError("actions must have dtype torch.bool")
-    return float(bool(actions[target].item()) and int(actions.sum().item()) == 1)
+    correct = int(actions[target].item())
+    return correct, int(actions.sum().item()) - correct
+
+
+def exact_goodness(target: int, actions: torch.Tensor) -> float:
+    """Exact-one-hot audit metric only; never used as learning feedback."""
+    return float(action_quality_bucket(target, actions) == (1, 0))
+
+
+DEFAULT_TEACHER_TABLE = Path(__file__).with_name("teacher_goodness.json")
+
+
+def _score(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError("Teacher score must be a finite number in [0, 1]")
+    return float(value)
+
+
+@dataclass(frozen=True)
+class TeacherTable:
+    """Immutable means for learning; original bytes retain audit-only metadata."""
+
+    means: tuple[tuple[float, ...], ...]
+    raw: bytes
+    sha256: str
+
+    @classmethod
+    def load(cls, path=DEFAULT_TEACHER_TABLE):
+        raw = Path(path).read_bytes()
+        data = json.loads(raw)
+        if data.get("schema_version") != 1 or data.get("frozen") is not True:
+            raise ValueError("Teacher table must be complete and frozen schema version 1")
+        metadata = data["calibration"]
+        if not all(metadata.get(key) for key in ("model", "prompt_version", "system_prompt")):
+            raise ValueError("Teacher calibration metadata missing")
+        cells = data["cells"]
+        if set(cells) != {f"{c},{k}" for c in (0, 1) for k in range(27)}:
+            raise ValueError("Teacher table must contain exactly 54 cells")
+        means = [[], []]
+        for c in (0, 1):
+            for k in range(27):
+                cell = cells[f"{c},{k}"]
+                mean = _score(cell["mean"])
+                scores = [_score(x) for x in cell["raw_scores"]]
+                if type(cell["sample_count"]) is not int or cell["sample_count"] < 1 or len(scores) != cell["sample_count"]:
+                    raise ValueError("Teacher sample count mismatch")
+                for name, expected in (("mean", statistics.mean(scores)),
+                                       ("variance", statistics.pvariance(scores)),
+                                       ("std", statistics.pstdev(scores))):
+                    value = cell[name]
+                    if type(value) not in (float, int) or not math.isfinite(value) or not math.isclose(value, expected, rel_tol=1e-12, abs_tol=1e-15):
+                        raise ValueError(f"Teacher {name} disagrees with raw scores")
+                if cell.get("model") != metadata["model"] or cell.get("prompt_version") != metadata["prompt_version"]:
+                    raise ValueError("Teacher cell provenance mismatch")
+                means[c].append(mean)
+        return cls(tuple(tuple(row) for row in means), raw, hashlib.sha256(raw).hexdigest())
+
+    def lookup(self, correct_pressed: int, wrong_count: int) -> float:
+        if type(correct_pressed) is not int or correct_pressed not in (0, 1):
+            raise ValueError("correct_pressed must be 0 or 1")
+        if type(wrong_count) is not int or not 0 <= wrong_count <= 26:
+            raise ValueError("wrong_count must be in [0, 26]")
+        return self.means[correct_pressed][wrong_count]
+
+    @property
+    def metadata(self):
+        return json.loads(self.raw)["calibration"]
+
+    def save(self, path):
+        Path(path).write_bytes(self.raw)

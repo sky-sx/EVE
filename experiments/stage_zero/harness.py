@@ -1,6 +1,7 @@
 """Thin composition of canonical ACNT; no experimental learning equations."""
 
 from dataclasses import dataclass
+import math
 
 import torch
 from torch import Tensor, nn
@@ -145,8 +146,8 @@ class StageZero(nn.Module):
         action_ms, learn = self.pending
         if now_ms != action_ms + self.protocol.goodness_delay_ms:
             raise ValueError("goodness must arrive exactly 250 ms after action")
-        if goodness not in (0.0, 1.0):
-            raise ValueError("Stage Zero goodness must be binary")
+        if not math.isfinite(goodness) or not 0.0 <= goodness <= 1.0:
+            raise ValueError("Stage Zero goodness must be finite and in [0, 1]")
         delta = self.plasticity.apply_goodness(float(goodness), now_ms=now_ms) if learn else None
         self.pending = None
         self.last_delivery_ms = now_ms
