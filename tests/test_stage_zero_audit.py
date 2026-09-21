@@ -16,14 +16,14 @@ from experiments.stage_zero.runner import run_episode
 
 
 @pytest.fixture(scope="module")
-def actual_row(teacher_table):
+def actual_row():
     previous = torch.get_num_threads()
     torch.set_num_threads(1)
     try:
         model = StageZero(17)
         row = run_episode(model, VisualEnvironment(), 2, episode=0, phase_episode=0,
                           phase="training", start_ms=0,
-                          generator=torch.Generator().manual_seed(431), learn=True, teacher_table=teacher_table)
+                          generator=torch.Generator().manual_seed(431), learn=True)
         for name in ("q", "p", "action_bits", "sampled_actions"):
             row[name] = json.loads(row[name])
         return row
@@ -31,13 +31,13 @@ def actual_row(teacher_table):
         torch.set_num_threads(previous)
 
 
-def test_audit_accepts_actual_teacher_delayed_episode(actual_row, teacher_table):
-    validate_row(actual_row, asdict(Protocol()), teacher_table)
+def test_audit_accepts_actual_fractional_delayed_episode(actual_row):
+    validate_row(actual_row, asdict(Protocol()))
 
 
 @pytest.mark.parametrize("field,value", [
     ("goodness", 1.0),
-    ("teacher_goodness", 1.0),
+    ("fractional_goodness", 1.0),
     ("correct_pressed", 9),
     ("wrong_count", 99),
     ("correct_exact_match", 9),
@@ -48,12 +48,12 @@ def test_audit_accepts_actual_teacher_delayed_episode(actual_row, teacher_table)
     ("learning_enabled", False),
     ("parameter_norm", float("nan")),
 ])
-def test_audit_rejects_corrupted_actual_record(actual_row, field, value, teacher_table):
-    assert 0 < actual_row["goodness"] < 1
+def test_audit_rejects_corrupted_actual_record(actual_row, field, value):
+    assert actual_row["goodness"] != 1.0
     corrupted = deepcopy(actual_row)
     corrupted[field] = value
     with pytest.raises(AssertionError):
-        validate_row(corrupted, asdict(Protocol()), teacher_table)
+        validate_row(corrupted, asdict(Protocol()))
 
 
 def test_audit_rejects_changed_table_bytes(tmp_path, teacher_table):

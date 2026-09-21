@@ -101,7 +101,7 @@ class VisualEnvironment:
             "glyph_top_left": [(self.height - 7 * self.pixel_size) // 2,
                                (self.width - 5 * self.pixel_size) // 2],
             "augmentation": None,
-            "goodness": "frozen Teacher table mean indexed by (correct_pressed, wrong_count)",
+            "goodness": "fractional environment scalar: correct_pressed / pressed_count, or 0 when none pressed",
         }
 
 
@@ -135,6 +135,15 @@ def action_quality_bucket(target: int, actions: torch.Tensor) -> tuple[int, int]
         raise TypeError("actions must have dtype torch.bool")
     correct = int(actions[target].item())
     return correct, int(actions.sum().item()) - correct
+
+
+def fractional_goodness(target: int, actions: torch.Tensor) -> float:
+    """Deterministic environment feedback from the sampled Hand action."""
+    correct_pressed, wrong_count = action_quality_bucket(target, actions)
+    pressed_count = correct_pressed + wrong_count
+    if pressed_count == 0:
+        return 0.0
+    return correct_pressed / pressed_count
 
 
 def exact_goodness(target: int, actions: torch.Tensor) -> float:

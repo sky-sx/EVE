@@ -15,7 +15,7 @@ import time
 
 import torch
 
-from .environment import ACTIONS, VisualEnvironment, balanced_targets, exact_goodness, action_quality_bucket, TeacherTable, DEFAULT_TEACHER_TABLE
+from .environment import ACTIONS, VisualEnvironment, balanced_targets, exact_goodness, action_quality_bucket, fractional_goodness
 from .evaluation import summarize, learning_curve, classify_evidence, EVIDENCE_CRITERIA
 from .harness import Protocol, StageZero
 
@@ -74,7 +74,7 @@ def stability_and_norms(model, old_parameters):
 
 
 def run_episode(model, environment, target, *, episode, phase_episode, phase,
-                start_ms, generator, learn, teacher_table):
+                start_ms, generator, learn):
     before = model.parameter_vector()
     # Target remains in the environment; model.act accepts only the RGB image.
     image = environment.render(target, device=model.device)
@@ -84,7 +84,7 @@ def run_episode(model, environment, target, *, episode, phase_episode, phase,
     tendencies = signal.q.cpu().tolist()
     actions = signal.a.cpu().tolist()
     correct_pressed, wrong_count = action_quality_bucket(target, signal.a)
-    goodness = teacher_table.lookup(correct_pressed, wrong_count)
+    goodness = fractional_goodness(target, signal.a)
     exact_match = exact_goodness(target, signal.a)
     eligibility_before = float(model.eligibility_vector().norm())
     baseline_before = model.plasticity.g_bar
@@ -100,8 +100,8 @@ def run_episode(model, environment, target, *, episode, phase_episode, phase,
         "visual_time_ms": start_ms, "logical_time_ms": action_ms,
         "target_class": target, "target_action": ACTIONS[target],
         "sampled_actions": json.dumps([name for name, bit in zip(ACTIONS, actions) if bit]),
-        "goodness": goodness, "goodness_delivery_time": delivery_ms,
-        "teacher_goodness": goodness, "correct_pressed": correct_pressed,
+        "goodness": goodness, "fractional_goodness": goodness,
+        "goodness_delivery_time": delivery_ms, "correct_pressed": correct_pressed,
         "wrong_count": wrong_count, "correct_exact_match": int(exact_match),
         "target_q": tendencies[target], "target_probability": probabilities[target],
         "non_target_probability": sum(p for i, p in enumerate(probabilities) if i != target) / 26,
@@ -132,10 +132,9 @@ def visual_diagnostics(model, environment):
             "maximum_pairwise_encoding_l2": float(all_distances.max()),
             "meaning": "Distinct encodings are not proof of learnability."}
 
-def run_seed(seed, *, output, device, train_episodes, evaluation_episodes, window, protocol, teacher_table):
+def run_seed(seed, *, output, device, train_episodes, evaluation_episodes, window, protocol):
     directory = output / f"seed_{seed:03d}"
     directory.mkdir()
-    teacher_table.save(directory / "teacher_goodness.json")
     model = StageZero(seed, device=device, protocol=protocol)
     environment = VisualEnvironment()
     write_json(directory / "visual_diagnostics.json", visual_diagnostics(model, environment))
@@ -165,7 +164,7 @@ def run_seed(seed, *, output, device, train_episodes, evaluation_episodes, windo
                 row = run_episode(
                     model, environment, target, episode=episode, phase_episode=index,
                     phase=phase, start_ms=episode * protocol.episode_interval_ms,
-                    generator=generator, learn=learn, teacher_table=teacher_table,
+                    generator=generator, learn=learn,
                 )
                 if writer is None:
                     writer = csv.DictWriter(log_handle, fieldnames=list(row))
@@ -196,7 +195,7 @@ def run_seed(seed, *, output, device, train_episodes, evaluation_episodes, windo
     feedback_unchanged = all(torch.equal(t, dict(model.named_buffers())[n]) for n, t in feedback_before.items())
     if not feedback_unchanged or not model.check_devices():
         raise AssertionError("fixed feedback or device invariant failed")
-    phase_summaries.update({"teacher_table_sha256": teacher_table.sha256, "seed": seed, "device": str(model.device),
+    phase_summaries.update({"seed": seed, "device": str(model.device),
                            "training_seconds": training_seconds,
                            "total_seconds": time.perf_counter() - started,
                            "initial_parameter_hash": initial_hash,
@@ -228,9 +227,8 @@ def source_metadata():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="ACNT Stage Zero frozen Teacher delayed scalar experiment")
+    parser = argparse.ArgumentParser(description="ACNT Stage Zero fractional environment Goodness experiment")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--teacher-table", type=Path, default=DEFAULT_TEACHER_TABLE)
     parser.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
     parser.add_argument("--seeds", type=int, nargs="+", default=[11, 22, 33, 44, 55])
     parser.add_argument("--train-episodes", type=int, default=2700)
@@ -246,7 +244,6 @@ def main(argv=None):
         parser.error("phase counts must be multiples of 27 for exactly balanced sampling")
     if args.output.exists():
         parser.error("output must be a new directory; existing data are never overwritten")
-    teacher_table = TeacherTable.load(args.teacher_table)
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
     torch.set_num_threads(args.threads)
@@ -255,13 +252,9 @@ def main(argv=None):
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
     args.output.mkdir(parents=True)
-    teacher_table.save(args.output / "teacher_goodness.json")
-    (args.output / "teacher_goodness.sha256").write_text(teacher_table.sha256 + "\n", encoding="ascii")
-    write_json(args.output / "teacher_calibration_metadata.json", teacher_table.metadata)
     protocol = Protocol()
     config = {**asdict(protocol), "seeds": args.seeds, "training_episodes": args.train_episodes,
               "evaluation_episodes": args.evaluation_episodes, "window": args.window,
-              "teacher_table_sha256": teacher_table.sha256,
               "threads": args.threads, "device": device, "threshold": 0.0,
               "parameter_clip": None, "dtype": "float32", "deterministic_algorithms": True}
     write_json(args.output / "config.json", config)
@@ -288,7 +281,7 @@ def main(argv=None):
                 "cudnn_benchmark": torch.backends.cudnn.benchmark,
                 "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
                 "evidence_criteria": EVIDENCE_CRITERIA,
-                "teacher_table_sha256": teacher_table.sha256, "teacher_calibration": teacher_table.metadata,
+                "goodness_source": "fractional environment Goodness",
                 "completed": False}
     write_json(args.output / "run_metadata.json", metadata)
     summaries = []
@@ -297,7 +290,7 @@ def main(argv=None):
         summaries.append(run_seed(seed, output=args.output, device=device,
                                   train_episodes=args.train_episodes,
                                   evaluation_episodes=args.evaluation_episodes,
-                                  window=args.window, protocol=protocol, teacher_table=teacher_table))
+                                  window=args.window, protocol=protocol))
     aggregate = [{"seed": s["seed"], "phase": phase,
                   **{k: v for k, v in s[phase].items() if not isinstance(v, (dict, list))},
                   "parameter_delta_norm": s["parameter_delta_norm"]}
@@ -318,7 +311,7 @@ def main(argv=None):
             f"| {s['seed']} | {s['initial']['exact_success_rate']:.6g} | {s['training']['exact_success_rate']:.6g} | "
             f"{s['frozen']['exact_success_rate']:.6g} | {s['initial']['target_probability']:.6g}/{s['frozen']['target_probability']:.6g} | "
             f"{s['initial']['non_target_probability']:.6g}/{s['frozen']['non_target_probability']:.6g} | {s['parameter_delta_norm']:.6g} |\n"
-            for s in summaries) + "\n| Seed | Phase | Exact success | Target p | Non-target p | Mean Teacher goodness |\n"
+            for s in summaries) + "\n| Seed | Phase | Exact success | Target p | Non-target p | Mean fractional goodness |\n"
         "|---|---|---|---|---|---|\n" + "".join(
             f"| {s['seed']} | {phase} | {s[phase]['exact_success_rate']:.9g} | "
             f"{s[phase]['target_probability']:.9g} | {s[phase]['non_target_probability']:.9g} | "

@@ -25,7 +25,7 @@ def _mean(rows, key):
 def _metrics(rows):
     return {
         "episode_count": len(rows),
-        "mean_goodness": _mean(rows, "teacher_goodness"),  # Teacher scalar, not success.
+        "mean_goodness": _mean(rows, "goodness"),  # Training scalar, not behavioral success.
         "exact_success_rate": _mean(rows, "correct_exact_match"),
         "target_probability": _mean(rows, "target_probability"),
         "non_target_probability": _mean(rows, "non_target_probability"),

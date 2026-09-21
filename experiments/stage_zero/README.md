@@ -12,9 +12,10 @@ multiple of 27. For a short full-protocol smoke use `--seeds 11
 and `--device cuda` select the execution device explicitly. There is no real
 keyboard/mouse execution. The CLI changes no official Runtime behavior.
 
-Read [DESIGN.md](DESIGN.md) for the fixed architecture, frozen Teacher scalar and time
+Read [DESIGN.md](DESIGN.md) for the fixed architecture, fractional environment Goodness and time
 protocol. Each episode uses three explicit 1080p frames, then one independent
-27-bit Logistic sample. Teacher goodness reaches current Plasticity 250 logical
+27-bit Logistic sample. The environment computes `G = correct_pressed / pressed_count` (or 0 when
+nothing is pressed) and delivers it to current Plasticity 250 logical
 milliseconds later. Logical time is simulated, not a wall-clock sleep.
 
 Initial sanity and frozen evaluation use the same phase-reset protocol and
@@ -30,8 +31,8 @@ the same device. Only scalar goodness crosses the environment/learner boundary.
 
 `visual_diagnostics.json` measures pairwise Eye encodings under no-grad before
 training; it has no role in learning or action selection. Unit tests inject a
-positive scalar solely to verify the existing delayed update wiring. They are
-separate from API-derived formal calibration.
+positive scalar solely to verify the existing delayed update wiring. The
+current run computes its learning scalar directly from sampled actions.
 
 Bulk raw results and checkpoints stay under ignored `runs/stage_zero/`; the
 compact formal report is kept under `reports/`. The repository version remains
@@ -46,11 +47,29 @@ Historical binary-reward formal run: [report](../../reports/stage_zero_report.md
 Recompute the raw-log audit independently (does not run learning):
 
 ```powershell
-python -m experiments.stage_zero.audit runs/stage_zero/formal-20260920
+python -m experiments.stage_zero.audit runs/stage_zero/fractional-smoke-20260921
 ```
 
 
-Current Teacher revision (same experiment):
+Current fractional environment Goodness revision:
+
+```powershell
+pytest -q
+python -m experiments.stage_zero --output runs/stage_zero/fractional-smoke-20260921 --device cuda --seeds 11 --train-episodes 27 --evaluation-episodes 27 --window 27
+python -m experiments.stage_zero.audit runs/stage_zero/fractional-smoke-20260921
+```
+
+Mean goodness is diagnostic; exact one-hot success, target and non-target
+probabilities, and frozen retention determine behavioral evidence. The current
+runner requires no Teacher table or API.
+
+Completed five-seed fractional run: [report](../../reports/stage_zero_fractional_report.md),
+270 initial + 1080 training + 270 frozen episodes per seed, **NOT SUPPORTED**.
+Raw data remain local under `runs/stage_zero/fractional-formal-20260921/`.
+
+Previous DeepSeek frozen Teacher Goodness experiment: **NOT SUPPORTED**.
+The following commands and calibration artifacts are retained as historical
+evidence; they are not part of the current runner:
 
 ```powershell
 pytest -q
@@ -62,10 +81,8 @@ python -m experiments.stage_zero.audit runs/stage_zero/teacher-formal-20260921
 ```
 
 The key file is read-only and never copied. Alternatively set DEEPSEEK_API_KEY
-and omit --api-key-file. No key -> explicit error, no fake table. The runner's
-default table is experiments/stage_zero/teacher_goodness.json, and absence is an
-error. New audit expects Teacher artifacts; use the recorded historical commit
-when auditing old binary-only logs. mean_goodness now means Teacher goodness;
-correct_exact_match alone counts exact successes.
+and omit --api-key-file. No key -> explicit error, no fake table. For that historical revision, the runner defaulted to
+experiments/stage_zero/teacher_goodness.json and its audit required Teacher
+artifacts. Use the recorded historical commit to audit those old logs.
 
 Completed frozen-Teacher run: [report](../../reports/stage_zero_teacher_report.md), five seeds, same 1080/270/270 budget, **NOT SUPPORTED**. Raw data: `runs/stage_zero/teacher-formal-20260921/`.
