@@ -74,7 +74,6 @@ def test_disabled_goodness_does_not_calibrate_but_external_teacher_is_available(
     before = {name: value.clone() for name, value in runtime.adapters["goodness"].named_parameters()}
     signal = runtime.generate_goodness(now_ms=0, teacher=0.8)
     assert signal.g_eff == 0.8 and signal.calibration_loss is None
-    assert runtime.calibration_eligibility == {}
     for name, parameter in runtime.adapters["goodness"].named_parameters():
         torch.testing.assert_close(parameter, before[name])
 

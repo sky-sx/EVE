@@ -94,17 +94,17 @@ class CorrelationRule:
 class Plasticity:
     """One e_c per parameter element, owned by its Block or Adapter.
 
-    The goodness Block and Adapter only receive c_g. Every other connection
-    receives the one global g_eff when that scalar arrives.
+    When present, the goodness Block and Adapter only receive c_g. Every other
+    connection receives the one global g_eff when that scalar arrives.
     """
 
     def __init__(
-        self, groups: Mapping[int, Mapping[str, nn.Parameter]], goodness_id: int,
+        self, groups: Mapping[int, Mapping[str, nn.Parameter]], goodness_id: int | None,
         *, rule=None, learning_rate: float = 0.001, retention: float = 0.95,
         parameter_clip: tuple[float, float] | None = None,
     ) -> None:
         self.groups = {i: dict(parameters) for i, parameters in groups.items()}
-        if goodness_id not in self.groups:
+        if goodness_id is not None and goodness_id not in self.groups:
             raise ValueError("goodness Block must have a parameter group")
         self.goodness_id = goodness_id
         self.parameters = {id(p): p for group in self.groups.values() for p in group.values()}
@@ -125,7 +125,7 @@ class Plasticity:
         self._excluded_controls: dict[int, int] = {}
         self._hooks = []
 
-    def attach_adapters(self, adapters: Mapping[str, nn.Module], *, route_id: int) -> None:
+    def attach_adapters(self, adapters: Mapping[str, nn.Module], *, route_id: int | None = None) -> None:
         """Observe each parametrized layer's real input and output locally."""
         self.detach_adapters()
         for name, adapter in adapters.items():
@@ -138,7 +138,7 @@ class Plasticity:
                              if isinstance(layer, nn.Linear)), None)
             if name in ("hand", "route") and terminal is not None:
                 self._terminal_inputs[id(terminal)] = None
-                if name == "route":
+                if name == "route" and route_id is not None:
                     self._excluded_controls[id(terminal)] = route_id
 
     def detach_adapters(self) -> None:
@@ -231,6 +231,8 @@ class Plasticity:
         return self._apply((i for i in self.groups if i != self.goodness_id), float(g_eff))
 
     def calibrate_goodness(self, c_g: float) -> float:
+        if self.goodness_id is None:
+            raise RuntimeError("no goodness ReadOut is registered")
         if not math.isfinite(c_g) or not -1 <= c_g <= 1:
             raise ValueError("calibration scalar must be in [-1,1]")
         return self._apply((self.goodness_id,), float(c_g), teacher=True)

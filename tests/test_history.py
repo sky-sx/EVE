@@ -56,12 +56,12 @@ def test_nonuniform_history_uses_adjacent_deltas_and_queue_indices(ticktime):
     block, (c0, c1, c2) = bias_history_block(ticktime=ticktime)
     block.update(now_ms=100)
     block.update(now_ms=101)
-    gamma_one = sigmoid_reference(0.001 / ticktime)
+    gamma_one = sigmoid_reference(1 * ticktime)
     # With two entries, newest uses index 1 and oldest uses index 0.
     torch.testing.assert_close(block.z, (1 - gamma_one) * c0 + 0.5 * gamma_one * c1)
 
     block.update(now_ms=103)
-    gamma_two = sigmoid_reference(0.002 / ticktime)
+    gamma_two = sigmoid_reference(2 * ticktime)
     # At=[100,101,103] traverses delta_t=[0,2,1]. This is the closed-form
     # expansion, deliberately without reproducing the implementation's loop.
     expected = (
@@ -74,22 +74,22 @@ def test_nonuniform_history_uses_adjacent_deltas_and_queue_indices(ticktime):
     assert len(block.A) == 3
 
 
-def test_ticktime_seconds_control_history_by_division():
+def test_ticktime_seconds_multiply_adjacent_history_deltas():
     fast, (c0, c1, c2) = bias_history_block(ticktime=0.001)
     slow, _ = bias_history_block(ticktime=0.002)
     for now_ms in (100, 101, 103):
         fast.update(now_ms=now_ms)
         slow.update(now_ms=now_ms)
-    # The 1 ms and 2 ms history gaps become 0.5 and 1 when divided by
-    # ticktime=0.002 seconds. A larger ticktime produces a smaller gamma.
-    gamma_one, gamma_two = sigmoid_reference(0.5), sigmoid_reference(1.0)
+    # Canonical gamma uses the adjacent millisecond gap multiplied by
+    # ticktime in seconds. A larger ticktime produces a larger gamma.
+    gamma_one, gamma_two = sigmoid_reference(1 * slow.ticktime), sigmoid_reference(2 * slow.ticktime)
     expected_slow = (
         (1 - gamma_one) * c0
         + gamma_one * (1 - gamma_two) * c1
         + 0.5 * gamma_one * gamma_two * c2
     )
     torch.testing.assert_close(slow.z, expected_slow)
-    assert torch.linalg.vector_norm(fast.z - slow.z).item() > 0.1
+    assert torch.linalg.vector_norm(fast.z - slow.z).item() > 0
 
 
 @pytest.mark.parametrize("ticktime", [0, -0.001, float("inf"), float("nan")])
@@ -124,7 +124,7 @@ def test_overflow_reindexes_retained_history_against_current_wc_slots():
     c0 = ln_reference(matvec_reference(matrices[0], expected_a[1]))
     c1 = ln_reference(matvec_reference(matrices[1], expected_a[2]))
     c2 = ln_reference(matvec_reference(matrices[2], expected_a[3]))
-    gamma_two, gamma_three = sigmoid_reference(2), sigmoid_reference(3)
+    gamma_two, gamma_three = sigmoid_reference(2 * block.ticktime), sigmoid_reference(3 * block.ticktime)
     expected_z = (
         (1 - gamma_two) * c0
         + gamma_two * (1 - gamma_three) * c1
@@ -151,7 +151,7 @@ def test_wc_second_half_transforms_h_from_the_newer_history_entry():
     newest_h = 0.5 * newest_c
     transformed_h = matvec_reference(matrix, newest_h)
     oldest_c = ln_reference([value + offset for value, offset in zip(transformed_h, bias)])
-    gamma = sigmoid_reference(0.001 / block.ticktime)
+    gamma = sigmoid_reference(1 * block.ticktime)
     expected = (1 - gamma) * oldest_c + gamma * newest_h
     torch.testing.assert_close(block.z, expected)
     without_h_input = (1 - gamma) * ln_reference(bias) + gamma * newest_h

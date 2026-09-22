@@ -59,9 +59,9 @@ def test_goodness_active_is_human_controlled_even_when_route_disagrees(make_runt
     assert runtime.core.blocks[5].active
 
 
-def test_route_uses_block_ticktime_for_noise_scale(make_runtime):
+def test_route_uses_runtime_noise_scale(make_runtime):
     runtime = make_runtime(ticktime=0.125)
-    assert runtime.generate_route().tau == 0.125
+    assert runtime.generate_route().tau == runtime.noise_scale == 1.0
 
 
 @pytest.mark.parametrize("tau", [0., -1., float("nan")])

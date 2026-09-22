@@ -30,14 +30,12 @@ def test_forward_shapes_parameters_and_local_derivatives(factory, input_shape, o
     assert torch.isfinite(output).all()
     parameters = list(adapter.named_parameters())
     assert parameters and len({id(p) for _, p in parameters}) == len(parameters)
-    derivatives = torch.autograd.grad(output.mean(), [p for _, p in parameters])
-    # This proves the local derivative/trace shapes can be constructed; the
-    # Phase 13 eligibility recurrence itself is deliberately not implemented.
-    for (_, parameter), derivative in zip(parameters, derivatives):
-        trace = torch.zeros_like(parameter)
+    # Production adapter forward intentionally has no autograd graph.
+    assert not output.requires_grad
+    for _, parameter in parameters:
         assert parameter.dtype == torch.float32
-        assert derivative.shape == trace.shape == parameter.shape
-        assert torch.isfinite(derivative).all()
+        assert torch.isfinite(parameter).all()
+        assert parameter.grad is None
     if batch:
         with torch.no_grad():
             torch.testing.assert_close(output[0], adapter(x[0]))

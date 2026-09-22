@@ -37,7 +37,7 @@ def test_hand_samples_independent_full_controls_and_logs_key_combinations(make_r
 
     assert signal.discrete.q.shape == signal.discrete.p.shape == signal.discrete.a.shape == (85,)
     assert signal.discrete.noise.shape == (85,)
-    assert signal.discrete.tau == 0.25
+    assert signal.discrete.tau == runtime.noise_scale
     assert signal.discrete.a.dtype == torch.bool
     expected = torch.tensor([name in enabled for name in HAND_DISCRETE_NAMES])
     assert torch.equal(signal.discrete.a, expected)

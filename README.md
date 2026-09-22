@@ -6,7 +6,7 @@
 
 `acnt/` 实现了 Block、六种器官 Adapter、ReadIn/ReadOut 连接、独立 Logistic 噪声加硬阈值的离散控制、机械日志，以及连接本地的塑性状态。生产运行路径不使用 e-prop、参数 Jacobian、BPTT、策略梯度或固定随机反馈。现用的 `CorrelationRule` 是可替换的实验候选，不是架构规定的唯一 `F_e/F_w`。
 
-已做过不涉及 Stage 0 的最小运行检查：1080p eye 张量与原始音频窗口可经过 Adapter；Block 和四种 ReadOut 完成一步；goodness 外部 `g*` 覆盖 `g`，B_g/A_g 只用 `c_g` 校准；机械日志生成，参数及局部状态保持有限。尚无新架构下的 Stage 0 学习结果。真实截图/音频采集、DirectInput 执行、仿生发声器官与 e-prop 小系统对照尚未接入。
+已做过不涉及 Stage 0 的最小运行检查：1080p eye 张量与原始音频窗口可经过 Adapter；Block 和四种 ReadOut 完成一步；goodness 外部 `g*` 覆盖 `g`，B_g/A_g 只用 `c_g` 校准；机械日志生成，参数及局部状态保持有限。当前 Local Plasticity Stage 0 的五 seed 正式实验已完成并独立审计 8100 行；严格 exact-one-hot 下训练与冻结均没有 exact success，结论为 **NOT SUPPORTED**。详细数字见[正式报告](reports/stage_zero_local_plasticity_report.md)。真实截图/音频采集、DirectInput 执行、仿生发声器官与 e-prop 小系统对照尚未接入。
 
 ## 架构速览
 
@@ -26,7 +26,7 @@
 
 - [规范原文](docs/canonical_architecture.txt)：当前架构的完整定义，包括 Block 公式、新 Stage 0 条件和 e-prop 对照边界。
 - [实现任务与缺口](docs/implementation_task.md)、[架构边界核对](docs/clarifications.md)、[Adapter 实现记录](docs/adapter_choices.md)、[当前状态记录](docs/phase_report.md)。
-- [新架构 Stage 0 计划](docs/stage_zero_plan.md)：仅描述规范中的实验条件，目前没有新实验代码或结果。
+- [新架构 Stage 0 协议](docs/stage_zero_plan.md)与[活动实验](experiments/stage_zero/README.md)：冻结当前 CorrelationRule，运行严格 27 位 exact-one-hot 任务；[预检](reports/stage_zero_local_plasticity_preflight.md)与[正式报告](reports/stage_zero_local_plasticity_report.md)分开记录。
 - `acnt/block.py`、`core.py`：Block 状态与调度；`adapters.py`：六种 Adapter；`runtime.py`：器官连接与机械边界；`control.py`：独立噪声和硬阈值；`plasticity.py`：局部状态和可替换规则。
 - [历史 Stage 0 归档](archive/stage_zero_legacy/README.md)：旧 e-prop 实验源码、专属测试和报告，仅作历史记录。
 
@@ -39,8 +39,8 @@ python -m pip install -e ".[test]"
 python -m acnt --steps 2 --log-file runs/demo/mechanical.jsonl --summary-file runs/demo/summary.json
 ```
 
-`python -m pytest` 当前仍会遇到部分按旧 e-prop API 编写的非 Stage 0 测试；不能将旧测试计数当作新架构验收结论。归档目录外的测试将另行按当前规范更新。
+活动测试已迁移至 Local Plasticity API。运行 `python -m pytest -q` 获取当前结果；旧 e-prop 测试与历史验收数字只留在归档。
 
 ## 报告与数据边界
 
-旧 Stage 0 的两轮五 seed 报告结论均为 **NOT SUPPORTED**，只适用于当时的 e-prop 实现与实验协议。原始 `runs/stage_zero/` 由 `.gitignore` 排除，保留为本地历史数据，本次没有运行或改写。模型权重、大数据和批量日志仍按仓库忽略规则处理；通用报告模板见 `reports/`。GitHub README 模板见 [docs/README.github.template.md](docs/README.github.template.md)。
+旧 Stage 0 的两轮五 seed 报告结论均为 **NOT SUPPORTED**，只适用于当时的 e-prop 实现与实验协议。原始 `runs/stage_zero/` 由 `.gitignore` 排除，保留为本地历史数据，新实验使用独立的被忽略目录 `runs/stage_zero_local/`，不会覆盖历史数据。模型权重、大数据和批量日志仍按仓库忽略规则处理；通用报告模板见 `reports/`。GitHub README 模板见 [docs/README.github.template.md](docs/README.github.template.md)。

@@ -12,12 +12,16 @@
 
 以上说明代码路径，不宣称已学会任何任务，也不宣称 `F_e/F_w` 已找到最佳形式。
 
+## 本轮完成的核验
+
+- 已将归档外活动测试迁移到当前 Local Plasticity API，覆盖数值 F_e、事件计数 retention、延迟 F_w、参数注册、无 autograd 学习路径、goodness_id 可选和完整 Runtime 回归。测试总数以本轮实测为准。
+- 已建立[当前 Stage 0](../experiments/stage_zero/README.md)，按[锁定配置](../reports/stage_zero_local_plasticity_lock.json)做五 seed 正式实验；行为结论见[正式报告](../reports/stage_zero_local_plasticity_report.md)。
+
 ## 尚待实现或核验
 
-1. 用当前规范更新仍断言旧 e-prop API 的非 Stage 0 测试；单独核验 Block 公式、各局部连接状态和延迟 `g_eff`。
-2. 接入真实截图/音频采集、键鼠 DirectInput 执行和约 30 维发声器官参数到声学几何的映射时，保持相同感知与机械边界。
-3. 准备架构原文列出的长音频、音画资料、题单、Teacher VLM、虚拟机与发声器官工具；题单/Teacher 文本若进入 ACNT，必须先转成图像或语音。
-4. 按新的 [Stage 0 协议](stage_zero_plan.md) 建立实验实现，并建立隔离的四 Block e-prop 科学对照系统。对照结果只用于研究、诊断和候选选择，不能进入正式参数更新。
+1. 接入真实截图/音频采集、键鼠 DirectInput 执行和约 30 维发声器官参数到声学几何的映射时，保持相同感知与机械边界。
+2. 准备架构原文列出的长音频、音画资料、题单、Teacher VLM、虚拟机与发声器官工具；题单/Teacher 文本若进入 ACNT，必须先转成图像或语音。
+3. 未来另行建立隔离的四 Block e-prop 科学对照系统。对照结果只用于研究、诊断和候选选择，不能进入正式参数更新。
 
 ## 验收原则
 
