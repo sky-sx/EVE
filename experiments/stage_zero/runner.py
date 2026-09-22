@@ -35,7 +35,7 @@ def config(device, counts):
         "active_blocks": list(range(10)), "eye_block": 0, "hand_block": 1,
         "ordinary_blocks": list(range(2,10)), "frames_per_episode": 3,
         "frame_offsets_ms": [0,250,500], "inter_episode_gap_ms": 250,
-        "goodness_delays_ms": DELAYS_MS, "goodness": "strict exact one hot g_star",
+        "goodness_delays_ms": DELAYS_MS, "goodness": "target active: 1 / active Hand bits; otherwise 0; exact success evaluation only",
         "learning_rate": .001, "retention": .95, "parameter_clip": None,
         "tau": .25, "threshold": 0.,
         "rng_rule": "seed*1000003+phase_index*10007+stream_offset(1..4); phase order initial/training/frozen",
@@ -52,9 +52,17 @@ def aggregate(rows):
     fields=("target_p","non_target_mean_p","target_bit_actual","non_target_false_rate",
             "active_bit_count","exact_event_probability","parameter_norm",
             "parameter_delta_norm")
+    target_hits=sum(int(r["target_bit_actual"]) for r in rows)
     result={"episodes":n, "exact_success":sum(int(r["exact_success"]) for r in rows),
-            "positive_g_star":sum(int(r["g_star"]) for r in rows)}
+            "positive_g_star":sum(r["g_star"]>0 for r in rows)}
     result["exact_success_rate"]=result["exact_success"]/n
+    result["target_bit_hit_rate"]=target_hits/n
+    result["mean_active_bits"]=sum(r["active_bit_count"] for r in rows)/n
+    result["mean_active_bits_given_target_hit"]=(
+        sum(r["active_bit_count"] for r in rows if r["target_bit_actual"])/target_hits
+        if target_hits else None
+    )
+    result["mean_g_star"]=sum(r["g_star"] for r in rows)/n
     for key in fields:
         result[key]=sum(r[key] for r in rows)/n
     result["state_total_l2_mean"]=sum(r["plastic_state"]["total"]["l2"] for r in rows)/n
@@ -116,7 +124,7 @@ def run_seed(seed, *, device, counts, output, checkpoint_interval=270):
     result={"seed":seed,"elapsed_s":time.perf_counter()-start,
             "raw_path":str(raw_path),"raw_sha256":hashlib.sha256(raw_path.read_bytes()).hexdigest(),
             "metrics":summarize(rows),"changed_parameter_groups":changed,
-            "positive_count":sum(int(r["g_star"]) for r in rows)}
+            "positive_count":sum(r["g_star"]>0 for r in rows)}
     (output/f"seed_{seed}_summary.json").write_text(json.dumps(result,indent=2,allow_nan=False),encoding="utf-8")
     return result
 
@@ -124,7 +132,7 @@ def run_seed(seed, *, device, counts, output, checkpoint_interval=270):
 def main(argv=None):
     parser=argparse.ArgumentParser()
     parser.add_argument("--device",choices=("cpu","cuda"),default="cpu")
-    parser.add_argument("--output",default="runs/stage_zero_local")
+    parser.add_argument("--output",default="runs/stage_zero_local/potential_goodness")
     parser.add_argument("--seeds",nargs="+",type=int,default=list(FORMAL_SEEDS))
     parser.add_argument("--initial",type=int,default=270)
     parser.add_argument("--training",type=int,default=1080)

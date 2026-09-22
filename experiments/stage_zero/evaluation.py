@@ -21,7 +21,7 @@ def build(directory, audit_file):
     audit=json.loads(Path(audit_file).read_text(encoding="utf-8"))
     if not audit["passed"] or audit["all_rows_audited"]!=8100:
         raise AssertionError("complete independent audit required")
-    lock=json.loads(Path("reports/stage_zero_local_plasticity_lock.json").read_text(encoding="utf-8"))
+    lock=json.loads((directory/"config.json").read_text(encoding="utf-8"))
     rows=[]
     seed_summaries={}
     for seed in FORMAL_SEEDS:
@@ -44,21 +44,20 @@ def build(directory, audit_file):
     lines=[
         "# Current Local Plasticity Stage 0 formal report","",
         "This is the new Local Plasticity experiment. The archived e-prop Stage 0 is a separate historical result.","",
-        f"- Baseline main commit: `{lock['baseline_commit']}`.",
-        "- Final main commit: see release response; a tracked report cannot embed its own content-addressed commit SHA.",
-        "- Git status at start: clean. Final status checked after commit and push.",
-        f"- Python {lock['python']}; PyTorch {lock['torch']}; CUDA {lock['cuda']}; GPU {lock['gpu']}. Formal execution used CPU.",
+        f"- Run configuration: `{directory/'config.json'}`.",
+        f"- Python {lock['python']}; PyTorch {lock['torch']}; CUDA {lock['cuda']}; GPU {lock['gpu']}; formal device {lock['device']}.",
         "- Frozen candidate: production CorrelationRule, learning_rate=.001, retention=.95, parameter_clip=None.",
         "- Formal seeds 11, 22, 33, 44, 55; per seed 270 initial, 1080 training, 270 frozen episodes.",
         f"- Independent audit: passed, {audit['all_rows_audited']} rows and {audit['stimulus_count']} stimulus hashes.",
-        "- Pre-formal full active pytest: 143 passed; final full active pytest after report: 146 passed. CPU and RTX 5080 CUDA 1/1/1 smoke passed; 27/9/9 timing smoke passed on both.",
-        f"- Formal command: `{lock['formal_command']}`.",
-        "- Audit command: `python -m experiments.stage_zero.audit --directory runs/stage_zero_local`.",
-        "- Local only: raw JSONL and checkpoints under ignored `runs/stage_zero_local/`.","",
+        "- Training Goodness is zero when the target bit is off, otherwise 1/active-bit count; exact success remains an evaluation-only one-hot event.",
+        f"- Audit data: `{audit_file}`.",
+        f"- Local only: raw JSONL and checkpoints under ignored `{directory}/`.","",
         "## Overall behavior","",
-        _table(["Phase","Episodes","Exact","Exact rate","Target p","Non-target p","Target-bit hit","False rate","Active bits","Positive g*"],
-               [[phase,*[m[k] for k in ("episodes","exact_success","exact_success_rate","target_p",
-                 "non_target_mean_p","target_bit_actual","non_target_false_rate","active_bit_count","positive_g_star")]]
+        _table(["Phase","Episodes","Exact rate","Target hit rate","Active bits",
+                "Active bits | target hit","Mean g*","Target p","Non-target p"],
+               [[phase,*[m[k] for k in ("episodes","exact_success_rate","target_bit_hit_rate",
+                 "mean_active_bits","mean_active_bits_given_target_hit","mean_g_star",
+                 "target_p","non_target_mean_p")]]
                 for phase,m in totals.items()]),
         "## Per seed","",
         _table(["Seed","Initial exact","Train exact","Frozen exact","Initial target p","Frozen target p",
@@ -79,9 +78,11 @@ def build(directory, audit_file):
                  aggregate([r for r in subsets["frozen"] if r["target_class"]==name])["non_target_mean_p"]]
                 for name in ACTIONS]),
         "## Per delay","",
-        _table(["Delay ms","Phase","Episodes","Exact","Target p","Non-target p","Target-bit hit","False rate"],
-               [[d,phase,*[m[k] for k in ("episodes","exact_success","target_p","non_target_mean_p",
-                                           "target_bit_actual","non_target_false_rate")]]
+        _table(["Delay ms","Phase","Episodes","Exact rate","Target hit rate",
+                "Active bits","Active bits | target hit","Mean g*","Target p","Non-target p"],
+               [[d,phase,*[m[k] for k in ("episodes","exact_success_rate","target_bit_hit_rate",
+                                           "mean_active_bits","mean_active_bits_given_target_hit",
+                                           "mean_g_star","target_p","non_target_mean_p")]]
                 for phase,subset in subsets.items() for d in DELAYS_MS
                 for m in [aggregate([r for r in subset if r["goodness_delay_ms"]==d])]]),
         "## Per color","",
@@ -127,7 +128,7 @@ def build(directory, audit_file):
                  aggregate(g)["state_total_l2_mean"],aggregate(g)["parameter_delta_norm"]]
                 for d in DELAYS_MS
                 for g in [[r for r in subsets["training"] if r["goodness_delay_ms"]==d]]]),
-        "F_w coefficient is 0.001*(g* - 0.5): -0.0005 when g*=0 and +0.0005 when g*=1. Numerical tests verify that update direction. All 10 Block groups, including both Adapters, changed in the formal summaries.",
+        "F_w still reads the single external g* through the unchanged production rule: update coefficient 0.001*(g* - 0.5). Parameter changes are reported per group; they are not behavioral learning evidence.",
         f"NaN / Inf counts across all logged episodes: {sum(r['nan_count'] for r in rows)} / {sum(r['inf_count'] for r in rows)}.",
         f"Seeds without joint required behavior improvement: {[s for s in FORMAL_SEEDS if s not in improved]}.",
         f"Total formal elapsed seed time: {sum(seed_summaries[s]['elapsed_s'] for s in FORMAL_SEEDS):.3f} s.","",
@@ -142,22 +143,24 @@ def build(directory, audit_file):
         "## Locked source SHA256","",
         _table(["Source","SHA256"],[[p,h] for p,h in lock["source_sha256"].items()]),
         "## Conclusion","",
-        f"Classification: **{verdict}**. Independent frozen behavior is the strongest evidence. Exact-one-hot reward sparsity is the largest failure point when no positive g* occurs. Parameter or e changes alone are not learning evidence.","",
+        f"Classification: **{verdict}**. Exact success is evaluation-only. A positive fractional g* means the target bit was active; it does not by itself prove one-hot mapping. Parameter or e changes alone are not learning evidence.","",
         f"Q1: The current local correlation state plus delayed scalar Goodness {'formed a reproducible mapping' if supported else 'did not demonstrate a reproducible visual-to-action mapping'} under this protocol.",
-        f"Q2: All three delay strata have zero exact success. Frozen target p values are {frozen_delay_target[250]:.6f} (250 ms), {frozen_delay_target[500]:.6f} (500 ms), and {frozen_delay_target[1000]:.6f} (1000 ms); this observed spread gives no evidence of a clear delay-dependent mapping difference. This does not imply a required delta-time rule.","",
-        "Limitations: These results assess the frozen candidate under the strict 27-bit Stage 0 reward. They do not resolve which future F_e/F_w rule the architecture should use.",
+        f"Q2: Frozen target p by delay is {frozen_delay_target[250]:.6f} (250 ms), {frozen_delay_target[500]:.6f} (500 ms), and {frozen_delay_target[1000]:.6f} (1000 ms). Interpret alongside exact success and the stratified tables; no time-rule change follows from this comparison.","",
+        "Limitations: These results assess the frozen candidate under the target-bit inverse-active-count Stage 0 Goodness. They do not resolve which future F_e/F_w rule the architecture should use.",
     ]
     return "\n".join(lines)+"\n"
 
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("--directory",default="runs/stage_zero_local")
-    p.add_argument("--audit",default="reports/stage_zero_local_plasticity_audit.json")
-    p.add_argument("--output",default="reports/stage_zero_local_plasticity_report.md")
+    p.add_argument("--directory",default="runs/stage_zero_local/potential_goodness")
+    p.add_argument("--audit",default=None)
+    p.add_argument("--output",default=None)
     a=p.parse_args()
-    Path(a.output).write_text(build(a.directory,a.audit),encoding="utf-8")
-    print(a.output)
+    audit_file=Path(a.audit) if a.audit is not None else Path(a.directory)/"audit.json"
+    output=Path(a.output) if a.output is not None else Path(a.directory)/"report.md"
+    output.write_text(build(a.directory,audit_file),encoding="utf-8")
+    print(output)
 
 
 if __name__=="__main__":

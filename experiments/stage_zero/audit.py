@@ -12,12 +12,21 @@ from .environment import ACTIONS, DELAYS_MS, phase_schedule, render, stimulus_ha
 from .runner import FORMAL_COUNTS, FORMAL_SEEDS, aggregate, source_hashes
 
 
-def audit(directory, lock_path="reports/stage_zero_local_plasticity_lock.json"):
+def audit_goodness(target, bits):
+    """Recompute both quantities from raw bits, independently of environment."""
+    active=sum(bits)
+    g=1.0/active if bits[target] else 0.0
+    exact=bool(bits[target]) and active==1
+    return g, exact
+
+
+def audit(directory, config_path=None):
     directory=Path(directory)
-    lock=json.loads(Path(lock_path).read_text(encoding="utf-8"))
+    config_path=directory/"config.json" if config_path is None else Path(config_path)
+    lock=json.loads(config_path.read_text(encoding="utf-8"))
     if lock["source_sha256"]!=source_hashes():
         raise AssertionError("production or experiment sources differ from locked SHA256")
-    report={"schema":1,"lock_path":str(lock_path),"source_sha256_verified":True,
+    report={"schema":1,"config_path":str(config_path),"source_sha256_verified":True,
             "seed_results":{},"failures":[]}
     expected_hash={}
     for seed in FORMAL_SEEDS:
@@ -67,9 +76,14 @@ def audit(directory, lock_path="reports/stage_zero_local_plasticity_lock.json"):
                     pred=1/(1+math.exp(-(q[j]-threshold[j])/.25))
                     if not math.isclose(p[j],pred,rel_tol=2e-6,abs_tol=2e-6):
                         raise AssertionError("diagnostic p mismatch")
-                g=float(bits[target] and sum(bits)==1)
-                if row["g_star"]!=g or row["exact_success"]!=bool(g):
-                    raise AssertionError("strict Goodness mismatch")
+                active_bits=sum(bits)
+                g,exact=audit_goodness(target,bits)
+                if not math.isclose(row["g_star"],g,rel_tol=1e-12,abs_tol=1e-12):
+                    raise AssertionError("potential Goodness mismatch")
+                if row["exact_success"]!=exact:
+                    raise AssertionError("exact success mismatch")
+                if row["target_bit_actual"]!=bool(bits[target]) or row["active_bit_count"]!=active_bits:
+                    raise AssertionError("action diagnostics mismatch")
                 if row["frame_times_ms"]!=[row["frame_times_ms"][0]+j*250 for j in range(3)]:
                     raise AssertionError("frame cadence mismatch")
                 if row["action_time_ms"]!=row["frame_times_ms"][-1]:
@@ -93,8 +107,15 @@ def audit(directory, lock_path="reports/stage_zero_local_plasticity_lock.json"):
                     raise AssertionError("exact event probability mismatch")
             phase_result[phase]=aggregate(segment)
             saved=summary["metrics"]["phase"][phase]
-            if saved["exact_success"]!=phase_result[phase]["exact_success"]:
-                raise AssertionError("summary success mismatch")
+            for metric in ("exact_success","target_bit_hit_rate","mean_g_star",
+                           "mean_active_bits","mean_active_bits_given_target_hit"):
+                observed=phase_result[phase][metric]
+                recorded=saved[metric]
+                if observed is None or recorded is None:
+                    if observed is not recorded:
+                        raise AssertionError(f"summary {metric} mismatch")
+                elif not math.isclose(observed,recorded,rel_tol=1e-12,abs_tol=1e-12):
+                    raise AssertionError(f"summary {metric} mismatch")
             start+=count
         report["seed_results"][str(seed)]={"rows":len(rows),"sha256":summary["raw_sha256"],
             "phase":phase_result,"changed_parameter_groups":summary["changed_parameter_groups"]}
@@ -107,12 +128,13 @@ def audit(directory, lock_path="reports/stage_zero_local_plasticity_lock.json"):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument("--directory",default="runs/stage_zero_local")
-    parser.add_argument("--lock",default="reports/stage_zero_local_plasticity_lock.json")
-    parser.add_argument("--output",default="reports/stage_zero_local_plasticity_audit.json")
+    parser.add_argument("--directory",default="runs/stage_zero_local/potential_goodness")
+    parser.add_argument("--lock",default=None)
+    parser.add_argument("--output",default=None)
     args=parser.parse_args()
     report=audit(args.directory,args.lock)
-    Path(args.output).write_text(json.dumps(report,indent=2),encoding="utf-8")
+    output=Path(args.output) if args.output is not None else Path(args.directory)/"audit.json"
+    output.write_text(json.dumps(report,indent=2),encoding="utf-8")
     print(json.dumps({"passed":report["passed"],"all_rows_audited":report["all_rows_audited"],
                       "stimulus_count":report["stimulus_count"]}))
 

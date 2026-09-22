@@ -1,10 +1,13 @@
+import pytest
 import torch
 
 from experiments.stage_zero.environment import (
-    ACTIONS, balanced_colors, balanced_delays, balanced_targets, exact_goodness,
+    ACTIONS, balanced_colors, balanced_delays, balanced_targets, exact_success, potential_goodness,
     phase_schedule, render, stimulus_hash,
 )
+from experiments.stage_zero.audit import audit_goodness
 from experiments.stage_zero.harness import StageZero
+from experiments.stage_zero.runner import aggregate
 
 
 def test_balanced_independent_environment_schedule():
@@ -31,9 +34,11 @@ def test_environment_exact_one_hot_and_color_variants():
     assert torch.all(green[1]==1) and torch.all(green[[0,2]]==0)
     action=torch.zeros(27,dtype=torch.bool)
     action[0]=True
-    assert exact_goodness(0,action)==1.
+    assert potential_goodness(0,action)==1.
+    assert exact_success(0,action)
     action[1]=True
-    assert exact_goodness(0,action)==0.
+    assert potential_goodness(0,action)==.5
+    assert not exact_success(0,action)
 
 
 def test_stage_zero_group_ownership_and_freeze():
@@ -59,3 +64,40 @@ def test_stage_zero_group_ownership_and_freeze():
     assert row["plastic_state"]["total"]["l2"]>0
     model.reset_phase(False)
     assert model.state_stats()["total"]["l2"]==0
+
+
+@pytest.mark.parametrize(
+    "target_pressed,wrong_count,expected",
+    [(False,0,0.),(False,9,0.),(True,0,1.),(True,1,.5),
+     (True,2,1/3),(True,9,.1)],
+)
+def test_potential_goodness_and_independent_audit(target_pressed,wrong_count,expected):
+    action=torch.zeros(27,dtype=torch.bool)
+    action[0]=target_pressed
+    action[1:1+wrong_count]=True
+    assert potential_goodness(0,action)==pytest.approx(expected)
+    audited_g,audited_exact=audit_goodness(0,action.tolist())
+    assert audited_g==pytest.approx(expected)
+    assert audited_exact==exact_success(0,action)==(target_pressed and wrong_count==0)
+
+
+def test_aggregate_separates_fractional_goodness_from_exact_success():
+    rows=[]
+    for target_hit,active,g,exact in ((False,9,0.,False),(True,10,.1,False),
+                                      (True,1,1.,True)):
+        rows.append({
+            "target_bit_actual":target_hit,"active_bit_count":active,
+            "g_star":g,"exact_success":exact,
+            "target_p":.5,"non_target_mean_p":.5,
+            "non_target_false_rate":(active-int(target_hit))/26,
+            "exact_event_probability":0.,"parameter_norm":1.,
+            "parameter_delta_norm":0.,"plastic_state":{"total":{"l2":0.}},
+            "nan_count":0,"inf_count":0,
+        })
+    result=aggregate(rows)
+    assert result["target_bit_hit_rate"]==pytest.approx(2/3)
+    assert result["mean_active_bits"]==pytest.approx(20/3)
+    assert result["mean_active_bits_given_target_hit"]==pytest.approx(5.5)
+    assert result["mean_g_star"]==pytest.approx(1.1/3)
+    assert result["exact_success_rate"]==pytest.approx(1/3)
+    assert result["positive_g_star"]==2

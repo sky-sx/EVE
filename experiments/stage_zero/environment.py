@@ -76,8 +76,16 @@ def balanced_colors(targets, rng):
     return colors
 
 
-def exact_goodness(target, action):
-    return float(bool(action[target]) and int(action.sum()) == 1)
+def potential_goodness(target, action):
+    """External scalar: target active receives inverse active-bit count."""
+    if not bool(action[target]):
+        return 0.0
+    return 1.0 / int(action.sum())
+
+
+def exact_success(target, action):
+    """Evaluation only; it never enters the parameter update."""
+    return bool(action[target]) and int(action.sum()) == 1
 
 
 def phase_schedule(count, seed, phase_index):

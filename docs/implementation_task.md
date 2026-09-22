@@ -15,7 +15,7 @@
 ## 本轮完成的核验
 
 - 已将归档外活动测试迁移到当前 Local Plasticity API，覆盖数值 F_e、事件计数 retention、延迟 F_w、参数注册、无 autograd 学习路径、goodness_id 可选和完整 Runtime 回归。测试总数以本轮实测为准。
-- 已建立[当前 Stage 0](../experiments/stage_zero/README.md)，按[锁定配置](../reports/stage_zero_local_plasticity_lock.json)做五 seed 正式实验；行为结论见[正式报告](../reports/stage_zero_local_plasticity_report.md)。
+- 已建立[当前 Stage 0](../experiments/stage_zero/README.md)，此前按[锁定配置](../reports/stage_zero_local_plasticity_lock.json)完成 strict-reward 五 seed 实验；其[报告](../reports/stage_zero_local_plasticity_report.md)仅适用于旧 `g*`。当前 `1/n` 定义尚未正式运行。
 
 ## 尚待实现或核验
 

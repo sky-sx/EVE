@@ -11,7 +11,7 @@ from acnt import Block, Core
 from acnt.adapters import EyeAdapter, HandAdapter
 from acnt.control import sample_discrete
 from acnt.plasticity import LocalEvent, Plasticity
-from .environment import ACTIONS, exact_goodness, render, stimulus_hash
+from .environment import ACTIONS, exact_success, potential_goodness, render, stimulus_hash
 
 
 class StageZero:
@@ -127,7 +127,8 @@ class StageZero:
         signal = sample_discrete(q, tau=0.25, threshold=0., generator=generator)
         if self._learning:
             self.plasticity.observe_control(self.hand, signal)
-        g = exact_goodness(target, signal.a)
+        g = potential_goodness(target, signal.a)
+        exact = exact_success(target, signal.a)
         delivery = action_time + delay_ms
         # No Core, Adapter, or F_e call takes place between action and delivery.
         before_state = self.state_stats()
@@ -154,7 +155,7 @@ class StageZero:
             "q": signal.q.cpu().tolist(), "p": probs.tolist(),
             "noise": signal.noise.cpu().tolist(), "threshold": signal.threshold.cpu().tolist(),
             "action_bits": bits, "sampled_actions": [ACTIONS[i] for i, bit in enumerate(bits) if bit],
-            "g_star": g, "exact_success": bool(g),
+            "g_star": g, "exact_success": exact,
             "target_q": float(signal.q[target]), "target_p": ptarget,
             "non_target_mean_p": float((probs.sum()-probs[target])/26),
             "target_bit_actual": bool(bits[target]),
