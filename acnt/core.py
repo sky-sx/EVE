@@ -68,7 +68,7 @@ class Core(nn.Module):
         """Detached old states, captured once for the whole scheduling event."""
         return {block.block_id: block.z.detach().clone() for block in self.blocks if block.active}
 
-    def update_block(self, block_id: int, *, now_ms: int | None = None, force: bool = False, track_grad: bool = False, source_snapshot: Mapping[int, Tensor] | None = None) -> Tensor:
+    def update_block(self, block_id: int, *, now_ms: int | None = None, force: bool = False, source_snapshot: Mapping[int, Tensor] | None = None) -> Tensor:
         """Update a due active Block; ReadIn may later force one early update."""
         self._check_id(block_id)
         block = self.blocks[block_id]
@@ -77,9 +77,9 @@ class Core(nn.Module):
         if not block.active or (not force and not due):
             return block.z
         active_z = self.source_snapshot() if source_snapshot is None else source_snapshot
-        output = block.update(now_ms=now_ms, active_z=active_z, track_grad=track_grad)
+        output = block.update(now_ms=now_ms, active_z=active_z)
         if block.o is not None:
-            # Replace the buffer, leaving the current local graph intact for VJP.
+            # The current ReadIn contribution is consumed once.
             block.o = block.o.new_zeros(block.o.shape)
         return output
 

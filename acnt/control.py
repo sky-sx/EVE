@@ -10,7 +10,7 @@ from torch import Tensor
 
 @dataclass(frozen=True)
 class DiscreteSignal:
-    """One control sample, retaining the local graph of q and p."""
+    """One observed control sample with detached terminal facts."""
 
     q: Tensor
     noise: Tensor
@@ -30,8 +30,8 @@ def sample_discrete(
     """Sample each coordinate with ``q + Logistic(0, tau) > threshold``.
 
     The matching marginal probability is ``sigmoid((q - threshold) / tau)``.
-    No gradients flow through the noise or the Boolean outcome; q and p keep
-    their local autograd graph for subsequent eligibility calculations.
+    q, noise, probability, and the actual event remain terminal-local facts.
+    Production control never constructs a gradient graph.
     """
     if not isinstance(q, Tensor) or q.ndim != 1 or q.numel() == 0:
         raise ValueError("q must be a nonempty one-dimensional tensor")
@@ -41,6 +41,7 @@ def sample_discrete(
         raise ValueError("q must contain finite values")
     if isinstance(tau, bool) or not isinstance(tau, Real) or not isfinite(tau) or tau <= 0:
         raise ValueError("tau must be a finite positive number")
+    q = q.detach()
     tau = float(tau)
     tau_fp32 = q.new_tensor(tau)
     if not torch.isfinite(tau_fp32) or tau_fp32 <= 0:

@@ -15,7 +15,7 @@ class Block(nn.Module):
 
     A/At store oldest first; W_c[idx] follows the current queue index.
     LN has no learned affine parameters: these are absent from canonical theta.
-    Persistent states are detached; an optional local graph serves e-prop.
+    Persistent states are detached; an observer may see only local activities.
     """
 
     def __init__(
@@ -75,6 +75,7 @@ class Block(nn.Module):
         self.register_buffer("o", torch.zeros(2 * n, dtype=torch.float32) if readin else None)
         self.A: deque[Tensor] = deque(maxlen=hold_tick)
         self.At: deque[int] = deque(maxlen=hold_tick)
+        self.local_observer = None
 
     @staticmethod
     def sigma(x: Tensor) -> Tensor:
@@ -93,11 +94,12 @@ class Block(nn.Module):
         if not torch.isfinite(value).all():
             raise ValueError(f"{name} must contain finite values")
 
-    def update(self, *, now_ms: int | None = None, active_z: Mapping[int, Tensor] | None = None, track_grad: bool = False) -> Tensor:
-        with torch.set_grad_enabled(track_grad):
-            return self._update(now_ms=now_ms, active_z=active_z, track_grad=track_grad)
+    def update(self, *, now_ms: int | None = None, active_z: Mapping[int, Tensor] | None = None) -> Tensor:
+        # The production Block never constructs a gradient graph.
+        with torch.no_grad():
+            return self._update(now_ms=now_ms, active_z=active_z)
 
-    def _update(self, *, now_ms: int | None, active_z: Mapping[int, Tensor] | None, track_grad: bool) -> Tensor:
+    def _update(self, *, now_ms: int | None, active_z: Mapping[int, Tensor] | None) -> Tensor:
         """Update once using exactly the supplied active source states.
 
         An omitted/empty mapping means no source contributes, including self.
@@ -115,7 +117,8 @@ class Block(nn.Module):
         if self.o is not None:
             self._check_vector(self.o, 2 * self.neuron_size, "o")
             r = r + self.o
-        for j, z_j in ({} if active_z is None else active_z).items():
+        sources = {} if active_z is None else active_z
+        for j, z_j in sources.items():
             if type(j) is not int or not 0 <= j < len(self.W_ij):
                 raise ValueError("source id must index W_ij")
             self._check_vector(z_j, self.source_sizes[j], f"z_{j}")
@@ -123,6 +126,10 @@ class Block(nn.Module):
         n = self.neuron_size
         # a_i = LN(r_i[:n] * sigma(r_i[n:])).
         a = self.LN(r[:n] * self.sigma(r[n:]))
+        if self.local_observer is not None:
+            for j, z_j in sources.items():
+                self.local_observer(self.W_ij[j], z_j.detach(), r.detach())
+            self.local_observer(self.b, torch.ones_like(r), r.detach())
 
         # Canonical t_last is sampled after a is formed. Tests may supply t.
         now_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
@@ -142,9 +149,10 @@ class Block(nn.Module):
             t_last = t_k
             m = torch.cat((a_k, h))
             h_c = self.LN(self.W_c[idx] @ m + self.b_c[idx])
-            # User clarification: ticktime is seconds per tick; divide the
-            # elapsed seconds by ticktime. This supersedes the original product.
-            gamma = self.sigma(self.b.new_tensor((delta_t / 1000.0) / self.ticktime))
+            gamma = self.sigma(self.b.new_tensor(delta_t * self.ticktime))
+            if self.local_observer is not None:
+                self.local_observer(self.W_c[idx], m.detach(), h_c.detach())
+                self.local_observer(self.b_c[idx], torch.ones_like(h_c), h_c.detach())
             h = (1 - gamma) * h_c + gamma * h
 
         for name, value in (("r", r), ("a", a), ("h", h), ("z", h)):
@@ -158,4 +166,4 @@ class Block(nn.Module):
         self.At.extend(times)
         if self.o is not None:
             self.o = self.o.detach().clone()
-        return h if track_grad else self.z
+        return self.z

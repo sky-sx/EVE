@@ -1,8 +1,7 @@
 """Standalone FP32 adapters selected for Phase 6.
 
-Adapters only map tensors. Organ state, sampling, clamping, Core wiring, and
-parameter updates belong to later phases. A forward pass retains its autograd
-graph so output-mean derivatives can be computed for every parameter.
+Adapters map tensors; their parametrized layers expose local pre/post activity
+to the Runtime observer. Production forward passes do not build gradient graphs.
 """
 
 import torch
@@ -16,7 +15,7 @@ def _positive_integer(value: int, name: str) -> int:
 
 
 class _Adapter(nn.Module):
-    """Validate unbatched or singly batched tensors without detaching them."""
+    """Validate unbatched or singly batched FP32 tensors."""
 
     def _check_input(self, value: Tensor, sample_shape: tuple[int, ...]) -> None:
         if not isinstance(value, Tensor):
@@ -68,6 +67,7 @@ class EyeAdapter(_Adapter):
         )
         self.projection = nn.Linear(16 * 18 * 32, 2 * neuron_size, dtype=torch.float32)
 
+    @torch.no_grad()
     def forward(self, image: Tensor) -> Tensor:
         self._check_input(image, (3, 1080, 1920))
         features = self.features(image)
@@ -85,6 +85,7 @@ class EarAdapter(_Adapter):
         self.channels = _positive_integer(channels, "channels")
         self.linear = nn.Linear(channels * window_samples, 2 * neuron_size, dtype=torch.float32)
 
+    @torch.no_grad()
     def forward(self, audio: Tensor) -> Tensor:
         self._check_input(audio, (self.channels, self.window_samples))
         return self._check_output(self.linear(audio.flatten(start_dim=-2)))
@@ -119,6 +120,7 @@ class HandAdapter(_Adapter):
             nn.Linear(hidden_size, self.output_size, dtype=torch.float32),
         )
 
+    @torch.no_grad()
     def forward(self, z: Tensor) -> Tensor:
         self._check_input(z, (self.neuron_size,))
         return self._check_output(self.network(z))
@@ -131,6 +133,7 @@ class _LinearReadout(_Adapter):
         self.output_size = _positive_integer(output_size, "output_size")
         self.linear = nn.Linear(neuron_size, output_size, dtype=torch.float32)
 
+    @torch.no_grad()
     def forward(self, z: Tensor) -> Tensor:
         self._check_input(z, (self.neuron_size,))
         return self._check_output(self.linear(z))

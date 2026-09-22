@@ -13,7 +13,7 @@ from .control import DiscreteSignal, sample_discrete
 from .core import Core
 from .hand import HAND_DISCRETE_NAMES
 from .mechanical import MechanicalLog
-from .plasticity import Plasticity
+from .plasticity import LocalEvent, Plasticity
 
 
 READINS = ("eye", "ear")
@@ -39,7 +39,7 @@ class HandSignal:
 
 
 class Runtime(nn.Module):
-    def __init__(self, core: Core, adapters: Mapping[str, nn.Module], organ_blocks: Mapping[str, int]) -> None:
+    def __init__(self, core: Core, adapters: Mapping[str, nn.Module], organ_blocks: Mapping[str, int], *, noise_scale: float = 1.0) -> None:
         super().__init__()
         if set(adapters) != set(ORGANS) or set(organ_blocks) != set(ORGANS):
             raise ValueError("exactly the six canonical organs must be bound")
@@ -62,44 +62,44 @@ class Runtime(nn.Module):
         for block in core.blocks:
             if (block.o is not None) != (block.block_id in readin_ids):
                 raise ValueError("only bound eye/ear Blocks may have a ReadIn o vector")
+        if not math.isfinite(noise_scale) or noise_scale <= 0:
+            raise ValueError("noise_scale must be finite and positive")
+        self.noise_scale = float(noise_scale)
         self.core = core
         self.adapters = nn.ModuleDict(adapters)
         self.organ_blocks = dict(organ_blocks)
         self.goodness_active = core.blocks[self.organ_blocks["goodness"]].active
         self.core.set_active(self.organ_blocks["route"], True)
-        self.calibration_eligibility: dict[str, Tensor] = {}
         self.mechanical_log = MechanicalLog()
         self.execution_enabled = {"hand": False, "speak": False, "route": True, "goodness": self.goodness_active}
         self.executors: dict = {}
         self.plasticity: Plasticity | None = None
-        self._local_z: dict[int, Tensor] = {}
 
-    def enable_plasticity(self, *, feedback_seed: int = 0, **hyperparameters) -> Plasticity:
+    def enable_plasticity(self, **hyperparameters) -> Plasticity:
+        """Install a replaceable local rule; no e-prop state is created."""
+        if self.plasticity is not None:
+            self.plasticity.detach_adapters()
         reverse = {block_id: name for name, block_id in self.organ_blocks.items()}
         groups = {}
         for i, block in enumerate(self.core.blocks):
             parameters = {f"block.{name}": parameter for name, parameter in block.named_parameters()}
             organ = reverse.get(i)
-            if organ is not None and organ != "goodness":
+            if organ is not None:
                 parameters.update({f"adapter.{name}": parameter for name, parameter in self.adapters[organ].named_parameters()})
             groups[i] = parameters
-        self.plasticity = Plasticity(groups, {i: block.ticktime for i, block in enumerate(self.core.blocks)}, **hyperparameters)
-        # DERIVED: random e-prop feedback is a learning-layer implementation choice.
-        # Buffers are fixed, checkpointed, and absent from theta and forward.
-        generator = torch.Generator(device="cpu").manual_seed(feedback_seed)
-        for i, block in enumerate(self.core.blocks):
-            for name, dimension in (("hand", self.adapters["hand"].discrete_controls),
-                                    ("route", len(self.core.blocks))):
-                feedback = torch.randn(block.neuron_size, dimension, generator=generator) / math.sqrt(dimension)
-                self.register_buffer(f"feedback_{i}_{name}", feedback.to(block.b))
-        self._local_z.clear()
+        self.plasticity = Plasticity(groups, self.organ_blocks["goodness"], **hyperparameters)
+        self.plasticity.attach_adapters(self.adapters, route_id=self.organ_blocks["route"])
+        for block in self.core.blocks:
+            block.local_observer = lambda parameter, pre, post: self.plasticity.observe(
+                parameter, LocalEvent(pre, post, "dense" if parameter.ndim == 2 else "bias")
+            )
         return self.plasticity
 
+    @torch.no_grad()
     def step(
         self, *, now_ms: int, readins: Mapping[str, Tensor] | None = None,
         teacher: float | None = None, teacher_time_ms: int | None = None,
         generator: torch.Generator | None = None, learn: bool = True,
-        calibration_lr: float = 0.01,
     ) -> dict:
         """One mock/world tick. Returned diagnostics contain no live graphs."""
         if learn and self.plasticity is None:
@@ -109,18 +109,15 @@ class Runtime(nn.Module):
         hand = self.generate_hand(now_ms=now_ms, generator=generator)
         speak = self.generate_speak(now_ms=now_ms)
         goodness = self.generate_goodness(
-            now_ms=now_ms, teacher=teacher, teacher_time_ms=teacher_time_ms,
-            calibration_lr=calibration_lr if learn else 0.,
+            now_ms=now_ms, teacher=teacher, teacher_time_ms=teacher_time_ms, calibrate=learn,
         )
-        delta = self.learn_goodness(goodness) if learn else None
-        self._local_z.clear()
+        modulation = self.learn_goodness(goodness) if learn else None
         return {
             "time_ms": now_ms, "updated": list(updated), "next_active": list(self.core.active_ids),
             "history_lengths": [len(block.A) for block in self.core.blocks],
             "z_norms": [float(block.z.norm()) for block in self.core.blocks],
             "g": float(goodness.g), "g_eff": goodness.g_eff, "teacher": goodness.teacher,
-            "calibration_loss": goodness.calibration_loss, "delta": delta,
-            "g_bar": None if self.plasticity is None else self.plasticity.g_bar,
+            "calibration_loss": goodness.calibration_loss, "goodness_modulation": modulation,
             "route_sampled": route.a.tolist(),
             "hand_discrete": hand.discrete.a.tolist(), "hand_continuous": hand.continuous.detach().tolist(),
             "speak": speak.detach().tolist(), "mechanical_records": len(self.mechanical_log.records),
@@ -133,11 +130,7 @@ class Runtime(nn.Module):
         delivered_ms = signal.time_ms if delivered_ms is None else delivered_ms
         if type(delivered_ms) is not int or delivered_ms < signal.time_ms:
             raise ValueError("delivery cannot precede the goodness event")
-        try:
-            return None if signal.g_eff is None else self.plasticity.apply_goodness(signal.g_eff, now_ms=delivered_ms)
-        finally:
-            # No local computational graph survives an in-place learning step.
-            self._local_z.clear()
+        return None if signal.g_eff is None else self.plasticity.apply_goodness(signal.g_eff, now_ms=delivered_ms)
 
     def set_execution_enabled(self, name: str, enabled: bool) -> None:
         if name not in READOUTS or type(enabled) is not bool:
@@ -158,6 +151,7 @@ class Runtime(nn.Module):
                 record["executor_error"] = str(error)
         self.mechanical_log.append(record)
 
+    @torch.no_grad()
     def generate_hand(self, *, now_ms: int = 0, generator: torch.Generator | None = None, threshold: float | Tensor = 0.0) -> HandSignal:
         """Generate all 82 keyboard keys, three mouse buttons and dx/dy."""
         adapter = self.adapters["hand"]
@@ -165,11 +159,9 @@ class Runtime(nn.Module):
             raise ValueError("runtime hand requires 82 keys, three mouse buttons and dx/dy")
         raw = self.decode_readout("hand")
         count = adapter.discrete_controls
-        block = self.core.blocks[self.organ_blocks["hand"]]
-        discrete = sample_discrete(raw[:count], tau=block.ticktime, threshold=threshold, generator=generator)
+        discrete = sample_discrete(raw[:count], tau=self.noise_scale, threshold=threshold, generator=generator)
         continuous = raw[count:]
         if self.plasticity is not None:
-            self.plasticity.continuous[self.organ_blocks["hand"]].observe_mean(continuous, now_ms=now_ms)
             self._observe_discrete("hand", discrete, now_ms=now_ms)
         self._emit("hand", {
             "discrete": dict(zip(HAND_DISCRETE_NAMES, discrete.a.tolist())),
@@ -178,39 +170,26 @@ class Runtime(nn.Module):
         return HandSignal(discrete, continuous)
 
     def _observe_discrete(self, name: str, signal: DiscreteSignal, *, now_ms: int) -> None:
-        bank = self.plasticity.control[self.organ_blocks[name]]
-        score = bank.observe_control(
-            signal, now_ms=now_ms,
-            parameter_names=[key for key in bank.parameters if key.startswith("adapter.")],
-        )
-        # Each ReadOut contributes once. Linearity of VJP sums simultaneous L's.
-        # Only Blocks updated this round have a local graph; old tags still decay.
-        for i, z in self._local_z.items():
-            learning_signal = getattr(self, f"feedback_{i}_{name}") @ score
-            self.plasticity.internal[i].observe_vector(z, learning_signal, now_ms=now_ms)
+        # The terminal itself sees q, its own noise, and the actual event.
+        # No score function or global feedback is constructed.
+        self.plasticity.observe_control(self.adapters[name], signal)
 
+    @torch.no_grad()
     def generate_speak(self, *, now_ms: int = 0) -> Tensor:
         controls = self.decode_readout("speak")
         if controls.shape != (30,):
             raise ValueError("speak requires 30 continuous controls")
-        if self.plasticity is not None:
-            self.plasticity.continuous[self.organ_blocks["speak"]].observe_mean(controls, now_ms=now_ms)
         self._emit("speak", {"controls": controls.detach().tolist()}, now_ms)
         return controls
 
+    @torch.no_grad()
     def generate_goodness(
         self, *, now_ms: int, teacher: float | None = None,
-        teacher_time_ms: int | None = None, calibration_lr: float = 0.01,
+        teacher_time_ms: int | None = None, calibrate: bool = True,
     ) -> GoodnessSignal:
-        """Only a same-time teacher calibrates the current A_g prediction.
-
-        A_g uses (g-g*) times its local dg/dparameter eligibility. There is no
-        teacher cache, replay, or propagation of calibration gradients to B_g.
-        """
+        """One clamped scalar; same-time teacher calibrates B_g and A_g locally."""
         if type(now_ms) is not int:
             raise ValueError("now_ms must be integer milliseconds")
-        if not math.isfinite(calibration_lr) or calibration_lr < 0:
-            raise ValueError("calibration_lr must be finite and nonnegative")
         if teacher is not None:
             teacher = float(teacher)
             if not math.isfinite(teacher) or not 0 <= teacher <= 1:
@@ -219,28 +198,17 @@ class Runtime(nn.Module):
                 raise ValueError("teacher and g must have the same timestamp")
         elif teacher_time_ms is not None:
             raise ValueError("a teacher timestamp requires a teacher")
-        adapter = self.adapters["goodness"]
         block = self.core.blocks[self.organ_blocks["goodness"]]
-        raw = adapter(block.z.detach())
+        raw = self.adapters["goodness"](block.z)
         if raw.shape != (1,):
             raise ValueError("goodness must produce exactly one scalar")
-        g = torch.sigmoid(raw.reshape(()))
-        prediction = g.detach().clone()
+        prediction = raw.reshape(()).clamp(0, 1).detach().clone()
         loss = None
-        # Current-only calibration is the user's explicit temporal rule.
-        self.calibration_eligibility = {}
         if teacher is not None and self.execution_enabled["goodness"]:
-            parameters = dict(adapter.named_parameters())
-            derivatives = torch.autograd.grad(g, tuple(parameters.values()))
-            self.calibration_eligibility = {
-                name: derivative.detach().clone()
-                for name, derivative in zip(parameters, derivatives)
-            }
-            error = float(prediction) - teacher
-            loss = 0.5 * error * error
-            with torch.no_grad():
-                for name, parameter in parameters.items():
-                    parameter.add_(self.calibration_eligibility[name], alpha=-calibration_lr * error)
+            c_g = teacher - float(prediction)
+            loss = 0.5 * c_g * c_g
+            if calibrate and self.plasticity is not None:
+                self.plasticity.calibrate_goodness(c_g)
         self._emit("goodness", {"g": float(prediction)}, now_ms)
         effective = teacher if teacher is not None else (float(prediction) if self.execution_enabled["goodness"] else None)
         return GoodnessSignal(now_ms, prediction, effective, teacher, loss)
@@ -254,13 +222,12 @@ class Runtime(nn.Module):
             self.execution_enabled["goodness"] = active
         self.core.set_active(self.organ_blocks["goodness"], active)
 
+    @torch.no_grad()
     def generate_route(self, *, now_ms: int = 0, generator: torch.Generator | None = None, threshold: float | Tensor = 0.0) -> DiscreteSignal:
         """q + independent Logistic noise + threshold -> next active set."""
-        block = self.core.blocks[self.organ_blocks["route"]]
-        signal = sample_discrete(self.decode_readout("route"), tau=block.ticktime, threshold=threshold, generator=generator)
+        signal = sample_discrete(self.decode_readout("route"), tau=self.noise_scale, threshold=threshold, generator=generator)
         if self.plasticity is not None:
-            # Keep all original sampled proposals for eligibility. Role
-            # overrides below must not be substituted into this probability.
+            # Observe the actual terminal event before role overrides.
             self._observe_discrete("route", signal, now_ms=now_ms)
         mask = signal.a.tolist()
         # Role invariants take precedence over route's stochastic proposals.
@@ -272,6 +239,7 @@ class Runtime(nn.Module):
         self.core.set_active(self.organ_blocks["route"], True)
         return signal
 
+    @torch.no_grad()
     def encode_readin(self, name: str, external_input: Tensor) -> Tensor:
         """External sample -> adapter -> the unique ReadIn Block's o."""
         if name not in READINS:
@@ -282,13 +250,15 @@ class Runtime(nn.Module):
         block.o = o
         return o
 
+    @torch.no_grad()
     def decode_readout(self, name: str) -> Tensor:
         """The unique ReadOut Block's z -> its raw adapter output."""
         if name not in READOUTS:
             raise ValueError("only hand, speak, goodness and route are ReadOut organs")
         block = self.core.blocks[self.organ_blocks[name]]
-        return self.adapters[name](self._local_z.get(block.block_id, block.z))
+        return self.adapters[name](block.z)
 
+    @torch.no_grad()
     def update_blocks(self, *, now_ms: int | None = None, readins: Mapping[str, Tensor] | None = None, order: Sequence[int] | None = None) -> dict[int, Tensor]:
         """New input forces one update, even if route did not select its Block.
 
@@ -302,7 +272,6 @@ class Runtime(nn.Module):
         if sorted(ids) != list(range(len(self.core.blocks))):
             raise ValueError("order must visit every Block exactly once")
         now_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
-        self._local_z.clear()
         self.core.set_active(self.organ_blocks["route"], True)
         self.core.set_active(self.organ_blocks["goodness"], self.goodness_active)
         # Validate time before accepting an external input or changing flags.
@@ -320,10 +289,7 @@ class Runtime(nn.Module):
             for i in ids:
                 block = self.core.blocks[i]
                 if block.active and (i in forced or self.core.is_due(i, now_ms)):
-                    outputs[i] = self.core.update_block(i, now_ms=now_ms, force=i in forced, track_grad=self.plasticity is not None, source_snapshot=sources)
-                    if self.plasticity is not None:
-                        self._local_z[i] = outputs[i]
-                        self.plasticity.internal[i].advance(now_ms)
+                    outputs[i] = self.core.update_block(i, now_ms=now_ms, force=i in forced, source_snapshot=sources)
             return outputs
         finally:
             for i, active in previous_active.items():
