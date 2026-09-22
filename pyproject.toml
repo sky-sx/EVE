@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "acnt-runtime"
 version = "0.0.1"
-description = "ACNT canonical runtime, implemented in gated phases"
+description = "ACNT Local Plasticity runtime"
 requires-python = ">=3.11"
 dependencies = ["torch>=2.0"]
 
