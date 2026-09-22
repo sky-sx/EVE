@@ -1,7 +1,7 @@
 """Stage Zero boundary and actual ACNT learning-path integration tests.
 
 The positive reward below is an explicitly synthetic wiring test. It does not
-replace the frozen Teacher table used by the experiment runner.
+replace the fractional environment Goodness used by the experiment runner.
 """
 
 import builtins
@@ -13,7 +13,6 @@ import os
 import pytest
 import torch
 
-from test_stage_zero_environment import teacher_table
 from torch.nn import functional as F
 
 import acnt.adapters as adapters
@@ -153,7 +152,7 @@ def test_uses_real_independent_logistic_sampling(model, frame, monkeypatch):
     assert model._local_z == {}
 
 
-def test_no_supervised_loss_optimizer_or_target_enters_network(model, monkeypatch, teacher_table):
+def test_no_supervised_loss_optimizer_or_target_enters_network(model, monkeypatch):
     assert "target" not in inspect.signature(model.act).parameters
     for name in ("cross_entropy", "nll_loss", "binary_cross_entropy",
                  "binary_cross_entropy_with_logits", "softmax", "log_softmax"):
@@ -165,12 +164,21 @@ def test_no_supervised_loss_optimizer_or_target_enters_network(model, monkeypatc
     monkeypatch.setattr(torch.optim.Optimizer, "__init__", _forbidden)
     monkeypatch.setattr(torch.Tensor, "backward", _forbidden)
     monkeypatch.setattr(torch.autograd, "backward", _forbidden)
+    deliveries = []
+    original_deliver = model.deliver_goodness
+    def trace_delivery(value, *, now_ms):
+        deliveries.append((value, now_ms))
+        return original_deliver(value, now_ms=now_ms)
+    monkeypatch.setattr(model, "deliver_goodness", trace_delivery)
     row = run_episode(model, VisualEnvironment(), 2, episode=0, phase_episode=0,
-                      phase="training", start_ms=0, generator=_generator(), learn=True, teacher_table=teacher_table)
+                      phase="training", start_ms=0, generator=_generator(), learn=True)
     bits = json.loads(row["action_bits"])
     assert row["correct_exact_match"] == float(bits[2] and sum(bits) == 1)
-    assert row["goodness"] == teacher_table.lookup(int(bits[2]), sum(bits) - bits[2])
-    assert row["goodness"] != row["correct_exact_match"]
+    expected = int(bits[2]) / sum(bits) if sum(bits) else 0.0
+    assert row["goodness"] == row["fractional_goodness"] == expected
+    assert deliveries == [(expected, row["logical_time_ms"] + 250)]
+    assert row["delta"] == expected - row["g_bar_before"]
+    assert row["parameter_delta_norm"] > 0
     assert row["goodness_delivery_time"] - row["logical_time_ms"] == 250
     assert row["nan_count"] == row["inf_count"] == 0
 
@@ -272,7 +280,7 @@ def test_actual_continuous_eprop_delay_decay_update_baseline_and_fixed_feedback(
     # Discrete adapter eligibility must not leak direct Hand gradients into Block.
     assert all(torch.count_nonzero(t) == 0 for n, t in traces[2][1].items() if n.startswith("block."))
     _assert_finite(model)
-    # Synthetic positive scalar tests the wiring only; main runner reads frozen Teacher means.
+    # Synthetic positive scalar tests the existing e-prop wiring independently.
     delta = model.deliver_goodness(0.75, now_ms=action_ms + 250)
     assert goodness_calls == [(0.75, 750)]
     assert delta == 0.25 and model.plasticity.g_bar == pytest.approx(0.525)
@@ -311,7 +319,7 @@ def test_feedback_cannot_affect_forward_or_action(frame):
     assert all(torch.count_nonzero(t) == 0 for bank in right.plasticity.internal.values() for t in bank.values.values())
 
 
-def test_no_learning_and_frozen_evaluation_never_update(model, frame, monkeypatch, teacher_table):
+def test_no_learning_and_frozen_evaluation_never_update(model, frame, monkeypatch):
     initial = model.parameter_vector()
     action_ms, _ = model.act(frame, start_ms=0, generator=_generator(), learn=False)
     assert model.deliver_goodness(1.0, now_ms=action_ms + 250) is None
@@ -330,7 +338,7 @@ def test_no_learning_and_frozen_evaluation_never_update(model, frame, monkeypatc
     for index, target in enumerate((0, 25, 26)):
         row = run_episode(model, VisualEnvironment(), target, episode=index,
                           phase_episode=index, phase="frozen", start_ms=index * 1000,
-                          generator=_generator(), learn=False, teacher_table=teacher_table)
+                          generator=_generator(), learn=False)
         assert row["learning_enabled"] is False and row["parameter_delta_norm"] == 0
         assert row["eligibility_norm"] == 0 and row["delta"] is None
         assert row["nan_count"] == row["inf_count"] == 0

@@ -1,4 +1,15 @@
-# ACNT Stage Zero protocol (Teacher revision declared before training)
+# ACNT Stage Zero protocol (fractional environment Goodness)
+
+Current experiment (starting from `d9d7aa78596feb52d09259ebd2c1519a221ae837`):
+deterministic fractional environment Goodness. For the sampled 27-bit Hand action,
+`G = correct_pressed / pressed_count` when any control is pressed, otherwise
+`G = 0`. Only this scalar reaches the existing delayed e-prop path. Exact
+one-hot success remains the external behavioral criterion. The fixed
+`initial_g_bar=0.5` is intentionally unchanged.
+
+Previous experiment: DeepSeek frozen Teacher Goodness → **NOT SUPPORTED**.
+Its calibration files, raw logs, and report remain historical evidence, and
+the current runner does not read them. The previous protocol is recorded below.
 
 Baseline: `be9c1cf604b5e3e66d57774cd1ab1704df68fdd5`, clean main;
 GitHub commit API resolved remote main to the same SHA on 2026-09-20.
@@ -35,8 +46,8 @@ Three rounds allow Eye -> ordinary Block -> Hand propagation through OLD
 snapshots. This is repeated stimulus presentation, not a retained pulse.
 Only the final round samples Hand and generates local eligibility, with a
 current Eye local graph. Earlier graphs are discarded; no temporal backprop.
-Action time is episode start +500 ms. The environment looks up frozen Teacher
-mean M[correct_pressed, wrong_count], delivered at action time +250 ms. No further actions
+Action time is episode start +500 ms. The environment computes deterministic
+fractional Goodness from the sampled action, delivered at action time +250 ms. No further actions
 intervene. The next episode starts 250 ms after delivery. Logical time is
 simulated without wall-clock sleep. Core state/history persist across samples.
 
@@ -62,7 +73,7 @@ eligibility between phases, preserve learned parameters and baseline; use the
 same reset protocol before initial and frozen evaluation. Do not reset within
 a phase. Frozen evaluation uses a new sequence and separate action RNG.
 
-Every episode records all 27 q/p values and actions, target, independent exact match, Teacher goodness and action bucket,
+Every episode records all 27 q/p values and actions, target, independent exact match, fractional goodness and action bucket,
 target-bit hit, non-target false activation rate, active count, logical times,
 parameter norm/change, eligibility norm, baseline, NaN/Inf counts and expected
 exact probability (diagnostic product only, never a loss). Preserve every seed,
@@ -73,10 +84,10 @@ runs/stage_zero; publish a compact report consistent with repository policy.
 Report SUPPORTED only for reproducible exact-success/tendency/frozen improvement;
 PARTIAL for mixed evidence; NOT SUPPORTED if no learning is observed under
 this protocol. Random parameter drift alone is not evidence of task learning.
-Teacher goodness improvement alone cannot qualify as learned behavior.
+Mean goodness improvement alone cannot qualify as learned behavior.
 
 
-## Frozen visual Teacher revision, 2026-09-21
+## Historical frozen visual Teacher revision, 2026-09-21
 
 Starting commit: 43677b0bce2d10dfdbe217fc8c7670583054644e (remote HEAD verified).
 Keep the previous formal budget: CUDA FP32, seeds 11/22/33/44/55, 270 initial,
@@ -99,7 +110,7 @@ answers have bounded retries; failures abort without fabricating a table. Standa
 library HTTP/PNG tooling adds no runtime dependencies. The complete table is
 frozen only after every cell succeeds. Variance/std describe calibration only.
 
-Initial/training/frozen all query the identical table mean; exact_goodness is
+In that previous experiment, initial/training/frozen queried the identical table mean; exact_goodness is
 an audit-only exact-one-hot metric. No API call, GoodnessAdapter or Goodness
 ReadOut exists in training. Each run saves the full table, byte SHA256 and
 calibration metadata; each seed also saves the exact table. Audit recomputes

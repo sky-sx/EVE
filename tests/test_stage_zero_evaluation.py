@@ -8,7 +8,7 @@ from experiments.stage_zero.evaluation import classify_evidence, learning_curve,
 def row(episode=0, phase="training", target="A", correct=0):
     return {
         "episode": episode, "phase": phase, "target_class": target,
-        "target_action": target, "goodness": 0.375, "teacher_goodness": 0.375,
+        "target_action": target, "goodness": 0.375, "fractional_goodness": 0.375,
         "correct_exact_match": correct, "target_probability": 0.6,
         "non_target_probability": 0.4, "target_bit_correct": 1,
         "non_target_false_rate": 0.25, "active_action_count": 7,
@@ -111,7 +111,7 @@ def test_unstable_or_empty_phase_cannot_support_evidence():
     assert classify_evidence([seed] * 3) == "NOT SUPPORTED"
 
 
-def test_teacher_goodness_improvement_alone_is_not_learning():
+def test_fractional_goodness_improvement_alone_is_not_learning():
     seed = seed_result(training=0.0, frozen=0.0)
     for phase, value in (("initial", 0.1), ("training", 0.6), ("frozen", 0.9)):
         seed[phase]["mean_goodness"] = value

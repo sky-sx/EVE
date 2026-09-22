@@ -12,6 +12,7 @@ from experiments.stage_zero.environment import (
     VisualEnvironment,
     balanced_targets,
     exact_goodness,
+    fractional_goodness,
 )
 
 
@@ -92,6 +93,23 @@ def test_exact_goodness_rejects_none_wrong_extra_and_all_actions(target):
     assert exact_goodness(target, actions) == 1.0
 
 
+@pytest.mark.parametrize("pressed,expected", [
+    ((), 0.0),
+    ((1,), 0.0),
+    (tuple(range(1, 27)), 0.0),
+    ((0,), 1.0),
+    ((0, 1), 0.5),
+    ((0, 1, 2), 1 / 3),
+    (tuple(range(27)), 1 / 27),
+])
+def test_fractional_goodness_cases(pressed, expected):
+    actions = torch.zeros(27, dtype=torch.bool)
+    actions[list(pressed)] = True
+    goodness = fractional_goodness(0, actions)
+    assert goodness == expected
+    assert 0.0 <= goodness <= 1.0
+
+
 @pytest.mark.parametrize("episodes", [0, 1, 26, 27, 28, 81, 100])
 def test_balanced_targets_are_reproducible_local_rng_cycles(episodes):
     state = random.getstate()
@@ -115,6 +133,8 @@ def test_environment_rejects_malformed_inputs():
             environment.render(target)
         with pytest.raises(ValueError):
             exact_goodness(target, torch.zeros(27, dtype=torch.bool))
+        with pytest.raises(ValueError):
+            fractional_goodness(target, torch.zeros(27, dtype=torch.bool))
     with pytest.raises(TypeError):
         environment.render(True)
     with pytest.raises(ValueError):
@@ -123,6 +143,12 @@ def test_environment_rejects_malformed_inputs():
         exact_goodness(0, torch.zeros(27))
     with pytest.raises(TypeError):
         exact_goodness(0, [False] * 27)
+    with pytest.raises(ValueError):
+        fractional_goodness(0, torch.zeros(28, dtype=torch.bool))
+    with pytest.raises(TypeError):
+        fractional_goodness(0, torch.zeros(27))
+    with pytest.raises(TypeError):
+        fractional_goodness(0, [False] * 27)
     with pytest.raises(ValueError):
         balanced_targets(-1, seed=42)
     with pytest.raises(TypeError):

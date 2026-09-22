@@ -13,11 +13,15 @@ import json
 import math
 from pathlib import Path
 
+import torch
+
 from .environment import ACTIONS, TeacherTable
 from .evaluation import summarize, learning_curve, classify_evidence
+from .harness import StageZero
+from .runner import tensor_hash
 
 
-NUMERIC = ("goodness", "teacher_goodness", "target_q", "target_probability", "non_target_probability",
+NUMERIC = ("goodness", "fractional_goodness", "target_q", "target_probability", "non_target_probability",
            "non_target_false_rate", "exact_probability", "eligibility_norm_at_action",
            "g_bar_before", "g_bar", "parameter_norm", "parameter_delta_norm", "eligibility_norm")
 INTEGER = ("correct_pressed", "wrong_count", "episode", "phase_episode", "visual_time_ms", "logical_time_ms", "target_class",
@@ -41,7 +45,7 @@ def load_rows(path):
     return rows
 
 
-def validate_row(row, protocol, teacher_table):
+def validate_row(row, protocol):
     assert all(math.isfinite(row[key]) for key in NUMERIC), "nonfinite log"
     assert row["nan_count"] == row["inf_count"] == 0, "nonfinite state"
     q, p, bits = (row[key] for key in ("q", "p", "action_bits"))
@@ -55,9 +59,11 @@ def validate_row(row, protocol, teacher_table):
     correct = int(bits[target])
     wrong = sum(bit for i, bit in enumerate(bits) if i != target)
     exact = int(correct == 1 and wrong == 0)
-    reward = teacher_table.lookup(correct, wrong)
+    pressed_count = sum(bits)
+    expected_goodness = correct / pressed_count if pressed_count > 0 else 0.0
     assert row["correct_pressed"] == correct and row["wrong_count"] == wrong, "action bucket mismatch"
-    assert row["goodness"] == row["teacher_goodness"] == reward, "Teacher table value mismatch"
+    assert row["goodness"] == expected_goodness, "fractional goodness mismatch"
+    assert row["fractional_goodness"] == expected_goodness, "fractional goodness log mismatch"
     assert row["correct_exact_match"] == exact, "exact match mismatch"
     assert row["sampled_actions"] == [name for name, bit in zip(ACTIONS, bits) if bit], "action log"
     assert row["active_action_count"] == sum(bits), "active count"
@@ -71,7 +77,7 @@ def validate_row(row, protocol, teacher_table):
     assert row["goodness_delivery_time"] - row["logical_time_ms"] == 250, "delivery timing"
     if row["phase"] == "training":
         assert row["learning_enabled"], "training disabled"
-        assert row["delta"] == reward - row["g_bar_before"], "scalar delta"
+        assert row["delta"] == expected_goodness - row["g_bar_before"], "scalar delta"
         assert math.isclose(row["g_bar"], row["g_bar_before"] + protocol["ema_alpha"] * row["delta"], rel_tol=1e-12), "baseline"
         expected_trace_norm = row["eligibility_norm_at_action"] * math.exp(-0.250 / protocol["ticktime"]) * protocol["rho"]
         assert math.isclose(row["eligibility_norm"], expected_trace_norm, rel_tol=2e-5, abs_tol=1e-8), "eligibility decay"
@@ -90,12 +96,24 @@ def validate_table_artifact(directory, metadata, config):
     return table
 
 
+def validate_parameter_artifact(seed_dir, seed, summary, final_g_bar):
+    checkpoint = torch.load(seed_dir / "final_state.pt", map_location="cpu", weights_only=True)
+    initial = StageZero(seed)
+    assert tensor_hash(initial.parameter_vector()) == summary["initial_parameter_hash"], "initial parameter hash"
+    saved = checkpoint["state_dict"]
+    final = torch.cat([saved[name].flatten() for name, _ in initial.named_parameters()])
+    assert tensor_hash(final) == summary["final_parameter_hash"], "final parameter hash"
+    assert checkpoint["g_bar"] == final_g_bar, "checkpoint baseline"
+    for name, buffer in initial.named_buffers():
+        if name.startswith("feedback_"):
+            assert torch.equal(saved[name], buffer), f"fixed feedback changed: {name}"
+
+
 def audit(directory: Path):
     directory = Path(directory)
     metadata = json.loads((directory / "run_metadata.json").read_text(encoding="utf-8"))
     config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
     assert metadata["completed"], "run incomplete"
-    teacher_table = validate_table_artifact(directory, metadata, config)
     root = Path(__file__).resolve().parents[2]
     mismatches = [name for name, digest in metadata["source_sha256"].items()
                   if hashlib.sha256((root / name.replace("\\", "/")).read_bytes()).hexdigest() != digest]
@@ -108,11 +126,9 @@ def audit(directory: Path):
         expected_count = config["training_episodes"] + 2 * config["evaluation_episodes"]
         assert len(rows) == expected_count
         summary = json.loads((seed_dir / "summary.json").read_text(encoding="utf-8"))
-        assert summary["teacher_table_sha256"] == teacher_table.sha256, "seed table hash"
-        assert (seed_dir / "teacher_goodness.json").read_bytes() == teacher_table.raw, "seed table copy"
         for index, row in enumerate(rows):
             assert row["episode"] == index
-            validate_row(row, config, teacher_table)
+            validate_row(row, config)
         for phase, count in (("initial", config["evaluation_episodes"]),
                              ("training", config["training_episodes"]),
                              ("frozen", config["evaluation_episodes"])):
@@ -127,6 +143,7 @@ def audit(directory: Path):
             if phase != "training":
                 assert summary[phase]["parameters_unchanged"]
         assert summary["feedback_unchanged"] and summary["all_tensors_on_device"]
+        validate_parameter_artifact(seed_dir, seed, summary, rows[-1]["g_bar"])
         training = [r for r in rows if r["phase"] == "training"]
         changed = [r["phase_episode"] for r in training if r["parameter_delta_norm"] > 0]
         params = json.loads((seed_dir / "parameter_summary.json").read_text(encoding="utf-8"))
@@ -134,8 +151,8 @@ def audit(directory: Path):
         seed_metrics.append({
             "seed": seed, "rows_checked": len(rows),
             "exact_successes": sum(r["correct_exact_match"] for r in rows),
-            "positive_teacher_scores": sum(r["teacher_goodness"] > 0 for r in rows),
-            "mean_teacher_goodness": math.fsum(r["teacher_goodness"] for r in rows) / len(rows),
+            "positive_goodness_episodes": sum(r["goodness"] > 0 for r in rows),
+            "mean_goodness": math.fsum(r["goodness"] for r in rows) / len(rows),
             "training_episodes_with_parameter_change": len(changed),
             "last_nonzero_update_training_episode_1based": max(changed) + 1 if changed else None,
             "final_g_bar": training[-1]["g_bar"],
@@ -164,7 +181,6 @@ def audit(directory: Path):
                        **{k: v for k, v in summarize(window).items() if k != "per_class"}})
     return {"audit_date_utc": datetime.now(timezone.utc).isoformat(),
             "git_commit": metadata["git_commit"], "all_logged_source_hashes_match": True,
-            "teacher_table_sha256": teacher_table.sha256, "teacher_table_verified": True,
             "validated_rows": len(pooled), "seeds": seed_metrics, "phases": phases,
             "pooled_training_curve": curves, "conclusion": classify_evidence(aggregate_expected),
             "raw_files": [{"path": str(p.relative_to(directory)), "bytes": p.stat().st_size,

@@ -5,18 +5,18 @@ import json
 
 import torch
 
-from test_stage_zero_environment import teacher_table
 
+from experiments.stage_zero.audit import validate_parameter_artifact
 from experiments.stage_zero.harness import Protocol
 from experiments.stage_zero.runner import run_seed, source_metadata
 
 
-def test_seed_artifacts_preserve_raw_data_frozen_weights_and_metadata(tmp_path, teacher_table):
+def test_seed_artifacts_preserve_raw_data_frozen_weights_and_metadata(tmp_path):
     previous_threads = torch.get_num_threads()
     torch.set_num_threads(1)
     try:
         summary = run_seed(3, output=tmp_path, device="cpu", train_episodes=1,
-                           evaluation_episodes=1, window=1, protocol=Protocol(), teacher_table=teacher_table)
+                           evaluation_episodes=1, window=1, protocol=Protocol())
     finally:
         torch.set_num_threads(previous_threads)
     directory = tmp_path / "seed_003"
@@ -29,14 +29,18 @@ def test_seed_artifacts_preserve_raw_data_frozen_weights_and_metadata(tmp_path, 
         target = int(row["target_class"])
         assert len(bits) == len(json.loads(row["q"])) == len(json.loads(row["p"])) == 27
         assert int(row["correct_exact_match"]) == int(bits[target] and sum(bits) == 1)
-        assert float(row["goodness"]) == float(row["teacher_goodness"]) == teacher_table.lookup(int(bits[target]), sum(bits) - bits[target])
+        assert float(row["goodness"]) == float(row["fractional_goodness"]) == (int(bits[target]) / sum(bits) if sum(bits) else 0.0)
+        assert "teacher_goodness" not in row
         assert int(row["goodness_delivery_time"]) - int(row["logical_time_ms"]) == 250
         assert float(row["nan_count"]) == float(row["inf_count"]) == 0
+    assert not (directory / "teacher_goodness.json").exists()
+    assert "teacher_table_sha256" not in summary
     assert summary["initial"]["parameters_unchanged"]
     assert summary["frozen"]["parameters_unchanged"]
     assert summary["feedback_unchanged"] and summary["all_tensors_on_device"]
     assert summary["initial_parameter_hash"] != summary["final_parameter_hash"]
     assert json.loads((directory / "summary.json").read_text()) == summary
+    validate_parameter_artifact(directory, 3, summary, float(rows[-1]["g_bar"]))
     changes = json.loads((directory / "parameter_summary.json").read_text())
     assert changes["changed_parameter_tensors"] > 0
     assert (directory / "learning_curve.csv").exists()
