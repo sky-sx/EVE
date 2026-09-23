@@ -6,7 +6,7 @@ from acnt import Block, Core
 
 def make_core():
     torch.manual_seed(31)
-    core = Core([Block(i, 3, [3, 3, 3], ticktime=0.001) for i in range(3)])
+    core = Core([Block(i, 3, [3, 3, 3], ticktime=1) for i in range(3)])
     with torch.no_grad():
         for block in core.blocks:
             block.b.copy_(torch.tensor([1., 2., -1., 0., 0., 0.]))

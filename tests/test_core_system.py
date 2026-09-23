@@ -11,7 +11,7 @@ from acnt import Block, Core
 def test_500_steps_with_intermittent_asynchronous_updates():
     torch.manual_seed(37)
     sizes = (1, 2, 3, 5)
-    core = Core([Block(i, n, sizes, hold_tick=3, ticktime=(i + 1) * 0.001) for i, n in enumerate(sizes)])
+    core = Core([Block(i, n, sizes, hold_tick=3, ticktime=i + 1) for i, n in enumerate(sizes)])
     with torch.no_grad():
         for block in core.blocks:
             block.z.copy_(torch.linspace(-1, 1, block.neuron_size))

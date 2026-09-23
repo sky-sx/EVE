@@ -1,4 +1,4 @@
-"""Observable Core scheduling at per-Block tick intervals in seconds."""
+"""Observable Core scheduling at per-Block tick intervals in milliseconds."""
 
 import pytest
 import torch
@@ -9,13 +9,13 @@ from acnt import Block, Core
 def timed_core():
     return Core(
         [
-            Block(0, 3, [3, 3], ticktime=0.25, hold_tick=8),
-            Block(1, 3, [3, 3], ticktime=0.5, hold_tick=8),
+            Block(0, 3, [3, 3], ticktime=250, hold_tick=8),
+            Block(1, 3, [3, 3], ticktime=500, hold_tick=8),
         ]
     )
 
 
-def test_step_obeys_each_block_interval_in_seconds():
+def test_step_obeys_each_block_interval_in_milliseconds():
     core = timed_core()
     core.step(now_ms=0)
     assert [list(block.At) for block in core.blocks] == [[0], [0]]

@@ -23,7 +23,7 @@ class StageZero:
             torch.cuda.manual_seed_all(seed)
         sizes = [100] * 10
         self.core = Core([Block(i, 100, sizes, readin=(i == 0),
-                                hold_tick=4, ticktime=0.25) for i in range(10)]).to(self.device)
+                                hold_tick=4, ticktime=250) for i in range(10)]).to(self.device)
         self.eye = EyeAdapter(100).to(self.device)
         self.hand = HandAdapter(100, discrete_controls=27, continuous_controls=0).to(self.device)
         self.groups = {}

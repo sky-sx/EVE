@@ -1,10 +1,10 @@
 # 当前架构边界与实现核对
 
-本文件按[用户当前 Local Plasticity 架构原文](canonical_architecture.txt)整理边界，不具有高于原文的优先级。旧文档中的 e-prop、固定反馈、固定 `(g_eff-0.5)`、按事件固定 `retention`、延迟等待时 trace 不衰减、`(a-p)/τ` 学习因子、sigmoid goodness 和 `γ=sigmoid(Δt/ticktime)` 均不是当前正式架构。
+本文件按[用户当前 Local Plasticity 架构原文](canonical_architecture.txt)整理边界，不具有高于原文的优先级。旧文档中的 e-prop、固定反馈、固定 `(g_eff-0.5)`、按事件固定 `retention`、延迟等待时 trace 不衰减、`(a-p)/τ` 学习因子和 sigmoid goodness 均不是当前正式架构。
 
 ## Block 与器官
 
-Block 的 `r`、`a`、历史 `A/At`、CfC 递推及 `z` 依照原文。原文写的是 `γ=sigma(delta_t*ticktime)`，时间戳 `At` 为毫秒。当前 Core 在一个调度事件里读取统一的旧 `z` 快照，避免遍历顺序影响；这是当前调度实现，不作为原文以外的新认知模块。ReadIn 有新输入时无视 route 强制更新一次，随后 `o` 归零。route Block 永久 active；goodness Block 的 active 由人控开关决定。
+Block 的 `r`、`a`、历史 `A/At`、CfC 递推及 `z` 依照原文。原文写的是 `γ=sigma(delta_t_ms/ticktime_ms)`，时间戳 `At`、`ticktime` 与相邻间隔 `delta_t_ms` 均为毫秒。当前 Core 在一个调度事件里读取统一的旧 `z` 快照，避免遍历顺序影响；这是当前调度实现，不作为原文以外的新认知模块。ReadIn 有新输入时无视 route 强制更新一次，随后 `o` 归零。route Block 永久 active；goodness Block 的 active 由人控开关决定。
 
 ## 唯一评价流
 

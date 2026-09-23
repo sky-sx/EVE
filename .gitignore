@@ -21,7 +21,8 @@ tmp/
 temp/
 .DS_Store
 Thumbs.db
-
+mykey_github
+mykey_github.pub
 # Secrets: only sanitized example configuration is publishable
 .env
 .env.*

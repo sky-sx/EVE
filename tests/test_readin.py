@@ -4,7 +4,7 @@ import torch
 
 @pytest.mark.parametrize("organ,shape", [("eye", (3, 1080, 1920)), ("ear", (1, 32))])
 def test_new_input_overrides_inactive_and_clock_once(make_runtime, organ, shape):
-    runtime = make_runtime(ticktime=1.0)
+    runtime = make_runtime(ticktime=1000)
     block_id = runtime.organ_blocks[organ]
     block = runtime.core.blocks[block_id]
     runtime.core.set_active(block_id, False)

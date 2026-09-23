@@ -29,7 +29,7 @@ def test_full_keyboard_layout_and_trainer_subset_are_explicit():
 
 
 def test_hand_samples_independent_full_controls_and_logs_key_combinations(make_runtime):
-    runtime = make_runtime(ticktime=0.25)
+    runtime = make_runtime(ticktime=250)
     enabled = {"CTRL_LEFT", "C", "BRACKET_LEFT", "MOUSE_LEFT"}
     set_hand_controls(runtime, enabled)
 

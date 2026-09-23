@@ -16,7 +16,7 @@ from .mechanical import MechanicalLog
 def run_core(steps: int) -> None:
     torch.manual_seed(41)
     sizes = (3, 4, 5)
-    core = Core([Block(i, n, sizes, hold_tick=4, ticktime=0.002) for i, n in enumerate(sizes)])
+    core = Core([Block(i, n, sizes, hold_tick=4, ticktime=2) for i, n in enumerate(sizes)])
     with torch.no_grad():
         for block in core.blocks:
             block.z.copy_(torch.linspace(-1, 1, block.neuron_size))
@@ -38,7 +38,7 @@ def build_mock_runtime(*, log_file: str | None = None, seed: int = 41) -> Runtim
     """Six distinct organ Blocks plus two ordinary Blocks; no Stage 0 task."""
     torch.manual_seed(seed)
     n, count = 4, 8
-    core = Core([Block(i, n, [n] * count, ticktime=0.25, hold_tick=4, readin=i < 2) for i in range(count)])
+    core = Core([Block(i, n, [n] * count, ticktime=250, hold_tick=4, readin=i < 2) for i in range(count)])
     adapters = {
         "eye": EyeAdapter(n), "ear": EarAdapter(n), "hand": HandAdapter(n),
         "speak": SpeakAdapter(n), "goodness": GoodnessAdapter(n), "route": RouteAdapter(n, count),

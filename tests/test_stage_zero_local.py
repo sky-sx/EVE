@@ -44,7 +44,7 @@ def test_environment_exact_one_hot_and_color_variants():
 def test_stage_zero_group_ownership_and_freeze():
     model=StageZero(11)
     assert len(model.core.blocks)==10
-    assert all(b.active and b.neuron_size==100 and b.hold_tick==4 and b.ticktime==.25
+    assert all(b.active and b.neuron_size==100 and b.hold_tick==4 and b.ticktime==250
                for b in model.core.blocks)
     assert set(model.groups)==set(range(10))
     assert {id(p) for p in model.eye.parameters()}<=set(map(id,model.groups[0].values()))

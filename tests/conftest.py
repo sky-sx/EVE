@@ -8,7 +8,7 @@ from acnt.runtime import ORGANS
 
 @pytest.fixture
 def make_runtime():
-    def create(*, neuron_size=3, block_count=8, ticktime=0.25, continuous_controls=2):
+    def create(*, neuron_size=3, block_count=8, ticktime=250, continuous_controls=2):
         torch.manual_seed(73)
         sizes = [neuron_size] * block_count
         core = Core([Block(i, neuron_size, sizes, readin=i < 2, ticktime=ticktime) for i in range(block_count)])

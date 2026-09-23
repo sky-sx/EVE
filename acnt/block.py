@@ -36,7 +36,7 @@ class Block(nn.Module):
         if type(hold_tick) is not int or hold_tick < 1:
             raise ValueError("hold_tick must be a positive integer")
         if isinstance(ticktime, bool) or not isinstance(ticktime, (int, float)) or not math.isfinite(ticktime) or ticktime <= 0:
-            raise ValueError("ticktime must be a finite positive number of seconds")
+            raise ValueError("ticktime must be a finite positive number of milliseconds")
         if not source_sizes or any(type(n) is not int or n < 1 for n in source_sizes):
             raise ValueError("source_sizes must contain positive integers")
         if type(block_id) is not int or not 0 <= block_id < len(source_sizes):
@@ -149,7 +149,8 @@ class Block(nn.Module):
             t_last = t_k
             m = torch.cat((a_k, h))
             h_c = self.LN(self.W_c[idx] @ m + self.b_c[idx])
-            gamma = self.sigma(self.b.new_tensor(delta_t * self.ticktime))
+            # delta_t and ticktime are both millisecond intervals.
+            gamma = self.sigma(self.b.new_tensor(delta_t / self.ticktime))
             if self.local_observer is not None:
                 self.local_observer(self.W_c[idx], m.detach(), h_c.detach())
                 self.local_observer(self.b_c[idx], torch.ones_like(h_c), h_c.detach())

@@ -4,7 +4,7 @@ This experiment freezes production `CorrelationRule` as the first candidate. It 
 
 ## Boundary
 
-- Ten active Blocks, 100 neurons each, `hold_tick=4`, `ticktime=0.25 s`.
+- Ten active Blocks, 100 neurons each, `hold_tick=4`, `ticktime=250 ms`.
 - Block 0 receives 1080p RGB Eye frames; Block 1 drives a 27-bit Hand adapter. Blocks 2–9 are ordinary Core Blocks. No other organ or Adapter is constructed.
 - A target is presented at logical times 0, 250 and 500 ms through three new EyeAdapter forward events. Core uses committed old-z snapshots. One Hand action follows the third frame.
 - Each Hand bit independently samples Logistic noise with `tau=.25`, threshold zero. All-zero and multi-bit actions are retained.

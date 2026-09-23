@@ -6,7 +6,7 @@ from acnt import Block, Core
 
 def make_core(sizes=(2, 3, 4)):
     torch.manual_seed(29)
-    return Core([Block(i, n, sizes, ticktime=0.001) for i, n in enumerate(sizes)])
+    return Core([Block(i, n, sizes, ticktime=1) for i, n in enumerate(sizes)])
 
 
 def test_two_blocks_heterogeneous_transfer_through_complete_update():

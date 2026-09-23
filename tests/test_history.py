@@ -25,7 +25,7 @@ def sigmoid_reference(value):
     return 1.0 / (1.0 + math.exp(-value))
 
 
-def zero_block(*, hold_tick=3, ticktime=0.001):
+def zero_block(*, hold_tick=3, ticktime=1):
     block = Block(0, 3, [3], hold_tick=hold_tick, ticktime=ticktime)
     with torch.no_grad():
         for parameter in block.parameters():
@@ -33,7 +33,7 @@ def zero_block(*, hold_tick=3, ticktime=0.001):
     return block
 
 
-def bias_history_block(*, ticktime=0.001):
+def bias_history_block(*, ticktime=1):
     block = zero_block(ticktime=ticktime)
     biases = ([1.0, 0.0, -1.0], [0.0, 1.0, -1.0], [-1.0, 1.0, 0.0])
     with torch.no_grad():
@@ -42,7 +42,7 @@ def bias_history_block(*, ticktime=0.001):
     return block, [ln_reference(bias) for bias in biases]
 
 
-@pytest.mark.parametrize("ticktime", [0.001, 0.002, 0.25])
+@pytest.mark.parametrize("ticktime", [1, 2, 250])
 def test_latest_history_has_zero_delta_and_half_weight(ticktime):
     block, candidates = bias_history_block(ticktime=ticktime)
     block.update(now_ms=100)
@@ -51,17 +51,17 @@ def test_latest_history_has_zero_delta_and_half_weight(ticktime):
     assert list(block.At) == [100]
 
 
-@pytest.mark.parametrize("ticktime", [0.001, 0.002])
+@pytest.mark.parametrize("ticktime", [1, 2])
 def test_nonuniform_history_uses_adjacent_deltas_and_queue_indices(ticktime):
     block, (c0, c1, c2) = bias_history_block(ticktime=ticktime)
     block.update(now_ms=100)
     block.update(now_ms=101)
-    gamma_one = sigmoid_reference(1 * ticktime)
+    gamma_one = sigmoid_reference(1 / ticktime)
     # With two entries, newest uses index 1 and oldest uses index 0.
     torch.testing.assert_close(block.z, (1 - gamma_one) * c0 + 0.5 * gamma_one * c1)
 
     block.update(now_ms=103)
-    gamma_two = sigmoid_reference(2 * ticktime)
+    gamma_two = sigmoid_reference(2 / ticktime)
     # At=[100,101,103] traverses delta_t=[0,2,1]. This is the closed-form
     # expansion, deliberately without reproducing the implementation's loop.
     expected = (
@@ -74,15 +74,16 @@ def test_nonuniform_history_uses_adjacent_deltas_and_queue_indices(ticktime):
     assert len(block.A) == 3
 
 
-def test_ticktime_seconds_multiply_adjacent_history_deltas():
-    fast, (c0, c1, c2) = bias_history_block(ticktime=0.001)
-    slow, _ = bias_history_block(ticktime=0.002)
+def test_ticktime_milliseconds_divide_adjacent_history_deltas():
+    fast, (c0, c1, c2) = bias_history_block(ticktime=1)
+    slow, _ = bias_history_block(ticktime=2)
     for now_ms in (100, 101, 103):
         fast.update(now_ms=now_ms)
         slow.update(now_ms=now_ms)
-    # Canonical gamma uses the adjacent millisecond gap multiplied by
-    # ticktime in seconds. A larger ticktime produces a larger gamma.
-    gamma_one, gamma_two = sigmoid_reference(1 * slow.ticktime), sigmoid_reference(2 * slow.ticktime)
+    # Canonical gamma divides the adjacent millisecond gap by ticktime in
+    # milliseconds. A larger ticktime produces a smaller ratio, so gamma stays
+    # closer to 1/2.
+    gamma_one, gamma_two = sigmoid_reference(1 / slow.ticktime), sigmoid_reference(2 / slow.ticktime)
     expected_slow = (
         (1 - gamma_one) * c0
         + gamma_one * (1 - gamma_two) * c1
@@ -92,8 +93,8 @@ def test_ticktime_seconds_multiply_adjacent_history_deltas():
     assert torch.linalg.vector_norm(fast.z - slow.z).item() > 0
 
 
-@pytest.mark.parametrize("ticktime", [0, -0.001, float("inf"), float("nan")])
-def test_ticktime_requires_finite_positive_seconds(ticktime):
+@pytest.mark.parametrize("ticktime", [0, -1, float("inf"), float("nan")])
+def test_ticktime_requires_finite_positive_milliseconds(ticktime):
     with pytest.raises(ValueError):
         zero_block(ticktime=ticktime)
 
@@ -124,7 +125,7 @@ def test_overflow_reindexes_retained_history_against_current_wc_slots():
     c0 = ln_reference(matvec_reference(matrices[0], expected_a[1]))
     c1 = ln_reference(matvec_reference(matrices[1], expected_a[2]))
     c2 = ln_reference(matvec_reference(matrices[2], expected_a[3]))
-    gamma_two, gamma_three = sigmoid_reference(2 * block.ticktime), sigmoid_reference(3 * block.ticktime)
+    gamma_two, gamma_three = sigmoid_reference(2 / block.ticktime), sigmoid_reference(3 / block.ticktime)
     expected_z = (
         (1 - gamma_two) * c0
         + gamma_two * (1 - gamma_three) * c1
@@ -134,7 +135,7 @@ def test_overflow_reindexes_retained_history_against_current_wc_slots():
 
 
 def test_wc_second_half_transforms_h_from_the_newer_history_entry():
-    block = zero_block(hold_tick=2, ticktime=0.002)
+    block = zero_block(hold_tick=2, ticktime=2)
     matrix = [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]
     bias = [0.5, -1.0, 0.5]
     newest_raw = [2.0, -1.0, 0.0]
@@ -151,7 +152,7 @@ def test_wc_second_half_transforms_h_from_the_newer_history_entry():
     newest_h = 0.5 * newest_c
     transformed_h = matvec_reference(matrix, newest_h)
     oldest_c = ln_reference([value + offset for value, offset in zip(transformed_h, bias)])
-    gamma = sigmoid_reference(1 * block.ticktime)
+    gamma = sigmoid_reference(1 / block.ticktime)
     expected = (1 - gamma) * oldest_c + gamma * newest_h
     torch.testing.assert_close(block.z, expected)
     without_h_input = (1 - gamma) * ln_reference(bias) + gamma * newest_h

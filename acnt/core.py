@@ -52,7 +52,7 @@ class Core(nn.Module):
             block.active = active
 
     def is_due(self, block_id: int, now_ms: int) -> bool:
-        """ticktime is a positive interval in seconds, timestamps stay in ms."""
+        """ticktime is a positive interval in ms, timestamps are also in ms."""
         self._check_id(block_id)
         if type(now_ms) is not int:
             raise ValueError("now_ms must be integer milliseconds")
@@ -62,7 +62,7 @@ class Core(nn.Module):
         elapsed_ms = now_ms - block.At[-1]
         if elapsed_ms < 0:
             raise ValueError("time must not move backwards")
-        return elapsed_ms / 1000.0 >= block.ticktime
+        return elapsed_ms >= block.ticktime
 
     def source_snapshot(self) -> dict[int, Tensor]:
         """Detached old states, captured once for the whole scheduling event."""

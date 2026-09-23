@@ -32,7 +32,7 @@ def set_route_bias(runtime, values):
 
 
 def test_route_changes_next_computation_and_cannot_disable_itself(make_runtime):
-    runtime = make_runtime(ticktime=0.25)
+    runtime = make_runtime(ticktime=250)
     runtime.set_goodness_active(False)
     runtime.update_blocks(now_ms=0)
     set_route_bias(runtime, [-100.] * 8)
@@ -60,7 +60,7 @@ def test_goodness_active_is_human_controlled_even_when_route_disagrees(make_runt
 
 
 def test_route_uses_runtime_noise_scale(make_runtime):
-    runtime = make_runtime(ticktime=0.125)
+    runtime = make_runtime(ticktime=125)
     assert runtime.generate_route().tau == runtime.noise_scale == 1.0
 
 

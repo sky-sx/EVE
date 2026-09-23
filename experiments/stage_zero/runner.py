@@ -37,7 +37,7 @@ def source_hashes():
 def config(device, counts, tau_e_s, tau_g_s, seeds=FORMAL_SEEDS):
     return {
         "schema": SCHEMA, "device": device, "counts": counts, "seeds": list(seeds),
-        "block_count": 10, "neuron_size": 100, "hold_tick": 4, "ticktime_s": .25,
+        "block_count": 10, "neuron_size": 100, "hold_tick": 4, "ticktime_ms": 250,
         "active_blocks": list(range(10)), "eye_block": 0, "hand_block": 1,
         "ordinary_blocks": list(range(2,10)), "frames_per_episode": 3,
         "frame_offsets_ms": [0,250,500], "inter_episode_gap_ms": 250,

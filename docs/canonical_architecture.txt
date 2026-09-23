@@ -11,7 +11,7 @@ readin：eye，ear，readout：hand，speak，goodness，route；core：block。
 每个block B_i有如下状态：
 bool active：是否激活；
 int neure size of B_i：B_i内有的神经元数量
-int ticktime:B_i的时间观感参数调整；
+int ticktime(ms):B_i的时间观感参数调整；
 int hold_tick：block内选取最新预激活历史的条数；
 vector<FP32>z(neure size of B_i)：这是activation，或者说block的输出状态；
 vector<FP32>a(neure size of B_i)：这是preactivation，预激活；
@@ -40,12 +40,12 @@ h = vector<FP32>(neure size of B_i, 0);
 for idx =  A.size()-1 ..0:
     a_k = A[idx];
     t_k = At[idx];
-    delta_t = t_last - t_k;
+    delta_t_ms = t_last - t_k;
     t_last=t_k;
     m = [a_k;h];此处指拼接两个向量；
     h_c = W_c[idx] * m + b_c[idx];
     h_c = LN(h_c);
-    gamma = sigma(delta_t*ticktime);
+    gamma = sigma(delta_t_ms/ticktime_ms);
     h = (1 - gamma) * h_c + gamma * h;
 end for
 z_i = h;
@@ -214,9 +214,3 @@ hand中的26个键盘字母以及鼠标左键click属于离散最终动作，因
 26个字母之间不使用Softmax，因此理论上允许多个字母键在同一控制时刻同时产生按下倾向；
 实际是否形成对应DirectInput仍受0阶段“仅日志输出、不真实控制”的原规则限制；
 Stage 0其余网络、1/n外部Goodness和协议不变，仅扫描τ_e={0.5,1,2}s与τ_G={2,5,10}s的9组笛卡尔积；
-0阶段由该实验同时验证：
-	连续readout倾向能否形成；
-	noise + hard threshold能否产生可记录的离散探索；
-	单条不可逆时间轨迹下，局部plastic state能否保留足够久，使延迟外部g*对先前离散动作产生稳定定向；
-	在完全不使用e-prop、∂q/∂θ、hard-threshold梯度和world梯度的条件下，正确字母输出以及全绿屏幕click的发生倾向能否逐渐提高；
-	小规模e-prop oracle/benchmark若未来单独研究，只能比较行为与局部候选，不得参与正式训练更新。
