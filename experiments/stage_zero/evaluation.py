@@ -1,10 +1,10 @@
-"""Generate compact behavior and local-state report from audited formal logs."""
+"""Generate compact behavior and local-state trend report from audited logs."""
 from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
 from .environment import ACTIONS, DELAYS_MS
-from .runner import FORMAL_COUNTS, FORMAL_SEEDS, aggregate
+from .runner import aggregate
 
 
 def _fmt(x):
@@ -19,35 +19,39 @@ def _table(headers, rows):
 def build(directory, audit_file):
     directory=Path(directory)
     audit=json.loads(Path(audit_file).read_text(encoding="utf-8"))
-    if not audit["passed"] or audit["all_rows_audited"]!=8100:
-        raise AssertionError("complete independent audit required")
     lock=json.loads((directory/"config.json").read_text(encoding="utf-8"))
+    seeds=list(lock["seeds"])
+    counts=lock["counts"]
+    phases=tuple(counts)
+    if not audit["passed"] or audit["all_rows_audited"]!=sum(counts.values())*len(seeds):
+        raise AssertionError("complete independent audit of the configured range required")
     rows=[]
     seed_summaries={}
-    for seed in FORMAL_SEEDS:
+    for seed in seeds:
         seed_summaries[seed]=json.loads((directory/f"seed_{seed}_summary.json").read_text(encoding="utf-8"))
         rows += [json.loads(x) for x in (directory/f"seed_{seed}.jsonl").open(encoding="utf-8")]
-    subsets={phase:[r for r in rows if r["phase"]==phase] for phase in FORMAL_COUNTS}
+    subsets={phase:[r for r in rows if r["phase"]==phase] for phase in phases}
     totals={phase:aggregate(r) for phase,r in subsets.items()}
     each={seed:{phase:aggregate([r for r in subsets[phase] if r["seed"]==seed])
-                for phase in FORMAL_COUNTS} for seed in FORMAL_SEEDS}
+                for phase in phases} for seed in seeds}
     initial,frozen=totals["initial"],totals["frozen"]
     frozen_delay_target={d:aggregate([r for r in subsets["frozen"] if r["goodness_delay_ms"]==d])["target_p"] for d in DELAYS_MS}
-    improved=[s for s in FORMAL_SEEDS if
-        each[s]["frozen"]["target_p"]>each[s]["initial"]["target_p"] and
-        each[s]["frozen"]["non_target_mean_p"]<each[s]["initial"]["non_target_mean_p"] and
-        each[s]["frozen"]["exact_success"]>each[s]["initial"]["exact_success"]]
-    supported=(len(improved)>=3 and frozen["exact_success"]>initial["exact_success"] and
-        frozen["target_p"]>initial["target_p"] and
-        frozen["non_target_mean_p"]<initial["non_target_mean_p"])
-    verdict="SUPPORTED" if supported else "PARTIAL" if improved or frozen["exact_success"]>initial["exact_success"] else "NOT SUPPORTED"
+    rising_target=[s for s in seeds if each[s]["frozen"]["target_p"]>each[s]["initial"]["target_p"]]
+    rising_exact=[s for s in seeds if each[s]["frozen"]["exact_success"]>each[s]["initial"]["exact_success"]]
+    falling_non_target=[s for s in seeds if each[s]["frozen"]["non_target_mean_p"]<each[s]["initial"]["non_target_mean_p"]]
+    joint=[s for s in seeds if s in rising_target and s in rising_exact and s in falling_non_target]
+    trend={metric:frozen[metric]-initial[metric]
+           for metric in ("exact_success","target_p","non_target_mean_p")}
+    window_size=max(1,-(-counts["training"]//4))
+    windows=range(-(-counts["training"]//window_size))
     lines=[
-        "# Current Local Plasticity Stage 0 formal report","",
+        "# Current Local Plasticity Stage 0 pilot report","",
         "This is the new Local Plasticity experiment. The archived e-prop Stage 0 is a separate historical result.","",
+        "Pilot scale only: this report lists trend indicators and does not apply the formal 5-seed SUPPORTED/PARTIAL/NOT SUPPORTED criterion.","",
         f"- Run configuration: `{directory/'config.json'}`.",
-        f"- Python {lock['python']}; PyTorch {lock['torch']}; CUDA {lock['cuda']}; GPU {lock['gpu']}; formal device {lock['device']}.",
+        f"- Python {lock['python']}; PyTorch {lock['torch']}; CUDA {lock['cuda']}; GPU {lock['gpu']}; device {lock['device']}.",
         f"- Frozen candidate: production CorrelationRule, learning_rate=.001, tau_e={lock['tau_e_s']} s, tau_G={lock['tau_g_s']} s, g_bar(0)=0.5, parameter_clip=None.",
-        "- Formal seeds 11, 22, 33, 44, 55; per seed 270 initial, 1080 training, 270 frozen episodes.",
+        f"- Seeds {seeds}; per seed {counts['initial']} initial, {counts['training']} training, {counts['frozen']} frozen episodes.",
         f"- Independent audit: passed, {audit['all_rows_audited']} rows and {audit['stimulus_count']} stimulus hashes.",
         "- Training Goodness is zero when the target bit is off, otherwise 1/active-bit count; exact success remains an evaluation-only one-hot event.",
         f"- Audit data: `{audit_file}`.",
@@ -66,12 +70,12 @@ def build(directory, audit_file):
                  each[s]["frozen"]["exact_success"],each[s]["initial"]["target_p"],
                  each[s]["frozen"]["target_p"],each[s]["initial"]["non_target_mean_p"],
                  each[s]["frozen"]["non_target_mean_p"],seed_summaries[s]["elapsed_s"]]
-                for s in FORMAL_SEEDS]),
+                for s in seeds]),
         "## Per class","",
         _table(["Class","Initial exact","Training exact","Frozen exact","Initial target p","Frozen target p",
                 "Initial non-target p","Frozen non-target p"],
                [[name,*[aggregate([r for r in subsets[phase] if r["target_class"]==name])["exact_success"]
-                         for phase in FORMAL_COUNTS],
+                         for phase in phases],
                  aggregate([r for r in subsets["initial"] if r["target_class"]==name])["target_p"],
                  aggregate([r for r in subsets["frozen"] if r["target_class"]==name])["target_p"],
                  aggregate([r for r in subsets["initial"] if r["target_class"]==name])["non_target_mean_p"],
@@ -90,12 +94,12 @@ def build(directory, audit_file):
                [[color,phase,*[m[k] for k in ("episodes","exact_success","target_p","non_target_mean_p")]]
                 for phase,subset in subsets.items() for color in ("red","blue","green")
                 for m in [aggregate([r for r in subset if r["color"]==color])]]),
-        "## Training windows","",
+        f"## Training windows ({window_size} episodes each)","",
         _table(["Window","Episodes","Exact","Target p","Non-target p","Mean e L2"],
                [[i,*[m[k] for k in ("episodes","exact_success","target_p","non_target_mean_p",
                                     "state_total_l2_mean")]]
-                for i in range(4)
-                for m in [aggregate([r for r in subsets["training"] if r["episode"]//270==i])]]),
+                for i in windows
+                for m in [aggregate([r for r in subsets["training"] if r["episode"]//window_size==i])]]),
         "## Local state and parameters","",
         _table(["Seed","Train mean e L2","Train max e L2","End train e L2","Frozen e L2",
                 "Changed parameter tensors","Max per-episode delta"],
@@ -104,21 +108,21 @@ def build(directory, audit_file):
                  each[s]["frozen"]["state_total_l2_max"],
                  sum(len(v) for v in seed_summaries[s]["changed_parameter_groups"].values()),
                  max(r["parameter_delta_norm"] for r in subsets["training"] if r["seed"]==s)]
-                for s in FORMAL_SEEDS]),
+                for s in seeds]),
         "Per-group local-state L2 at the last training Goodness delivery:","",
-        _table(["Seed",*[f"Block {i}" for i in range(10)],"Eye Adapter","Hand Adapter",
+        _table(["Seed",*[f"Block {i}" for i in range(lock["block_count"])],"Eye Adapter","Hand Adapter",
                 "Ordinary Blocks","Terminal Hand"],
-               [[s,*[r["plastic_state"]["groups"][str(i)]["l2"] for i in range(10)],
+               [[s,*[r["plastic_state"]["groups"][str(i)]["l2"] for i in range(lock["block_count"])],
                  r["plastic_state"]["eye_adapter"]["l2"],r["plastic_state"]["hand_adapter"]["l2"],
                  r["plastic_state"]["ordinary_blocks"]["l2"],r["plastic_state"]["terminal_hand"]["l2"]]
-                for s in FORMAL_SEEDS
+                for s in seeds
                 for r in [[x for x in subsets["training"] if x["seed"]==s][-1]]]),
         "Local-state distribution at the final training delivery:",
         "",
         _table(["Seed","e mean","e std","e max abs","e nonzero fraction"],
                [[seed,*[r["plastic_state"]["total"][k] for k in
                         ("mean","std","max_abs","nonzero_fraction")]]
-                for seed in FORMAL_SEEDS
+                for seed in seeds
                 for r in [[x for x in subsets["training"] if x["seed"]==seed][-1]]]),
         "The correlation contribution is not clipped, while every e_c decays exponentially in real time; finite values, magnitude, and nonzero fraction are reported.",
         "",
@@ -130,22 +134,23 @@ def build(directory, audit_file):
                 for g in [[r for r in subsets["training"] if r["goodness_delay_ms"]==d]]]),
         "At delivery every e_c is first decayed to that timestamp, then F_w uses 0.001*(g* - g_bar); only after all parameter updates is g_bar advanced in real time. Parameter changes are not behavioral learning evidence.",
         f"NaN / Inf counts across all logged episodes: {sum(r['nan_count'] for r in rows)} / {sum(r['inf_count'] for r in rows)}.",
-        f"Seeds without joint required behavior improvement: {[s for s in FORMAL_SEEDS if s not in improved]}.",
-        f"Total formal elapsed seed time: {sum(seed_summaries[s]['elapsed_s'] for s in FORMAL_SEEDS):.3f} s.","",
+        f"Seeds with rising frozen target p: {rising_target}; rising exact success: {rising_exact}; falling non-target p: {falling_non_target}; all three: {joint}.",
+        f"Total elapsed seed time: {sum(seed_summaries[s]['elapsed_s'] for s in seeds):.3f} s.","",
         "## Local-only raw inventory","",
         _table(["Seed","Raw JSONL bytes","Raw SHA256","Checkpoint count","Checkpoint bytes"],
                [[seed,(directory/f"seed_{seed}.jsonl").stat().st_size,
                  seed_summaries[seed]["raw_sha256"],
                  len(list(directory.glob(f"seed_{seed}_training_*.pt"))),
                  sum(path.stat().st_size for path in directory.glob(f"seed_{seed}_training_*.pt"))]
-                for seed in FORMAL_SEEDS]),
+                for seed in seeds]),
         "These bulk raw logs and full state checkpoints are excluded by repository Git rules.","",
         "## Locked source SHA256","",
         _table(["Source","SHA256"],[[p,h] for p,h in lock["source_sha256"].items()]),
         "## Conclusion","",
-        f"Classification: **{verdict}**. Exact success is evaluation-only. A positive fractional g* means the target bit was active; it does not by itself prove one-hot mapping. Parameter or e changes alone are not learning evidence.","",
-        f"Q1: The current local correlation state plus delayed scalar Goodness {'formed a reproducible mapping' if supported else 'did not demonstrate a reproducible visual-to-action mapping'} under this protocol.",
+        "Pilot trend only: no SUPPORTED/PARTIAL/NOT SUPPORTED classification at this scale. Exact success is evaluation-only. A positive fractional g* means the target bit was active; it does not by itself prove one-hot mapping. Parameter or e changes alone are not learning evidence.","",
+        "Q1: Whether the current local correlation state plus delayed scalar Goodness forms a reproducible visual-to-action mapping is not decided at pilot scale; the frozen-minus-initial deltas above are trend indicators only.",
         f"Q2: Frozen target p by delay is {frozen_delay_target[250]:.6f} (250 ms), {frozen_delay_target[500]:.6f} (500 ms), and {frozen_delay_target[1000]:.6f} (1000 ms). Interpret alongside exact success and the stratified tables; no time-rule change follows from this comparison.","",
+        f"Frozen minus initial: exact success {trend['exact_success']:+.6f}, target p {trend['target_p']:+.6f}, non-target p {trend['non_target_mean_p']:+.6f}.","",
         "Limitations: These results assess the frozen candidate under the target-bit inverse-active-count Stage 0 Goodness. They do not resolve which future F_e/F_w rule the architecture should use.",
     ]
     return "\n".join(lines)+"\n"

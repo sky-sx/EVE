@@ -14,10 +14,11 @@ import torch
 from .environment import ACTIONS, DELAYS_MS, environment_config, phase_schedule
 from .harness import StageZero
 
-FORMAL_COUNTS = {"initial": 270, "training": 1080, "frozen": 270}
-FORMAL_SEEDS = (11, 22, 33, 44, 55)
+PILOT_COUNTS = {"initial": 135, "training": 540, "frozen": 135}
+PILOT_SEEDS = (11, 22)
+PILOT_DEVICE = "cuda"
 TAU_E_S = (.5, 1., 2.)
-TAU_G_S = (2., 5., 10.)
+TAU_G_S = (5.,)
 SCHEMA = 2
 
 
@@ -34,7 +35,7 @@ def source_hashes():
     return {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}
 
 
-def config(device, counts, tau_e_s, tau_g_s, seeds=FORMAL_SEEDS):
+def config(device, counts, tau_e_s, tau_g_s, seeds=PILOT_SEEDS):
     return {
         "schema": SCHEMA, "device": device, "counts": counts, "seeds": list(seeds),
         "block_count": 10, "neuron_size": 100, "hold_tick": 4, "ticktime_ms": 250,
@@ -101,7 +102,7 @@ def summarize(rows):
 
 
 def run_seed(seed, *, device, counts, output, tau_e_s, tau_g_s,
-             checkpoint_interval=270):
+             checkpoint_interval=0):
     output=Path(output)
     output.mkdir(parents=True, exist_ok=True)
     model=StageZero(seed,device,tau_e_s=tau_e_s,tau_g_s=tau_g_s)
@@ -139,13 +140,13 @@ def run_seed(seed, *, device, counts, output, tau_e_s, tau_g_s,
 
 def main(argv=None):
     parser=argparse.ArgumentParser()
-    parser.add_argument("--device",choices=("cpu","cuda"),default="cpu")
+    parser.add_argument("--device",choices=("cpu","cuda"),default=PILOT_DEVICE)
     parser.add_argument("--output",default="runs/stage_zero_local/tau_scan")
-    parser.add_argument("--seeds",nargs="+",type=int,default=list(FORMAL_SEEDS))
-    parser.add_argument("--initial",type=int,default=270)
-    parser.add_argument("--training",type=int,default=1080)
-    parser.add_argument("--frozen",type=int,default=270)
-    parser.add_argument("--checkpoint-interval",type=int,default=270)
+    parser.add_argument("--seeds",nargs="+",type=int,default=list(PILOT_SEEDS))
+    parser.add_argument("--initial",type=int,default=PILOT_COUNTS["initial"])
+    parser.add_argument("--training",type=int,default=PILOT_COUNTS["training"])
+    parser.add_argument("--frozen",type=int,default=PILOT_COUNTS["frozen"])
+    parser.add_argument("--checkpoint-interval",type=int,default=0)
     parser.add_argument("--tau-e-s",nargs="+",type=float,default=list(TAU_E_S))
     parser.add_argument("--tau-g-s",nargs="+",type=float,default=list(TAU_G_S))
     args=parser.parse_args(argv)

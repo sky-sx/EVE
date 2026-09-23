@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .environment import ACTIONS, DELAYS_MS, phase_schedule, render, stimulus_hash
-from .runner import FORMAL_COUNTS, FORMAL_SEEDS, aggregate, source_hashes
+from .runner import aggregate, source_hashes
 
 
 def audit_goodness(target, bits):
@@ -26,13 +26,17 @@ def audit(directory, config_path=None):
     lock=json.loads(config_path.read_text(encoding="utf-8"))
     if lock["source_sha256"]!=source_hashes():
         raise AssertionError("production or experiment sources differ from locked SHA256")
+    seeds=list(lock["seeds"])
+    configured_counts=lock["counts"]
+    phases=tuple(configured_counts)
+    expected_n=sum(configured_counts.values())
     report={"schema":1,"config_path":str(config_path),"source_sha256_verified":True,
+            "seeds":seeds,"counts":configured_counts,"rows_per_seed":expected_n,
             "seed_results":{},"failures":[]}
     expected_hash={}
-    for seed in FORMAL_SEEDS:
+    for seed in seeds:
         raw_path=directory/f"seed_{seed}.jsonl"
         rows=[json.loads(line) for line in raw_path.open(encoding="utf-8")]
-        expected_n=sum(FORMAL_COUNTS.values())
         if len(rows)!=expected_n:
             raise AssertionError(f"seed {seed}: {len(rows)} rows != {expected_n}")
         summary=json.loads((directory/f"seed_{seed}_summary.json").read_text(encoding="utf-8"))
@@ -40,7 +44,8 @@ def audit(directory, config_path=None):
             raise AssertionError(f"seed {seed}: raw SHA mismatch")
         start=0
         phase_result={}
-        for phase_index,(phase,count) in enumerate(FORMAL_COUNTS.items()):
+        for phase_index,phase in enumerate(phases):
+            count=configured_counts[phase]
             segment=rows[start:start+count]
             schedule,streams=phase_schedule(count,seed,phase_index)
             g_bar=.5
