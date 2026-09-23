@@ -17,7 +17,7 @@ from .harness import StageZero
 PILOT_COUNTS = {"initial": 135, "training": 540, "frozen": 135}
 PILOT_SEEDS = (11, 22)
 PILOT_DEVICE = "cuda"
-TAU_E_S = (.5, 1., 2.)
+TAU_E_S = (.25,)
 TAU_G_S = (5.,)
 SCHEMA = 2
 

@@ -16,7 +16,7 @@ from .environment import ACTIONS, exact_success, potential_goodness, render, sti
 
 class StageZero:
     def __init__(self, seed: int, device: str = "cpu", *,
-                 tau_e_s: float = 1.0, tau_g_s: float = 5.0):
+                 tau_e_s: float = 0.25, tau_g_s: float = 5.0):
         self.seed, self.device = seed, torch.device(device)
         torch.manual_seed(seed)
         if self.device.type == "cuda":

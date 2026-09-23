@@ -66,6 +66,9 @@ class EyeAdapter(_Adapter):
             nn.ReLU(),
         )
         self.projection = nn.Linear(16 * 18 * 32, 2 * neuron_size, dtype=torch.float32)
+        # Mark the layers whose ReLU output is what keeps propagating forward.
+        self.features[0]._acnt_post_relu = True
+        self.features[2]._acnt_post_relu = True
 
     @torch.no_grad()
     def forward(self, image: Tensor) -> Tensor:
@@ -119,6 +122,8 @@ class HandAdapter(_Adapter):
             nn.ReLU(),
             nn.Linear(hidden_size, self.output_size, dtype=torch.float32),
         )
+        # Mark the layer whose ReLU output is what keeps propagating forward.
+        self.network[0]._acnt_post_relu = True
 
     @torch.no_grad()
     def forward(self, z: Tensor) -> Tensor:

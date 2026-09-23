@@ -184,7 +184,10 @@ class Plasticity:
         return ids
     @torch.no_grad()
     def _layer_hook(self, module: nn.Module, inputs: tuple, output: Tensor) -> None:
-        pre, post = inputs[0].detach(), output.detach()
+        pre = inputs[0].detach()
+        post = output.detach()
+        if getattr(module, "_acnt_post_relu", False):
+            post = torch.relu(post)
         if self._event_time_ms is None:
             raise RuntimeError("set real local-event time before Adapter forward")
         if id(module) in self._terminal_inputs:
