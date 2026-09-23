@@ -8,9 +8,9 @@ def test_terminal_control_uses_actual_action_noise_threshold():
     pre=torch.tensor([2.,-1.])
     q=torch.tensor([.2,-.1])
     signal=sample_discrete(q,tau=.25,threshold=.1,generator=torch.Generator().manual_seed(97))
-    event=LocalEvent(pre,q,"control",action=signal.a,noise=signal.noise,
+    event=LocalEvent(pre,q,0,"control",action=signal.a,noise=signal.noise,
                      threshold=signal.threshold,control_count=2)
-    value=CorrelationRule().F_e(torch.zeros((2,2)),event)
+    value=CorrelationRule().F_e(event)
     drive=torch.where(signal.a,1.,-1.)*(q+signal.noise-signal.threshold).abs().clamp(max=1)
     torch.testing.assert_close(value,drive[:,None]*pre[None,:])
 
@@ -21,9 +21,10 @@ def test_terminal_observer_records_local_state_only():
     learner=Plasticity({0:group},None)
     learner.attach_adapters({"hand":adapter})
     with torch.no_grad():
+        learner.set_event_time(0)
         q=adapter(torch.ones(3))
         signal=sample_discrete(q,tau=.25,generator=torch.Generator().manual_seed(4))
-        learner.observe_control(adapter,signal)
+        learner.observe_control(adapter,signal,now_ms=0)
     terminal=adapter[-1]
     e=learner.states[id(terminal.weight)]
     assert e.abs().sum()>0
@@ -31,16 +32,18 @@ def test_terminal_observer_records_local_state_only():
     assert all(p.grad is None for p in adapter.parameters())
 
 
-def test_discrete_state_survives_all_idle_delays_then_same_update():
+def test_discrete_state_and_update_shrink_across_idle_delays():
     outcomes=[]
     for delay in (250,500,1000):
         p=nn.Parameter(torch.ones((2,2)))
         learner=Plasticity({0:{"w":p}},None)
-        learner.observe(p,LocalEvent(torch.tensor([2.,3.]),torch.tensor([1.,-1.])))
+        learner.observe(p,LocalEvent(torch.tensor([2.,3.]),torch.tensor([1.,-1.]),0))
         before=p.clone()
         e=learner.states[id(p)].clone()
         learner.apply_goodness(1.,now_ms=delay)
-        torch.testing.assert_close(p,before+.0005*e)
-        torch.testing.assert_close(learner.states[id(p)],e)
+        decayed=e*torch.exp(torch.tensor(-delay/1000.))
+        torch.testing.assert_close(p,before+.0005*decayed)
+        torch.testing.assert_close(learner.states[id(p)],decayed)
         outcomes.append(p.detach().clone())
-    assert all(torch.equal(outcomes[0],x) for x in outcomes[1:])
+    deltas=[float((x-torch.ones_like(x)).norm()) for x in outcomes]
+    assert deltas[0]>deltas[1]>deltas[2]

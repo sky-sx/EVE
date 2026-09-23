@@ -91,7 +91,9 @@ class Runtime(nn.Module):
         self.plasticity.attach_adapters(self.adapters, route_id=self.organ_blocks["route"])
         for block in self.core.blocks:
             block.local_observer = lambda parameter, pre, post: self.plasticity.observe(
-                parameter, LocalEvent(pre, post, "dense" if parameter.ndim == 2 else "bias")
+                parameter, LocalEvent(
+                    pre, post, self.plasticity._event_time_ms,
+                    "dense" if parameter.ndim == 2 else "bias")
             )
         return self.plasticity
 
@@ -157,7 +159,7 @@ class Runtime(nn.Module):
         adapter = self.adapters["hand"]
         if adapter.discrete_controls != len(HAND_DISCRETE_NAMES) or adapter.continuous_controls != 2:
             raise ValueError("runtime hand requires 82 keys, three mouse buttons and dx/dy")
-        raw = self.decode_readout("hand")
+        raw = self.decode_readout("hand", now_ms=now_ms)
         count = adapter.discrete_controls
         discrete = sample_discrete(raw[:count], tau=self.noise_scale, threshold=threshold, generator=generator)
         continuous = raw[count:]
@@ -172,11 +174,11 @@ class Runtime(nn.Module):
     def _observe_discrete(self, name: str, signal: DiscreteSignal, *, now_ms: int) -> None:
         # The terminal itself sees q, its own noise, and the actual event.
         # No score function or global feedback is constructed.
-        self.plasticity.observe_control(self.adapters[name], signal)
+        self.plasticity.observe_control(self.adapters[name], signal, now_ms=now_ms)
 
     @torch.no_grad()
     def generate_speak(self, *, now_ms: int = 0) -> Tensor:
-        controls = self.decode_readout("speak")
+        controls = self.decode_readout("speak", now_ms=now_ms)
         if controls.shape != (30,):
             raise ValueError("speak requires 30 continuous controls")
         self._emit("speak", {"controls": controls.detach().tolist()}, now_ms)
@@ -199,7 +201,7 @@ class Runtime(nn.Module):
         elif teacher_time_ms is not None:
             raise ValueError("a teacher timestamp requires a teacher")
         block = self.core.blocks[self.organ_blocks["goodness"]]
-        raw = self.adapters["goodness"](block.z)
+        raw = self.decode_readout("goodness", now_ms=now_ms)
         if raw.shape != (1,):
             raise ValueError("goodness must produce exactly one scalar")
         prediction = raw.reshape(()).clamp(0, 1).detach().clone()
@@ -208,7 +210,7 @@ class Runtime(nn.Module):
             c_g = teacher - float(prediction)
             loss = 0.5 * c_g * c_g
             if calibrate and self.plasticity is not None:
-                self.plasticity.calibrate_goodness(c_g)
+                self.plasticity.calibrate_goodness(c_g, now_ms=now_ms)
         self._emit("goodness", {"g": float(prediction)}, now_ms)
         effective = teacher if teacher is not None else (float(prediction) if self.execution_enabled["goodness"] else None)
         return GoodnessSignal(now_ms, prediction, effective, teacher, loss)
@@ -225,7 +227,7 @@ class Runtime(nn.Module):
     @torch.no_grad()
     def generate_route(self, *, now_ms: int = 0, generator: torch.Generator | None = None, threshold: float | Tensor = 0.0) -> DiscreteSignal:
         """q + independent Logistic noise + threshold -> next active set."""
-        signal = sample_discrete(self.decode_readout("route"), tau=self.noise_scale, threshold=threshold, generator=generator)
+        signal = sample_discrete(self.decode_readout("route", now_ms=now_ms), tau=self.noise_scale, threshold=threshold, generator=generator)
         if self.plasticity is not None:
             # Observe the actual terminal event before role overrides.
             self._observe_discrete("route", signal, now_ms=now_ms)
@@ -240,22 +242,26 @@ class Runtime(nn.Module):
         return signal
 
     @torch.no_grad()
-    def encode_readin(self, name: str, external_input: Tensor) -> Tensor:
+    def encode_readin(self, name: str, external_input: Tensor, *, now_ms: int = 0) -> Tensor:
         """External sample -> adapter -> the unique ReadIn Block's o."""
         if name not in READINS:
             raise ValueError("only eye and ear are ReadIn organs")
         block = self.core.blocks[self.organ_blocks[name]]
+        if self.plasticity is not None:
+            self.plasticity.set_event_time(now_ms)
         o = self.adapters[name](external_input)
         block._check_vector(o, 2 * block.neuron_size, "ReadIn output")
         block.o = o
         return o
 
     @torch.no_grad()
-    def decode_readout(self, name: str) -> Tensor:
+    def decode_readout(self, name: str, *, now_ms: int = 0) -> Tensor:
         """The unique ReadOut Block's z -> its raw adapter output."""
         if name not in READOUTS:
             raise ValueError("only hand, speak, goodness and route are ReadOut organs")
         block = self.core.blocks[self.organ_blocks[name]]
+        if self.plasticity is not None:
+            self.plasticity.set_event_time(now_ms)
         return self.adapters[name](block.z)
 
     @torch.no_grad()
@@ -277,8 +283,10 @@ class Runtime(nn.Module):
         # Validate time before accepting an external input or changing flags.
         for i in range(len(self.core.blocks)):
             self.core.is_due(i, now_ms)
+        if self.plasticity is not None:
+            self.plasticity.set_event_time(now_ms)
         for name, external in inputs.items():
-            self.encode_readin(name, external)
+            self.encode_readin(name, external, now_ms=now_ms)
         forced = {self.organ_blocks[name] for name in inputs}
         previous_active = {i: self.core.blocks[i].active for i in forced}
         for i in forced:

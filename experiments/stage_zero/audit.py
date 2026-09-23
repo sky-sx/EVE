@@ -43,6 +43,8 @@ def audit(directory, config_path=None):
         for phase_index,(phase,count) in enumerate(FORMAL_COUNTS.items()):
             segment=rows[start:start+count]
             schedule,streams=phase_schedule(count,seed,phase_index)
+            g_bar=.5
+            goodness_time=None
             if len(Counter(r["target_index"] for r in segment))!=27:
                 raise AssertionError("missing target class")
             counts=Counter(r["target_index"] for r in segment)
@@ -92,6 +94,26 @@ def audit(directory, config_path=None):
                     raise AssertionError("Goodness delivery mismatch")
                 if i>0 and row["frame_times_ms"][0]!=segment[i-1]["goodness_time_ms"]+250:
                     raise AssertionError("inter-episode gap mismatch")
+                if phase=="training":
+                    if not math.isclose(row["g_bar_before"],g_bar,rel_tol=1e-12,abs_tol=1e-12):
+                        raise AssertionError("g_bar before update mismatch")
+                    expected_modulation=row["g_star"]-g_bar
+                    if row["goodness_modulation"] is None or not math.isclose(
+                            row["goodness_modulation"],expected_modulation,rel_tol=1e-12,abs_tol=1e-12):
+                        raise AssertionError("Goodness modulation mismatch")
+                    expected_trace=row["pre_goodness_plastic_state"]["total"]["l2"]*math.exp(
+                        -(delay/1000)/lock["tau_e_s"])
+                    if not math.isclose(row["plastic_state"]["total"]["l2"],expected_trace,
+                                        rel_tol=2e-5,abs_tol=1e-8):
+                        raise AssertionError("real-time local trace decay mismatch")
+                    delta_ms=0 if goodness_time is None else row["goodness_time_ms"]-goodness_time
+                    retention=math.exp(-(delta_ms/1000)/lock["tau_g_s"])
+                    g_bar=retention*g_bar+(1-retention)*row["g_star"]
+                    if not math.isclose(row["g_bar_after"],g_bar,rel_tol=1e-12,abs_tol=1e-12):
+                        raise AssertionError("g_bar after update mismatch")
+                    goodness_time=row["goodness_time_ms"]
+                elif row["goodness_modulation"] is not None or row["g_bar_before"]!=.5 or row["g_bar_after"]!=.5:
+                    raise AssertionError("evaluation changed Goodness metabolism")
                 if phase in ("initial","frozen") and (row["parameter_delta_norm"]!=0 or
                                                      row["plastic_state"]["total"]["l2"]!=0):
                     raise AssertionError("evaluation updated parameters or e")

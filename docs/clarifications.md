@@ -1,6 +1,6 @@
 # 当前架构边界与实现核对
 
-本文件按[用户当前 Local Plasticity 架构原文](canonical_architecture.txt)整理边界，不具有高于原文的优先级。旧文档中的 e-prop、固定反馈、`g_bar`、`(a-p)/τ` 学习因子、sigmoid goodness 和 `γ=sigmoid(Δt/ticktime)` 均不是当前正式架构。
+本文件按[用户当前 Local Plasticity 架构原文](canonical_architecture.txt)整理边界，不具有高于原文的优先级。旧文档中的 e-prop、固定反馈、固定 `(g_eff-0.5)`、按事件固定 `retention`、延迟等待时 trace 不衰减、`(a-p)/τ` 学习因子、sigmoid goodness 和 `γ=sigmoid(Δt/ticktime)` 均不是当前正式架构。
 
 ## Block 与器官
 
@@ -12,9 +12,9 @@ Block 的 `r`、`a`、历史 `A/At`、CfC 递推及 `z` 依照原文。原文写
 
 ## 局部塑性
 
-正式 ACNT 只用各局部连接自己的 `w_c`、真实 pre/post 活动和 `e_c`；`g_eff` 只在参数更新时到达。`F_e` 与 `F_w` 的内部状态维度和具体公式尚未由规范固定。当前 `acnt/plasticity.py` 用每个参数元素一份状态和可替换的 `CorrelationRule` 候选实现运行骨架；候选的保持系数、相关活动统计与权重步长是实现参数，不等同于架构的定式。延迟好度只调制当前仍保留的局部状态，不回放计算图。
+每个可塑局部连接/参数单元维护自己的 `e_c`：局部事件时先按 `exp(-Δt/τ_e)` 真实时间衰减，再加只由自身 pre/post 活动形成的 `F(pre,post)`；Goodness 到达前即使没有 forward 也先衰减到到达时刻。除 B_g/A_g 外共同维护初值 `0.5` 的 `G_bar`：先算 `M=g_eff-G_bar`，再对全部普通可塑参数执行 `Δw_c=η M e_c`，最后才以 `exp(-Δt/τ_G)` 更新 `G_bar`。`G_bar` 只是唯一 Goodness 的内部代谢基线，不是第二评价流。当前 `CorrelationRule` 只冻结相关活动作为 `F(pre,post)` 候选。
 
-正式路径不维护 e-prop eligibility、Jacobian、BPTT、反向敏感度、策略梯度、固定随机反馈或第二条全局 reward。e-prop 仅允许在将来独立的小型科学对照系统中作 oracle/benchmark，不能为正式模型提供更新信号。
+Eye、Ear、Core、Hand、Speak、Route 与所有 Adapter 使用同一规则，没有器官特例。正式路径不维护 e-prop eligibility、梯度、Jacobian、BPTT、反向敏感度、策略梯度、固定随机反馈、credit assignment 或第二条全局 reward。B_g/A_g 仍只在同刻外部 `g*` 存在时，以原定义 `c_g=g*-g` 校准自己的时间化局部痕迹。
 
 ## 离散控制与机械边界
 

@@ -82,27 +82,29 @@ z_i = h;
 	对每个B_i，仍记其可训练参数集合：
 		θ_i={W_{i,j} | j∈所有block，含i=j} ∪ {b_i} ∪ {W_{c,i}[k], b_{c,i}[k] | k=0..hold_tick-1} ∪ {adapter_i}；
 	其中adapter_i只在B_i对应某readin或某readout时存在；因readin与readout对应不同block，故至多一个；无对应则无adapter；
-	但是学习时不再给整个θ_i维护参数Jacobian或e-prop eligibility；改为每个可塑的局部连接/局部参数单元c维护自己的local plastic state，记为e_c；
-	local plastic state e_c的具体维度、内部结构和更新公式当前不锁死：它可以是标量、向量、张量或更小的内部状态；这正是后续实验的核心研究对象之一；
-	对一个局部连接c:u→v，参数记为w_c，它最多允许读取：
-		自己的参数w_c；
-		该连接真实存在的局部pre activity z_u；
-		该连接真实存在的局部post activity z_v；
-		自己的local plastic state e_c；
-		全局唯一调制标量g_eff（仅在参数更新时到达）；
-	因此canonical接口定义为：
-		e_c(t+1) = F_e(e_c(t), z_u(t), z_v(t))；
-		w_c(t+1) = F_w(w_c(t), e_c(t), g_eff(t))；
-	F_e与F_w不在当前架构中固定成Hebbian、STDP或任何单一公式；允许后续通过实验比较、演化或学习寻找更合适的局部塑性动力学；
-	最简单的Δw=η*g_eff*e只可作为实验候选，不是当前正式架构公式；
-	e_c如何保持、衰减、饱和、归一化、记录时间关系以及需要多少内部状态，全部由F_e的具体候选实现决定；不额外建立全局eligibility trace系统；
+	每个可塑的局部连接/局部参数单元c维护自己的局部突触痕迹e_c；e_c初值为0，不是e-prop eligibility，也不保存梯度或全局敏感度；
+	局部事件发生在真实时刻t时，先按距该连接上次痕迹更新时间的真实时间Δt衰减，再加入仅由该连接自身pre/post局部活动形成的项：
+		e_c ← exp(-Δt/τ_e)e_c + F(pre,post)；
+	τ_e>0，以秒计；F(pre,post)只允许读取该连接真实存在的局部pre/post活动，不得读取目标、全局误差、Jacobian或其他连接状态；
 	对于W_ij：局部pre来自B_j当前z_j，局部post来自B_i真实产生的局部神经活动；
 	对于W_c/b_c：只允许读取其所在Block temporal/CfC计算中真实存在的两端局部活动；bias可以视为来自常数1输入的局部连接；
-	对于readin/readout adapter：adapter内部每个局部连接同样只读取自己的pre/post activity、自己的e_c和最终g_eff；adapter不享有额外梯度通道；
-	延迟Goodness到达时，不回放一条全局计算图；只让当前仍保存在各局部连接中的e_c参与F_w，所以长期credit能保留多少信息完全由local plastic state本身决定；
-	这意味着当前正式研究问题不再是“怎样近似正确梯度”，而是“局部plastic state最少需要保存什么，才能在Goodness调制下形成有效长期行为”；
-	关于goodness readout子系统：B_g与A_g不使用自身g_eff做自我强化；当g*存在时，仅使用teacher校准标量c_g作为该子系统局部F_w^g的调制输入，且同样禁止使用梯度/Jacobian；
-	除上述teacher校准例外外，整个ACNT只有g_eff这一条全局评价流，不增加block goodness、route goodness、exploration goodness或goodness confidence；
+	对于readin/readout adapter：adapter内部每个局部连接同样只读取自己的pre/post活动并形成自己的e_c；adapter不享有额外通道；
+	Goodness到达前，即使等待期间没有任何forward或局部事件，也必须先把当前e_c按真实时间衰减到Goodness到达时刻，再进行参数更新；
+	除Goodness ReadOut自身B_g/A_g外，全部可塑参数共同维护一个全局近期Goodness内部代谢基线，记为G_bar，初值0.5；
+	收到唯一g_eff时，先使用更新前的G_bar计算：
+		M = g_eff - G_bar；
+	随后所有上述可塑参数统一按各自当前局部痕迹更新：
+		Δw_c = η M e_c；
+	全部参数完成本次更新之后，才按距上次Goodness的真实时间Δt更新基线：
+		G_bar ← λ_G G_bar + (1-λ_G)g_eff；
+		λ_G = exp(-Δt/τ_G)，τ_G>0，以秒计；
+	G_bar只是唯一Goodness的内部代谢基线，不是第二评价流，不作为新的ReadIn/ReadOut，不向world或Core输出；
+	Goodness ReadOut自身B_g/A_g不使用g_eff、M或G_bar进行自我强化；当同刻存在g*时，仍保持原定义c_g=g*-g；
+	B_g/A_g只允许用各自局部pre/post活动形成的同样时间化e_c以及c_g进行teacher校准；c_g不发送给其他Block/Adapter，也不是第二条全局Goodness；
+	Eye、Ear、Core、Hand、Speak、Route及其Adapter不设器官特例，全部遵守同一“局部突触痕迹 + 全局Goodness神经调制”原则；
+	延迟Goodness到达时不回放计算图、不回放过去活动；参数只读取衰减到到达时刻后仍保留的e_c、唯一M及自身w_c；
+	当前CorrelationRule保留局部相关活动作为F(pre,post)的第一版实验候选；F的更合适局部形式仍可通过实验比较，但真实时间衰减、M、参数更新顺序与G_bar更新顺序属于正式架构，不是候选项；
+	正式ACNT不使用e-prop、梯度、Jacobian、BPTT、backward sensitivity、策略梯度、固定随机反馈或credit assignment；除同刻teacher校准c_g外，整个ACNT只有g_eff这一条全局评价流；
 关于e-prop的定位：
 	e-prop不再属于正式ACNT架构，不进入生产运行，不作为参数更新机制，也不为生产模型长期保存任何e-prop状态；
 	只允许在很小的科学对照系统中作为oracle/benchmark，例如4个Block的toy system中计算较完整的sensitivity，用于测量Local Plasticity Dynamics相对梯度信息丢失了多少、方向一致性如何、任务性能差多少；
@@ -179,18 +181,18 @@ p = P(a=1|q) = sigma((q-θ)/τ)；
 由于最终：
 a = 1[q + ε > θ]
 为硬离散操作，因此正式ACNT不对a、q、hard threshold或world求导，也不构造∂a/∂q、∂q/∂θ、log-policy gradient或e-prop eligibility；
-连续神经倾向q、此次本地noise realization以及最终实际形成的离散事件a，都是该readout终端本地真实发生的信息；它们可以被该readout自身的local plastic state吸收，但不会作为额外world反馈返回core；
-对于具有离散控制输出的readout adapter，其内部连接仍按统一局部接口维护e_c：
-	e_c(t+1) = F_e^ctrl(e_c(t), local_pre(t), local_post(t))；
-其中local_post允许包含该终端实际形成的q与a等本地输出活动；F_e^ctrl的具体写法当前不锁死；
-当未来唯一g_eff到达时，相关局部参数只通过：
-	w_c(t+1) = F_w^ctrl(w_c(t), e_c(t), g_eff(t))；
-进行更新；
+连续神经倾向q、此次本地noise realization以及最终实际形成的离散事件a，都是该readout终端本地真实发生的信息；它们可以进入本连接的F(pre,post)，但不会作为额外world反馈返回core；
+离散控制readout不建立F^ctrl器官特例，其内部连接与Eye/Core/其他Adapter完全使用同一正式接口：
+	e_c ← exp(-Δt/τ_e)e_c + F(local_pre,local_post)；
+其中local_post允许包含该终端实际形成的q与a等本地输出活动；F仍只能读取本连接局部活动；
+当未来唯一g_eff到达时，先把e_c衰减到到达时刻，并用更新前的G_bar计算M=g_eff-G_bar，再统一通过：
+	Δw_c = η M e_c；
+进行更新；全部参数更新后才按正式公式更新G_bar；
 不要求同一world状态重新尝试另一个动作，不要求知道未发生动作的结果，不要求world可微，也不要求离散控制可微；
 如果noise造成某个离散动作偶然发生，那么该动作是否能在未来被增强或抑制，只能取决于：
 	这次动作前后在局部神经连接中留下了什么e_c；
 	之后到达的唯一g_eff；
-	F_w^ctrl怎样利用二者修改局部参数；
+	衰减后的e_c与唯一M怎样按正式公式修改局部参数；
 这里不固定(a-p)/τ、REINFORCE、straight-through estimator或其他policy-gradient公式为正式机制；这些都只能作为实验对照候选；
 若一个readout同时具有多个彼此独立的离散控制量，每个控制量仍拥有自己的noise和实际事件a；它们只通过各自涉及的局部连接形成local plastic state，不建立Softmax竞争，也不共享第二个reward；
 route与hand都遵守这一规则；route block自身永久强制active这一硬规则不参与学习；
@@ -198,8 +200,8 @@ route与hand都遵守这一规则；route block自身永久强制active这一硬
 	block/readout产生连续神经倾向q；
 	noise使唯一现实时间线上偶尔产生不同的离散操作；
 	hard threshold产生真实01控制；
-	相关局部神经连接仅依据自己真实经历的pre/post/output活动形成local plastic state；
-	延迟到达的唯一g_eff再调制这些局部状态对应的参数变化；
+	相关局部神经连接仅依据自己真实经历的pre/post/output活动形成时间化局部突触痕迹e_c；
+	延迟到达的唯一g_eff先与G_bar形成M，再调制已衰减到该时刻的e_c对应参数变化；
 整个过程不存在全局backward sensitivity，不要求DAG，不要求world reset，不要求在同一状态分别尝试两个动作。
 
 关于0阶段：
@@ -211,9 +213,10 @@ hand中的26个键盘字母以及鼠标左键click属于离散最终动作，因
 每个字母键和鼠标左键拥有独立noise；
 26个字母之间不使用Softmax，因此理论上允许多个字母键在同一控制时刻同时产生按下倾向；
 实际是否形成对应DirectInput仍受0阶段“仅日志输出、不真实控制”的原规则限制；
+Stage 0其余网络、1/n外部Goodness和协议不变，仅扫描τ_e={0.5,1,2}s与τ_G={2,5,10}s的9组笛卡尔积；
 0阶段由该实验同时验证：
 	连续readout倾向能否形成；
 	noise + hard threshold能否产生可记录的离散探索；
 	单条不可逆时间轨迹下，局部plastic state能否保留足够久，使延迟外部g*对先前离散动作产生稳定定向；
 	在完全不使用e-prop、∂q/∂θ、hard-threshold梯度和world梯度的条件下，正确字母输出以及全绿屏幕click的发生倾向能否逐渐提高；
-	并与小规模e-prop oracle/benchmark对照，测量局部规则丢失了多少credit信息，但benchmark不得参与正式训练更新。
+	小规模e-prop oracle/benchmark若未来单独研究，只能比较行为与局部候选，不得参与正式训练更新。

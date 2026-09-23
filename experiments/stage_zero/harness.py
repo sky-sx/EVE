@@ -15,7 +15,8 @@ from .environment import ACTIONS, exact_success, potential_goodness, render, sti
 
 
 class StageZero:
-    def __init__(self, seed: int, device: str = "cpu"):
+    def __init__(self, seed: int, device: str = "cpu", *,
+                 tau_e_s: float = 1.0, tau_g_s: float = 5.0):
         self.seed, self.device = seed, torch.device(device)
         torch.manual_seed(seed)
         if self.device.type == "cuda":
@@ -32,7 +33,8 @@ class StageZero:
             if adapter is not None:
                 group.update({"adapter."+name: p for name, p in adapter.named_parameters()})
             self.groups[i] = group
-        self.plasticity = Plasticity(self.groups, goodness_id=None)
+        self.plasticity = Plasticity(
+            self.groups, goodness_id=None, tau_e_s=tau_e_s, tau_g_s=tau_g_s)
         self.cache = {}
         self._learning = False
         self._previous = {id(p): p.detach().clone() for p in self.plasticity.parameters.values()}
@@ -47,8 +49,9 @@ class StageZero:
             block.local_observer = self._observe_block if learning else None
 
     def _observe_block(self, parameter, pre, post):
-        self.plasticity.observe(parameter, LocalEvent(pre, post,
-                                "dense" if parameter.ndim == 2 else "bias"))
+        self.plasticity.observe(parameter, LocalEvent(
+            pre, post, self.plasticity._event_time_ms,
+            "dense" if parameter.ndim == 2 else "bias"))
 
     def reset_phase(self, learning: bool):
         self.set_learning(learning)
@@ -118,25 +121,28 @@ class StageZero:
         frame, sha = self.frame(target, color)
         frame_times = [start_ms + 250 * i for i in range(3)]
         for t in frame_times:
+            self.plasticity.set_event_time(t)
             self.core.blocks[0].o = self.eye(frame)
             updated = self.core.step(now_ms=t)
             if tuple(updated) != tuple(range(10)):
                 raise AssertionError("all ten Blocks must update on every frame")
         action_time = frame_times[-1]
+        self.plasticity.set_event_time(action_time)
         q = self.hand(self.core.blocks[1].z)
         signal = sample_discrete(q, tau=0.25, threshold=0., generator=generator)
         if self._learning:
-            self.plasticity.observe_control(self.hand, signal)
+            self.plasticity.observe_control(self.hand, signal, now_ms=action_time)
         g = potential_goodness(target, signal.a)
         exact = exact_success(target, signal.a)
         delivery = action_time + delay_ms
         # No Core, Adapter, or F_e call takes place between action and delivery.
         before_state = self.state_stats()
+        g_bar_before = self.plasticity.g_bar
+        modulation = None
         if self._learning:
-            self.plasticity.apply_goodness(g, now_ms=delivery)
+            modulation = self.plasticity.apply_goodness(g, now_ms=delivery)
         after_state = self.state_stats()
-        if before_state["total"] != after_state["total"]:
-            raise AssertionError("Goodness delivery modified a local plastic state")
+        g_bar_after = self.plasticity.g_bar
         norm, delta = self._parameter_stats()
         bits = signal.a.cpu().tolist()
         probs = signal.p.cpu()
@@ -162,7 +168,10 @@ class StageZero:
             "non_target_false_rate": (sum(bits)-int(bits[target]))/26,
             "active_bit_count": sum(bits), "exact_event_probability": exact_event_probability,
             "parameter_norm": norm, "parameter_delta_norm": delta,
-            "plastic_state": before_state,
+            "plastic_state": after_state,
+            "pre_goodness_plastic_state": before_state,
+            "g_bar_before": g_bar_before, "g_bar_after": g_bar_after,
+            "goodness_modulation": modulation,
             "nan_count": nan_count, "inf_count": inf_count,
         }
 

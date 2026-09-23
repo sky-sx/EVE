@@ -16,8 +16,14 @@ from .harness import StageZero
 
 FORMAL_COUNTS = {"initial": 270, "training": 1080, "frozen": 270}
 FORMAL_SEEDS = (11, 22, 33, 44, 55)
-SCHEMA = 1
+TAU_E_S = (.5, 1., 2.)
+TAU_G_S = (2., 5., 10.)
+SCHEMA = 2
 
+
+def group_name(tau_e_s, tau_g_s):
+    value=lambda x: str(float(x)).replace(".","p")
+    return f"tau_e_{value(tau_e_s)}_tau_g_{value(tau_g_s)}"
 
 def source_hashes():
     paths = ("acnt/plasticity.py", "acnt/block.py", "acnt/core.py",
@@ -28,15 +34,16 @@ def source_hashes():
     return {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}
 
 
-def config(device, counts):
+def config(device, counts, tau_e_s, tau_g_s, seeds=FORMAL_SEEDS):
     return {
-        "schema": SCHEMA, "device": device, "counts": counts, "seeds": FORMAL_SEEDS,
+        "schema": SCHEMA, "device": device, "counts": counts, "seeds": list(seeds),
         "block_count": 10, "neuron_size": 100, "hold_tick": 4, "ticktime_s": .25,
         "active_blocks": list(range(10)), "eye_block": 0, "hand_block": 1,
         "ordinary_blocks": list(range(2,10)), "frames_per_episode": 3,
         "frame_offsets_ms": [0,250,500], "inter_episode_gap_ms": 250,
         "goodness_delays_ms": DELAYS_MS, "goodness": "target active: 1 / active Hand bits; otherwise 0; exact success evaluation only",
-        "learning_rate": .001, "retention": .95, "parameter_clip": None,
+        "learning_rate": .001, "tau_e_s": tau_e_s, "tau_g_s": tau_g_s,
+        "g_bar_initial": .5, "parameter_clip": None,
         "tau": .25, "threshold": 0.,
         "rng_rule": "seed*1000003+phase_index*10007+stream_offset(1..4); phase order initial/training/frozen",
         "source_sha256": source_hashes(), "environment": environment_config(),
@@ -93,10 +100,11 @@ def summarize(rows):
     return result
 
 
-def run_seed(seed, *, device, counts, output, checkpoint_interval=270):
+def run_seed(seed, *, device, counts, output, tau_e_s, tau_g_s,
+             checkpoint_interval=270):
     output=Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    model=StageZero(seed,device)
+    model=StageZero(seed,device,tau_e_s=tau_e_s,tau_g_s=tau_g_s)
     initial_parameters={id(p):p.detach().clone() for p in model.plasticity.parameters.values()}
     rows=[]
     start=time.perf_counter()
@@ -132,23 +140,45 @@ def run_seed(seed, *, device, counts, output, checkpoint_interval=270):
 def main(argv=None):
     parser=argparse.ArgumentParser()
     parser.add_argument("--device",choices=("cpu","cuda"),default="cpu")
-    parser.add_argument("--output",default="runs/stage_zero_local/potential_goodness")
+    parser.add_argument("--output",default="runs/stage_zero_local/tau_scan")
     parser.add_argument("--seeds",nargs="+",type=int,default=list(FORMAL_SEEDS))
     parser.add_argument("--initial",type=int,default=270)
     parser.add_argument("--training",type=int,default=1080)
     parser.add_argument("--frozen",type=int,default=270)
     parser.add_argument("--checkpoint-interval",type=int,default=270)
+    parser.add_argument("--tau-e-s",nargs="+",type=float,default=list(TAU_E_S))
+    parser.add_argument("--tau-g-s",nargs="+",type=float,default=list(TAU_G_S))
     args=parser.parse_args(argv)
     counts={"initial":args.initial,"training":args.training,"frozen":args.frozen}
-    output=Path(args.output)
-    output.mkdir(parents=True,exist_ok=True)
-    cfg=config(args.device,counts)
-    (output/"config.json").write_text(json.dumps(cfg,indent=2,allow_nan=False),encoding="utf-8")
-    results=[run_seed(seed,device=args.device,counts=counts,output=output,
-                      checkpoint_interval=args.checkpoint_interval) for seed in args.seeds]
-    (output/"summary.json").write_text(json.dumps({"config":cfg,"seeds":results},indent=2,allow_nan=False),
-                                        encoding="utf-8")
-
+    root=Path(args.output)
+    root.mkdir(parents=True,exist_ok=True)
+    scan_config={
+        "schema":SCHEMA,"tau_e_s":args.tau_e_s,"tau_g_s":args.tau_g_s,
+        "counts":counts,"seeds":args.seeds,"device":args.device,
+    }
+    (root/"scan_config.json").write_text(
+        json.dumps(scan_config,indent=2,allow_nan=False),encoding="utf-8")
+    groups={}
+    for tau_e_s in args.tau_e_s:
+        for tau_g_s in args.tau_g_s:
+            name=group_name(tau_e_s,tau_g_s)
+            output=root/name
+            output.mkdir(parents=True,exist_ok=True)
+            cfg=config(args.device,counts,tau_e_s,tau_g_s,args.seeds)
+            (output/"config.json").write_text(
+                json.dumps(cfg,indent=2,allow_nan=False),encoding="utf-8")
+            results=[run_seed(seed,device=args.device,counts=counts,output=output,
+                              tau_e_s=tau_e_s,tau_g_s=tau_g_s,
+                              checkpoint_interval=args.checkpoint_interval)
+                     for seed in args.seeds]
+            group_summary={"config":cfg,"seeds":results}
+            (output/"summary.json").write_text(
+                json.dumps(group_summary,indent=2,allow_nan=False),encoding="utf-8")
+            groups[name]={"tau_e_s":tau_e_s,"tau_g_s":tau_g_s,
+                          "directory":str(output),"summary":group_summary}
+    (root/"summary.json").write_text(
+        json.dumps({"scan":scan_config,"groups":groups},indent=2,allow_nan=False),
+        encoding="utf-8")
 
 if __name__=="__main__":
     main()

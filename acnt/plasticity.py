@@ -1,8 +1,10 @@
 """Connection-local plasticity for the production ACNT runtime.
 
-F_e and F_w are deliberately replaceable. CorrelationRule is a small
-experimental candidate, not a fixed equation of the ACNT architecture.
-No autograd, Jacobian, eligibility trace, or global backward signal is used.
+Every connection owns one local synaptic trace e_c. Real elapsed time decays
+that trace, while CorrelationRule supplies only the local F(pre, post) term.
+The one global Goodness scalar is converted to M = g_eff - g_bar before the
+ordinary parameters are updated. No autograd, Jacobian, e-prop state, credit
+assignment machinery, or global backward signal is used.
 """
 
 from collections.abc import Mapping
@@ -20,6 +22,7 @@ class LocalEvent:
 
     pre: Tensor
     post: Tensor
+    time_ms: int
     kind: str = "dense"
     module: nn.Module | None = None
     action: Tensor | None = None
@@ -30,17 +33,14 @@ class LocalEvent:
 
 
 class CorrelationRule:
-    """Replaceable experimental F_e/F_w candidate; no learning claim implied."""
+    """Correlation candidate for F(pre, post) and the two local weight rules."""
 
-    def __init__(self, *, learning_rate: float = 0.001, retention: float = 0.95) -> None:
+    def __init__(self, *, learning_rate: float = 0.001) -> None:
         if not math.isfinite(learning_rate) or learning_rate < 0:
             raise ValueError("learning_rate must be finite and nonnegative")
-        if not math.isfinite(retention) or not 0 <= retention <= 1:
-            raise ValueError("retention must be in [0, 1]")
         self.learning_rate = float(learning_rate)
-        self.retention = float(retention)
 
-    def F_e(self, state: Tensor, event: LocalEvent) -> Tensor:
+    def F_e(self, event: LocalEvent) -> Tensor:
         pre, post = event.pre, event.post
         if event.kind == "conv":
             module = event.module
@@ -55,7 +55,7 @@ class CorrelationRule:
                 raise ValueError("grouped convolution needs its own local rule")
             outputs = post.flatten(2)
             product = torch.einsum("bol,bil->oi", outputs, patches)
-            product = product.reshape_as(state) / (outputs.shape[0] * outputs.shape[-1])
+            product = product.reshape_as(module.weight) / (outputs.shape[0] * outputs.shape[-1])
         elif event.kind == "bias":
             product = post.reshape(-1, post.shape[-1]).mean(0)
         elif event.kind in ("dense", "control"):
@@ -79,13 +79,10 @@ class CorrelationRule:
             product = (y.T @ x) / x.shape[0]
         else:
             raise ValueError(f"unknown local event kind: {event.kind}")
-        if product.shape != state.shape:
-            raise ValueError("local activity dimensions do not match the connection")
-        return self.retention * state + product
+        return product
 
-    def F_w(self, weight: Tensor, state: Tensor, g_eff: float) -> Tensor:
-        # Centering is a choice of this candidate, not an extra reward stream.
-        return weight + self.learning_rate * (g_eff - 0.5) * state
+    def F_w(self, weight: Tensor, state: Tensor, modulation: float) -> Tensor:
+        return weight + self.learning_rate * modulation * state
 
     def F_w_g(self, weight: Tensor, state: Tensor, c_g: float) -> Tensor:
         return weight + self.learning_rate * c_g * state
@@ -100,7 +97,8 @@ class Plasticity:
 
     def __init__(
         self, groups: Mapping[int, Mapping[str, nn.Parameter]], goodness_id: int | None,
-        *, rule=None, learning_rate: float = 0.001, retention: float = 0.95,
+        *, rule=None, learning_rate: float = 0.001, tau_e_s: float = 1.0,
+        tau_g_s: float = 5.0,
         parameter_clip: tuple[float, float] | None = None,
     ) -> None:
         self.groups = {i: dict(parameters) for i, parameters in groups.items()}
@@ -117,10 +115,20 @@ class Plasticity:
         ):
             raise ValueError("parameter_clip must be ordered finite bounds")
         self.parameter_clip = parameter_clip
-        self.rule = CorrelationRule(learning_rate=learning_rate, retention=retention) if rule is None else rule
+        if not math.isfinite(tau_e_s) or tau_e_s <= 0:
+            raise ValueError("tau_e_s must be finite and positive")
+        if not math.isfinite(tau_g_s) or tau_g_s <= 0:
+            raise ValueError("tau_g_s must be finite and positive")
+        self.tau_e_s = float(tau_e_s)
+        self.tau_g_s = float(tau_g_s)
+        self.rule = CorrelationRule(learning_rate=learning_rate) if rule is None else rule
         if any(not callable(getattr(self.rule, name, None)) for name in ("F_e", "F_w", "F_w_g")):
             raise TypeError("local rule must supply F_e, F_w, and F_w_g")
         self.states = {key: torch.zeros_like(p) for key, p in self.parameters.items()}
+        self.state_times_ms: dict[int, int | None] = {key: None for key in self.parameters}
+        self.g_bar = 0.5
+        self.goodness_time_ms: int | None = None
+        self._event_time_ms: int | None = None
         self._terminal_inputs: dict[int, tuple[Tensor, Tensor] | None] = {}
         self._excluded_controls: dict[int, int] = {}
         self._hooks = []
@@ -148,17 +156,47 @@ class Plasticity:
         self._terminal_inputs.clear()
         self._excluded_controls.clear()
 
+
+    def set_event_time(self, now_ms: int) -> None:
+        """Set the real timestamp that adapter forward hooks put on LocalEvent."""
+        self._validate_time(now_ms, "local event time")
+        self._event_time_ms = now_ms
+
+    @staticmethod
+    def _validate_time(now_ms: int | None, label: str) -> None:
+        if type(now_ms) is not int:
+            raise ValueError(f"{label} must be integer milliseconds")
+
+    def _decay_state(self, key: int, now_ms: int) -> None:
+        last_ms = self.state_times_ms[key]
+        if last_ms is not None:
+            if now_ms < last_ms:
+                raise ValueError("local plasticity time must not move backwards")
+            decay = math.exp(-((now_ms - last_ms) / 1000.0) / self.tau_e_s)
+            self.states[key].mul_(decay)
+        self.state_times_ms[key] = now_ms
+
+    def _decay_groups(self, block_ids, now_ms: int) -> tuple[int, ...]:
+        ids = tuple(block_ids)
+        for block_id in ids:
+            for parameter in self.groups[block_id].values():
+                self._decay_state(id(parameter), now_ms)
+        return ids
     @torch.no_grad()
     def _layer_hook(self, module: nn.Module, inputs: tuple, output: Tensor) -> None:
         pre, post = inputs[0].detach(), output.detach()
+        if self._event_time_ms is None:
+            raise RuntimeError("set real local-event time before Adapter forward")
         if id(module) in self._terminal_inputs:
             self._terminal_inputs[id(module)] = (pre.clone(), post.clone())
             return
         kind = "conv" if isinstance(module, nn.Conv2d) else "dense"
-        self.observe(module.weight, LocalEvent(pre, post, kind, module))
+        self.observe(module.weight, LocalEvent(pre, post, self._event_time_ms, kind, module))
         if module.bias is not None:
             bias_post = post.movedim(-3, -1) if kind == "conv" else post
-            self.observe(module.bias, LocalEvent(torch.ones_like(bias_post), bias_post, "bias"))
+            self.observe(module.bias, LocalEvent(
+                torch.ones_like(bias_post), bias_post, self._event_time_ms, "bias"
+            ))
 
     @torch.no_grad()
     def observe(self, parameter: nn.Parameter, event: LocalEvent) -> None:
@@ -168,13 +206,19 @@ class Plasticity:
         tensors = (event.pre, event.post, event.action, event.noise, event.threshold)
         if any(value is not None and not bool(torch.isfinite(value).all()) for value in tensors):
             raise FloatingPointError("non-finite local activity")
-        state = self.rule.F_e(self.states[key], event)
+        self._validate_time(event.time_ms, "local event time")
+        self._decay_state(key, event.time_ms)
+        contribution = self.rule.F_e(event)
+        if contribution.shape != parameter.shape or not bool(torch.isfinite(contribution).all()):
+            raise FloatingPointError("invalid local correlation contribution")
+        state = self.states[key] + contribution
         if state.shape != parameter.shape or not bool(torch.isfinite(state).all()):
             raise FloatingPointError("invalid local plastic state")
         self.states[key] = state.detach().clone()
 
     @torch.no_grad()
-    def observe_control(self, adapter: nn.Module, signal) -> None:
+    def observe_control(self, adapter: nn.Module, signal, *, now_ms: int) -> None:
+        self._validate_time(now_ms, "local event time")
         terminal = next((layer for layer in reversed(list(adapter.modules()))
                          if isinstance(layer, nn.Linear)), None)
         if terminal is None or id(terminal) not in self._terminal_inputs:
@@ -193,7 +237,7 @@ class Plasticity:
         threshold = torch.zeros_like(post)
         threshold[:count] = signal.threshold
         excluded = self._excluded_controls.get(id(terminal))
-        event = LocalEvent(pre, post, "control", terminal, action, noise, threshold, count, excluded)
+        event = LocalEvent(pre, post, now_ms, "control", terminal, action, noise, threshold, count, excluded)
         self.observe(terminal.weight, event)
         if terminal.bias is not None:
             drive = post.clone()
@@ -202,7 +246,7 @@ class Plasticity:
             ).abs().clamp(max=1)
             if excluded is not None:
                 drive[excluded] = 0
-            self.observe(terminal.bias, LocalEvent(torch.ones_like(drive), drive, "bias"))
+            self.observe(terminal.bias, LocalEvent(torch.ones_like(drive), drive, now_ms, "bias"))
         self._terminal_inputs[id(terminal)] = None
 
     @torch.no_grad()
@@ -223,20 +267,37 @@ class Plasticity:
             parameter.copy_(value)
         return scalar
 
-    def apply_goodness(self, g_eff: float, *, now_ms: int | None = None) -> float:
+    def apply_goodness(self, g_eff: float, *, now_ms: int) -> float:
         if not math.isfinite(g_eff) or not 0 <= g_eff <= 1:
             raise ValueError("effective goodness must be in [0,1]")
-        if now_ms is not None and type(now_ms) is not int:
-            raise ValueError("goodness delivery time must be integer milliseconds")
-        return self._apply((i for i in self.groups if i != self.goodness_id), float(g_eff))
+        self._validate_time(now_ms, "goodness delivery time")
+        block_ids = self._decay_groups(
+            (i for i in self.groups if i != self.goodness_id), now_ms
+        )
+        if self.goodness_time_ms is not None and now_ms < self.goodness_time_ms:
+            raise ValueError("goodness time must not move backwards")
+        modulation = float(g_eff) - self.g_bar
+        self._apply(block_ids, modulation)
+        delta_ms = 0 if self.goodness_time_ms is None else now_ms - self.goodness_time_ms
+        retention = math.exp(-(delta_ms / 1000.0) / self.tau_g_s)
+        self.g_bar = retention * self.g_bar + (1 - retention) * float(g_eff)
+        self.goodness_time_ms = now_ms
+        return modulation
 
-    def calibrate_goodness(self, c_g: float) -> float:
+    def calibrate_goodness(self, c_g: float, *, now_ms: int) -> float:
         if self.goodness_id is None:
             raise RuntimeError("no goodness ReadOut is registered")
         if not math.isfinite(c_g) or not -1 <= c_g <= 1:
             raise ValueError("calibration scalar must be in [-1,1]")
-        return self._apply((self.goodness_id,), float(c_g), teacher=True)
+        self._validate_time(now_ms, "goodness calibration time")
+        block_ids = self._decay_groups((self.goodness_id,), now_ms)
+        return self._apply(block_ids, float(c_g), teacher=True)
 
     def clear(self) -> None:
         for state in self.states.values():
             state.zero_()
+        for key in self.state_times_ms:
+            self.state_times_ms[key] = None
+        self.g_bar = 0.5
+        self.goodness_time_ms = None
+        self._event_time_ms = None

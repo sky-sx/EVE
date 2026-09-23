@@ -46,7 +46,7 @@ def build(directory, audit_file):
         "This is the new Local Plasticity experiment. The archived e-prop Stage 0 is a separate historical result.","",
         f"- Run configuration: `{directory/'config.json'}`.",
         f"- Python {lock['python']}; PyTorch {lock['torch']}; CUDA {lock['cuda']}; GPU {lock['gpu']}; formal device {lock['device']}.",
-        "- Frozen candidate: production CorrelationRule, learning_rate=.001, retention=.95, parameter_clip=None.",
+        f"- Frozen candidate: production CorrelationRule, learning_rate=.001, tau_e={lock['tau_e_s']} s, tau_G={lock['tau_g_s']} s, g_bar(0)=0.5, parameter_clip=None.",
         "- Formal seeds 11, 22, 33, 44, 55; per seed 270 initial, 1080 training, 270 frozen episodes.",
         f"- Independent audit: passed, {audit['all_rows_audited']} rows and {audit['stimulus_count']} stimulus hashes.",
         "- Training Goodness is zero when the target bit is off, otherwise 1/active-bit count; exact success remains an evaluation-only one-hot event.",
@@ -120,7 +120,7 @@ def build(directory, audit_file):
                         ("mean","std","max_abs","nonzero_fraction")]]
                 for seed in FORMAL_SEEDS
                 for r in [[x for x in subsets["training"] if x["seed"]==seed][-1]]]),
-        "The candidate has no bounded e state, so saturation is not a defined failure criterion; finite values, magnitude, and nonzero fraction are reported instead.",
+        "The correlation contribution is not clipped, while every e_c decays exponentially in real time; finite values, magnitude, and nonzero fraction are reported.",
         "",
         "At Goodness delivery, local-state persistence by delay:","",
         _table(["Delay ms","Train rows","Nonzero e","Mean e L2","Mean parameter delta"],
@@ -128,7 +128,7 @@ def build(directory, audit_file):
                  aggregate(g)["state_total_l2_mean"],aggregate(g)["parameter_delta_norm"]]
                 for d in DELAYS_MS
                 for g in [[r for r in subsets["training"] if r["goodness_delay_ms"]==d]]]),
-        "F_w still reads the single external g* through the unchanged production rule: update coefficient 0.001*(g* - 0.5). Parameter changes are reported per group; they are not behavioral learning evidence.",
+        "At delivery every e_c is first decayed to that timestamp, then F_w uses 0.001*(g* - g_bar); only after all parameter updates is g_bar advanced in real time. Parameter changes are not behavioral learning evidence.",
         f"NaN / Inf counts across all logged episodes: {sum(r['nan_count'] for r in rows)} / {sum(r['inf_count'] for r in rows)}.",
         f"Seeds without joint required behavior improvement: {[s for s in FORMAL_SEEDS if s not in improved]}.",
         f"Total formal elapsed seed time: {sum(seed_summaries[s]['elapsed_s'] for s in FORMAL_SEEDS):.3f} s.","",
