@@ -75,6 +75,8 @@ class Runtime(nn.Module):
         self.executors: dict = {}
         self.plasticity: Plasticity | None = None
         self.perturbation_generator: torch.Generator | None = None
+        # Discrete ReadOut eligibility is accumulated only while learning.
+        self.learning = True
 
     def enable_plasticity(
         self,
@@ -163,6 +165,7 @@ class Runtime(nn.Module):
         """One mock/world tick. Returned diagnostics contain no live graphs."""
         if learn and self.plasticity is None:
             self.enable_plasticity()
+        self.learning = learn
         if self.plasticity is not None:
             for block in self.core.blocks:
                 block.set_learning(
@@ -246,7 +249,7 @@ class Runtime(nn.Module):
     def _observe_discrete(self, name: str, signal: DiscreteSignal, *, now_ms: int) -> None:
         # The terminal itself sees q, its sampled Bernoulli event, and the
         # analytic score. No global feedback is constructed.
-        if self.plasticity is None:
+        if self.plasticity is None or not self.learning:
             return
         self.plasticity.observe_control(
             name,

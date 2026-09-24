@@ -1,0 +1,1 @@
+"""Minimal ABC Stage Zero baseline for the perturbation-eprop rule."""
