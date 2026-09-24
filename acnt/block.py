@@ -2,6 +2,7 @@
 
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 import math
 from time import monotonic_ns
 
@@ -10,7 +11,19 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 
-LocalObserver = Callable[[nn.Parameter, Tensor, Tensor, str], None]
+LocalObserver = Callable[[nn.Parameter, Tensor, int], None]
+
+
+@dataclass(frozen=True)
+class SynapseFrame:
+    """Detached local facts of one committed Block update."""
+
+    time_ms: int
+    l: Tensor
+    rho: Tensor
+    a: Tensor
+    ln_scale: Tensor
+    sources: dict[int, Tensor]
 
 
 class NeuronLevelModel(nn.Module):
@@ -35,26 +48,97 @@ class NeuronLevelModel(nn.Module):
         nn.init.uniform_(self.weight1, -bound1, bound1)
         nn.init.uniform_(self.weight2, -bound2, bound2)
 
-    def forward(self, x: Tensor, observer: LocalObserver | None = None) -> Tensor:
+    def forward(self, x: Tensor, *, return_cache: bool = False):
         if x.shape != (self.neuron_size, self.input_dim):
-            raise ValueError(f"NLM input must have shape ({self.neuron_size}, {self.input_dim})")
+            raise ValueError(
+                f"NLM input must have shape ({self.neuron_size}, {self.input_dim})"
+            )
+
         linear1 = torch.einsum("noi,ni->no", self.weight1, x) + self.bias1
-        if observer is not None:
-            observer(self.weight1, x.detach(), linear1.detach(), "grouped_dense")
-            observer(self.bias1, torch.ones_like(linear1), linear1.detach(), "grouped_bias")
-        hidden = F.glu(linear1, dim=-1)
+        h = self.hidden_dim
+
+        left1 = linear1[:, :h]
+        gate1 = linear1[:, h:]
+        rho1 = torch.sigmoid(gate1)
+        hidden = left1 * rho1
+
         linear2 = torch.einsum("noi,ni->no", self.weight2, hidden) + self.bias2
-        if observer is not None:
-            observer(self.weight2, hidden.detach(), linear2.detach(), "grouped_dense")
-            observer(self.bias2, torch.ones_like(linear2), linear2.detach(), "grouped_bias")
-        return F.glu(linear2, dim=-1).squeeze(-1)
+
+        left2 = linear2[:, :1]
+        gate2 = linear2[:, 1:]
+        rho2 = torch.sigmoid(gate2)
+        z = (left2 * rho2).squeeze(-1)
+
+        if not return_cache:
+            return z
+
+        cache = {
+            "x": x.detach().clone(),
+            "left1": left1.detach().clone(),
+            "rho1": rho1.detach().clone(),
+            "hidden": hidden.detach().clone(),
+            "left2": left2.detach().clone(),
+            "rho2": rho2.detach().clone(),
+        }
+        return z, cache
+
+    def local_vjp(self, cache: dict[str, Tensor], cotangent: Tensor) -> dict[str, Tensor]:
+        if cotangent.shape != (self.neuron_size,):
+            raise ValueError(
+                f"NLM cotangent must have shape ({self.neuron_size},)"
+            )
+        if cotangent.dtype != torch.float32:
+            raise ValueError("NLM cotangent must use FP32")
+
+        x = cache["x"]
+        left1 = cache["left1"]
+        rho1 = cache["rho1"]
+        hidden = cache["hidden"]
+        left2 = cache["left2"]
+        rho2 = cache["rho2"]
+
+        c = cotangent.unsqueeze(-1)
+
+        d_left2 = c * rho2
+        d_gate2 = c * left2 * rho2 * (1.0 - rho2)
+        d_linear2 = torch.cat((d_left2, d_gate2), dim=-1)
+
+        grad_weight2 = d_linear2.unsqueeze(-1) * hidden.unsqueeze(1)
+        grad_bias2 = d_linear2
+
+        d_hidden = torch.einsum(
+            "no,noh->nh",
+            d_linear2,
+            self.weight2.detach(),
+        )
+
+        d_left1 = d_hidden * rho1
+        d_gate1 = d_hidden * left1 * rho1 * (1.0 - rho1)
+        d_linear1 = torch.cat((d_left1, d_gate1), dim=-1)
+
+        grad_weight1 = d_linear1.unsqueeze(-1) * x.unsqueeze(1)
+        grad_bias1 = d_linear1
+
+        grad_x = torch.einsum(
+            "no,noi->ni",
+            d_linear1,
+            self.weight1.detach(),
+        )
+
+        return {
+            "weight1": grad_weight1.detach(),
+            "bias1": grad_bias1.detach(),
+            "weight2": grad_weight2.detach(),
+            "bias2": grad_bias2.detach(),
+            "x": grad_x.detach(),
+        }
 
 
 class Block(nn.Module):
     """One FP32, non-batched Block. Times and ticktime are milliseconds.
 
     A/At store pre-activations and their logical timestamps, oldest first.
-    Persistent states are detached; observers see only local connection ends.
+    Persistent states are detached; local learning uses only these frames.
     """
 
     def __init__(
@@ -107,19 +191,36 @@ class Block(nn.Module):
             nn.init.xavier_uniform_(weight)
         self.nlm = NeuronLevelModel(n, 3 * hold_tick, nlm_hidden_dim)
 
-        for name, size in (("z", n), ("a", n), ("r", 2 * n)):
+        for name, size in (
+            ("z", n),
+            ("z_bar", n),
+            ("a", n),
+            ("r", 2 * n),
+        ):
             self.register_buffer(name, torch.zeros(size, dtype=torch.float32))
         self.register_buffer("o", torch.zeros(2 * n, dtype=torch.float32) if readin else None)
         self.A: deque[Tensor] = deque(maxlen=hold_tick)
         self.At: deque[int] = deque(maxlen=hold_tick)
+
+        self.learning_frames: deque[SynapseFrame] = deque(maxlen=hold_tick)
+
         self.local_observer: LocalObserver | None = None
+        self.learning_enabled = False
+        self.perturbation_scale = 0.0
+        self.perturbation_generator: torch.Generator | None = None
 
     @staticmethod
     def sigma(x: Tensor) -> Tensor:
         return torch.sigmoid(x)
 
-    def LN(self, x: Tensor) -> Tensor:
-        return F.layer_norm(x, (self.neuron_size,), eps=self.ln_eps)
+    def LN(self, x: Tensor, *, return_scale: bool = False):
+        mean = x.mean()
+        centered = x - mean
+        scale = torch.sqrt(centered.square().mean() + self.ln_eps)
+        a = centered / scale
+        if return_scale:
+            return a, scale.detach().clone()
+        return a
 
     def _check_vector(self, value: Tensor, size: int, name: str) -> None:
         if not isinstance(value, Tensor) or value.shape != (size,):
@@ -153,50 +254,314 @@ class Block(nn.Module):
             raise FloatingPointError(f"Block {self.block_id}: non-finite NLM input")
         return result
 
+    def LN_vjp(
+        self,
+        a: Tensor,
+        scale: Tensor,
+        cotangent: Tensor,
+    ) -> Tensor:
+        if a.shape != (self.neuron_size,):
+            raise ValueError("LN activation has wrong shape")
+        if cotangent.shape != (self.neuron_size,):
+            raise ValueError("LN cotangent has wrong shape")
+
+        return (
+            cotangent
+            - cotangent.mean()
+            - a * (a * cotangent).mean()
+        ) / scale
+
+    def set_learning(
+        self,
+        enabled: bool,
+        *,
+        perturbation_scale: float = 0.0,
+        generator: torch.Generator | None = None,
+    ) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be bool")
+        if perturbation_scale < 0 or not math.isfinite(perturbation_scale):
+            raise ValueError("perturbation_scale must be finite and nonnegative")
+
+        self.learning_enabled = enabled
+        self.perturbation_scale = float(perturbation_scale)
+        self.perturbation_generator = generator
+
+    def _emit_eligibility(
+        self,
+        parameter: nn.Parameter,
+        contribution: Tensor,
+        *,
+        now_ms: int,
+    ) -> None:
+        if self.local_observer is None:
+            return
+        if contribution.shape != parameter.shape:
+            raise ValueError("eligibility contribution shape mismatch")
+        if not torch.isfinite(contribution).all():
+            raise FloatingPointError("non-finite eligibility contribution")
+        self.local_observer(
+            parameter,
+            contribution.detach(),
+            now_ms,
+        )
+
+    def _accumulate_local_eligibility(
+        self,
+        *,
+        now_ms: int,
+        xi: Tensor,
+        nlm_cache: dict[str, Tensor],
+        frames: Sequence[SynapseFrame],
+    ) -> None:
+        if self.local_observer is None:
+            return
+
+        c = self.perturbation_scale
+        if c <= 0:
+            return
+
+        cotangent = xi / c
+
+        nlm_grads = self.nlm.local_vjp(
+            nlm_cache,
+            cotangent,
+        )
+
+        self._emit_eligibility(
+            self.nlm.weight1,
+            nlm_grads["weight1"],
+            now_ms=now_ms,
+        )
+        self._emit_eligibility(
+            self.nlm.bias1,
+            nlm_grads["bias1"],
+            now_ms=now_ms,
+        )
+        self._emit_eligibility(
+            self.nlm.weight2,
+            nlm_grads["weight2"],
+            now_ms=now_ms,
+        )
+        self._emit_eligibility(
+            self.nlm.bias2,
+            nlm_grads["bias2"],
+            now_ms=now_ms,
+        )
+
+        history_grad = nlm_grads["x"][:, :self.hold_tick]
+
+        k = len(frames)
+        if k == 0:
+            return
+
+        history_grad = history_grad[:, -k:]
+
+        weight_contributions = [
+            torch.zeros_like(weight)
+            for weight in self.W_ij
+        ]
+        bias_contribution = torch.zeros_like(self.b)
+
+        for slot, frame in enumerate(frames):
+            v = history_grad[:, slot]
+
+            c_a = self.LN_vjp(
+                frame.a,
+                frame.ln_scale,
+                v,
+            )
+
+            delta_l = c_a * frame.rho
+            delta_g = (
+                c_a
+                * frame.l
+                * frame.rho
+                * (1.0 - frame.rho)
+            )
+            delta_r = torch.cat(
+                (delta_l, delta_g),
+                dim=0,
+            )
+
+            bias_contribution.add_(delta_r)
+
+            for source_id, source_z in frame.sources.items():
+                weight_contributions[source_id].add_(
+                    delta_r.unsqueeze(1)
+                    * source_z.unsqueeze(0)
+                )
+
+        for source_id, contribution in enumerate(weight_contributions):
+            if contribution.count_nonzero():
+                self._emit_eligibility(
+                    self.W_ij[source_id],
+                    contribution,
+                    now_ms=now_ms,
+                )
+
+        self._emit_eligibility(
+            self.b,
+            bias_contribution,
+            now_ms=now_ms,
+        )
+
     def update(self, *, now_ms: int | None = None, active_z: Mapping[int, Tensor] | None = None) -> Tensor:
         with torch.no_grad():
             return self._update(now_ms=now_ms, active_z=active_z)
 
-    def _update(self, *, now_ms: int | None, active_z: Mapping[int, Tensor] | None) -> Tensor:
+    def _update(
+        self,
+        *,
+        now_ms: int | None,
+        active_z: Mapping[int, Tensor] | None,
+    ) -> Tensor:
         if not self.active:
             return self.z
+
         if len(self.A) != len(self.At):
             raise ValueError("A and At must correspond one-to-one")
+
+        if len(self.learning_frames) not in (0, len(self.A)):
+            raise ValueError(
+                "learning frame history must align with activation history"
+            )
+
         now_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
+
         if type(now_ms) is not int:
             raise ValueError("now_ms must be integer milliseconds")
+
         if self.At and now_ms < self.At[-1]:
             raise ValueError("time must not move backwards")
 
         r = self.b.clone()
+
         if self.o is not None:
-            self._check_vector(self.o, 2 * self.neuron_size, "o")
+            self._check_vector(
+                self.o,
+                2 * self.neuron_size,
+                "o",
+            )
             r = r + self.o
+
         sources = {} if active_z is None else active_z
+
+        detached_sources: dict[int, Tensor] = {}
+
         for j, z_j in sources.items():
             if type(j) is not int or not 0 <= j < len(self.W_ij):
                 raise ValueError("source id must index W_ij")
-            self._check_vector(z_j, self.source_sizes[j], f"z_{j}")
-            r = r + self.W_ij[j] @ z_j.detach()
+
+            self._check_vector(
+                z_j,
+                self.source_sizes[j],
+                f"z_{j}",
+            )
+
+            source = z_j.detach()
+            detached_sources[j] = source.clone()
+            r = r + self.W_ij[j] @ source
+
         n = self.neuron_size
-        a = self.LN(r[:n] * self.sigma(r[n:]))
-        if self.local_observer is not None:
-            for j, z_j in sources.items():
-                self.local_observer(self.W_ij[j], z_j.detach(), r.detach(), "dense")
-            self.local_observer(self.b, torch.ones_like(r), r.detach(), "bias")
 
-        history = [*(entry.detach() for entry in self.A), a][-self.hold_tick :]
-        times = [*self.At, now_ms][-self.hold_tick :]
-        z = self.nlm(self.nlm_input(history, times, now_ms=now_ms), self.local_observer)
-        for name, value in (("r", r), ("a", a), ("z", z)):
+        l = r[:n]
+        g = r[n:]
+        rho = torch.sigmoid(g)
+        u = l * rho
+
+        a, ln_scale = self.LN(
+            u,
+            return_scale=True,
+        )
+
+        current_frame = SynapseFrame(
+            time_ms=now_ms,
+            l=l.detach().clone(),
+            rho=rho.detach().clone(),
+            a=a.detach().clone(),
+            ln_scale=ln_scale.detach().clone(),
+            sources=detached_sources,
+        )
+
+        history = [
+            *(entry.detach() for entry in self.A),
+            a,
+        ][-self.hold_tick:]
+
+        times = [
+            *self.At,
+            now_ms,
+        ][-self.hold_tick:]
+
+        frames = [
+            *self.learning_frames,
+            current_frame,
+        ][-self.hold_tick:]
+
+        nlm_x = self.nlm_input(
+            history,
+            times,
+            now_ms=now_ms,
+        )
+
+        z_bar, nlm_cache = self.nlm(
+            nlm_x,
+            return_cache=True,
+        )
+
+        if (
+            self.learning_enabled
+            and self.local_observer is not None
+            and self.perturbation_scale > 0
+        ):
+            xi = torch.randn(
+                z_bar.shape,
+                dtype=z_bar.dtype,
+                device=z_bar.device,
+                generator=self.perturbation_generator,
+            )
+
+            z = z_bar + self.perturbation_scale * xi
+
+            self._accumulate_local_eligibility(
+                now_ms=now_ms,
+                xi=xi.detach(),
+                nlm_cache=nlm_cache,
+                frames=frames,
+            )
+        else:
+            z = z_bar
+
+        for name, value in (
+            ("r", r),
+            ("a", a),
+            ("z_bar", z_bar),
+            ("z", z),
+        ):
             if not torch.isfinite(value).all():
-                raise FloatingPointError(f"Block {self.block_id}: non-finite {name}")
+                raise FloatingPointError(
+                    f"Block {self.block_id}: non-finite {name}"
+                )
 
-        self.r, self.a, self.z = [value.detach().clone() for value in (r, a, z)]
+        self.r = r.detach().clone()
+        self.a = a.detach().clone()
+        self.z_bar = z_bar.detach().clone()
+        self.z = z.detach().clone()
+
         self.A.clear()
-        self.A.extend(value.detach().clone() for value in history)
+        self.A.extend(
+            value.detach().clone()
+            for value in history
+        )
+
         self.At.clear()
         self.At.extend(times)
+
+        self.learning_frames.clear()
+        self.learning_frames.extend(frames)
+
         if self.o is not None:
             self.o = self.o.detach().clone()
+
         return self.z

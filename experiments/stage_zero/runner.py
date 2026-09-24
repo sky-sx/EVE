@@ -17,14 +17,15 @@ from .harness import StageZero
 PILOT_COUNTS = {"initial": 135, "training": 540, "frozen": 135}
 PILOT_SEEDS = (11, 22)
 PILOT_DEVICE = "cuda"
-TAU_E_S = (.25,)
+TAU_Q_S = (.25,)
 TAU_G_S = (5.,)
+PERTURBATION_SCALE = .1
 SCHEMA = 2
 
 
-def group_name(tau_e_s, tau_g_s):
+def group_name(tau_q_s, tau_g_s):
     value=lambda x: str(float(x)).replace(".","p")
-    return f"tau_e_{value(tau_e_s)}_tau_g_{value(tau_g_s)}"
+    return f"tau_q_{value(tau_q_s)}_tau_g_{value(tau_g_s)}"
 
 def source_hashes():
     paths = ("acnt/plasticity.py", "acnt/block.py", "acnt/core.py",
@@ -35,7 +36,7 @@ def source_hashes():
     return {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}
 
 
-def config(device, counts, tau_e_s, tau_g_s, seeds=PILOT_SEEDS):
+def config(device, counts, tau_q_s, tau_g_s, perturbation_scale, seeds=PILOT_SEEDS):
     return {
         "schema": SCHEMA, "device": device, "counts": counts, "seeds": list(seeds),
         "block_count": 10, "neuron_size": 100, "hold_tick": 4, "ticktime_ms": 250,
@@ -43,7 +44,8 @@ def config(device, counts, tau_e_s, tau_g_s, seeds=PILOT_SEEDS):
         "ordinary_blocks": list(range(2,10)), "frames_per_episode": 3,
         "frame_offsets_ms": [0,250,500], "inter_episode_gap_ms": 250,
         "goodness_delays_ms": DELAYS_MS, "goodness": "target active: 1 / active Hand bits; otherwise 0; exact success evaluation only",
-        "learning_rate": .001, "tau_e_s": tau_e_s, "tau_g_s": tau_g_s,
+        "learning_rate": .001, "tau_q_s": tau_q_s, "tau_g_s": tau_g_s,
+        "perturbation_scale": perturbation_scale,
         "g_bar_initial": .5, "parameter_clip": None,
         "tau": .25, "threshold": 0.,
         "rng_rule": "seed*1000003+phase_index*10007+stream_offset(1..4); phase order initial/training/frozen",
@@ -73,8 +75,8 @@ def aggregate(rows):
     result["mean_g_star"]=sum(r["g_star"] for r in rows)/n
     for key in fields:
         result[key]=sum(r[key] for r in rows)/n
-    result["state_total_l2_mean"]=sum(r["plastic_state"]["total"]["l2"] for r in rows)/n
-    result["state_total_l2_max"]=max(r["plastic_state"]["total"]["l2"] for r in rows)
+    result["trace_total_l2_mean"]=sum(r["eligibility_trace"]["total"]["l2"] for r in rows)/n
+    result["trace_total_l2_max"]=max(r["eligibility_trace"]["total"]["l2"] for r in rows)
     result["nan_count"]=sum(r["nan_count"] for r in rows)
     result["inf_count"]=sum(r["inf_count"] for r in rows)
     return result
@@ -101,19 +103,24 @@ def summarize(rows):
     return result
 
 
-def run_seed(seed, *, device, counts, output, tau_e_s, tau_g_s,
+def run_seed(seed, *, device, counts, output, tau_q_s, tau_g_s, perturbation_scale,
              checkpoint_interval=0):
     output=Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    model=StageZero(seed,device,tau_e_s=tau_e_s,tau_g_s=tau_g_s)
+    model=StageZero(seed,device,tau_q_s=tau_q_s,tau_g_s=tau_g_s,
+                    perturbation_scale=perturbation_scale)
     initial_parameters={id(p):p.detach().clone() for p in model.plasticity.parameters.values()}
     rows=[]
     start=time.perf_counter()
     clock_ms=0
+    initial_g_bar = None
     raw_path=output/f"seed_{seed}.jsonl"
     with raw_path.open("w",encoding="utf-8") as log:
         for phase_index,(phase,count) in enumerate(counts.items()):
             model.reset_phase(phase=="training")
+
+            if phase == "training":
+                model.plasticity.g_bar = initial_g_bar
             schedule,streams=phase_schedule(count,seed,phase_index)
             generator=torch.Generator(device=model.device).manual_seed(streams["hand"])
             for episode,(target,color,delay) in enumerate(schedule):
@@ -125,6 +132,9 @@ def run_seed(seed, *, device, counts, output, tau_e_s, tau_g_s,
                 clock_ms=row["goodness_time_ms"]+250
                 if phase=="training" and checkpoint_interval and (episode+1)%checkpoint_interval==0:
                     model.checkpoint(output/f"seed_{seed}_training_{episode+1}.pt")
+            if phase == "initial":
+                initial_rows = rows[-count:]
+                initial_g_bar = sum(r["g_star"] for r in initial_rows) / len(initial_rows)
             log.flush()
             print(json.dumps({"seed":seed,"phase":phase,"episodes":count,
                               "elapsed_s":time.perf_counter()-start,"metrics":aggregate(rows[-count:])}),
@@ -147,35 +157,38 @@ def main(argv=None):
     parser.add_argument("--training",type=int,default=PILOT_COUNTS["training"])
     parser.add_argument("--frozen",type=int,default=PILOT_COUNTS["frozen"])
     parser.add_argument("--checkpoint-interval",type=int,default=0)
-    parser.add_argument("--tau-e-s",nargs="+",type=float,default=list(TAU_E_S))
+    parser.add_argument("--tau-q-s",nargs="+",type=float,default=list(TAU_Q_S))
     parser.add_argument("--tau-g-s",nargs="+",type=float,default=list(TAU_G_S))
+    parser.add_argument("--perturbation-scale",type=float,default=PERTURBATION_SCALE)
     args=parser.parse_args(argv)
     counts={"initial":args.initial,"training":args.training,"frozen":args.frozen}
     root=Path(args.output)
     root.mkdir(parents=True,exist_ok=True)
     scan_config={
-        "schema":SCHEMA,"tau_e_s":args.tau_e_s,"tau_g_s":args.tau_g_s,
+        "schema":SCHEMA,"tau_q_s":args.tau_q_s,"tau_g_s":args.tau_g_s,
+        "perturbation_scale":args.perturbation_scale,
         "counts":counts,"seeds":args.seeds,"device":args.device,
     }
     (root/"scan_config.json").write_text(
         json.dumps(scan_config,indent=2,allow_nan=False),encoding="utf-8")
     groups={}
-    for tau_e_s in args.tau_e_s:
+    for tau_q_s in args.tau_q_s:
         for tau_g_s in args.tau_g_s:
-            name=group_name(tau_e_s,tau_g_s)
+            name=group_name(tau_q_s,tau_g_s)
             output=root/name
             output.mkdir(parents=True,exist_ok=True)
-            cfg=config(args.device,counts,tau_e_s,tau_g_s,args.seeds)
+            cfg=config(args.device,counts,tau_q_s,tau_g_s,args.perturbation_scale,args.seeds)
             (output/"config.json").write_text(
                 json.dumps(cfg,indent=2,allow_nan=False),encoding="utf-8")
             results=[run_seed(seed,device=args.device,counts=counts,output=output,
-                              tau_e_s=tau_e_s,tau_g_s=tau_g_s,
+                              tau_q_s=tau_q_s,tau_g_s=tau_g_s,
+                              perturbation_scale=args.perturbation_scale,
                               checkpoint_interval=args.checkpoint_interval)
                      for seed in args.seeds]
             group_summary={"config":cfg,"seeds":results}
             (output/"summary.json").write_text(
                 json.dumps(group_summary,indent=2,allow_nan=False),encoding="utf-8")
-            groups[name]={"tau_e_s":tau_e_s,"tau_g_s":tau_g_s,
+            groups[name]={"tau_q_s":tau_q_s,"tau_g_s":tau_g_s,
                           "directory":str(output),"summary":group_summary}
     (root/"summary.json").write_text(
         json.dumps({"scan":scan_config,"groups":groups},indent=2,allow_nan=False),
@@ -183,4 +196,3 @@ def main(argv=None):
 
 if __name__=="__main__":
     main()
-

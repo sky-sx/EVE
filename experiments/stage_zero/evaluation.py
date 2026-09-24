@@ -50,7 +50,7 @@ def build(directory, audit_file):
         "Pilot scale only: this report lists trend indicators and does not apply the formal 5-seed SUPPORTED/PARTIAL/NOT SUPPORTED criterion.","",
         f"- Run configuration: `{directory/'config.json'}`.",
         f"- Python {lock['python']}; PyTorch {lock['torch']}; CUDA {lock['cuda']}; GPU {lock['gpu']}; device {lock['device']}.",
-        f"- Frozen candidate: production CorrelationRule, learning_rate=.001, tau_e={lock['tau_e_s']} s, tau_G={lock['tau_g_s']} s, g_bar(0)=0.5, parameter_clip=None.",
+        f"- Frozen candidate: perturbation-based local eligibility, learning_rate=.001, tau_q={lock['tau_q_s']} s, tau_G={lock['tau_g_s']} s, perturbation_scale={lock['perturbation_scale']}, g_bar(0)=0.5, parameter_clip=None.",
         f"- Seeds {seeds}; per seed {counts['initial']} initial, {counts['training']} training, {counts['frozen']} frozen episodes.",
         f"- Independent audit: passed, {audit['all_rows_audited']} rows and {audit['stimulus_count']} stimulus hashes.",
         "- Training Goodness is zero when the target bit is off, otherwise 1/active-bit count; exact success remains an evaluation-only one-hot event.",
@@ -97,42 +97,42 @@ def build(directory, audit_file):
         f"## Training windows ({window_size} episodes each)","",
         _table(["Window","Episodes","Exact","Target p","Non-target p","Mean e L2"],
                [[i,*[m[k] for k in ("episodes","exact_success","target_p","non_target_mean_p",
-                                    "state_total_l2_mean")]]
+                                    "trace_total_l2_mean")]]
                 for i in windows
                 for m in [aggregate([r for r in subsets["training"] if r["episode"]//window_size==i])]]),
         "## Local state and parameters","",
         _table(["Seed","Train mean e L2","Train max e L2","End train e L2","Frozen e L2",
                 "Changed parameter tensors","Max per-episode delta"],
-               [[s,each[s]["training"]["state_total_l2_mean"],each[s]["training"]["state_total_l2_max"],
-                 [r for r in subsets["training"] if r["seed"]==s][-1]["plastic_state"]["total"]["l2"],
-                 each[s]["frozen"]["state_total_l2_max"],
+               [[s,each[s]["training"]["trace_total_l2_mean"],each[s]["training"]["trace_total_l2_max"],
+                 [r for r in subsets["training"] if r["seed"]==s][-1]["eligibility_trace"]["total"]["l2"],
+                 each[s]["frozen"]["trace_total_l2_max"],
                  sum(len(v) for v in seed_summaries[s]["changed_parameter_groups"].values()),
                  max(r["parameter_delta_norm"] for r in subsets["training"] if r["seed"]==s)]
                 for s in seeds]),
         "Per-group local-state L2 at the last training Goodness delivery:","",
         _table(["Seed",*[f"Block {i}" for i in range(lock["block_count"])],"Eye Adapter","Hand Adapter",
                 "Ordinary Blocks","Terminal Hand"],
-               [[s,*[r["plastic_state"]["groups"][str(i)]["l2"] for i in range(lock["block_count"])],
-                 r["plastic_state"]["eye_adapter"]["l2"],r["plastic_state"]["hand_adapter"]["l2"],
-                 r["plastic_state"]["ordinary_blocks"]["l2"],r["plastic_state"]["terminal_hand"]["l2"]]
+               [[s,*[r["eligibility_trace"]["groups"][str(i)]["l2"] for i in range(lock["block_count"])],
+                 r["eligibility_trace"]["eye_adapter"]["l2"],r["eligibility_trace"]["hand_adapter"]["l2"],
+                 r["eligibility_trace"]["ordinary_blocks"]["l2"],r["eligibility_trace"]["terminal_hand"]["l2"]]
                 for s in seeds
                 for r in [[x for x in subsets["training"] if x["seed"]==s][-1]]]),
         "Local-state distribution at the final training delivery:",
         "",
         _table(["Seed","e mean","e std","e max abs","e nonzero fraction"],
-               [[seed,*[r["plastic_state"]["total"][k] for k in
+               [[seed,*[r["eligibility_trace"]["total"][k] for k in
                         ("mean","std","max_abs","nonzero_fraction")]]
                 for seed in seeds
                 for r in [[x for x in subsets["training"] if x["seed"]==seed][-1]]]),
-        "The correlation contribution is not clipped, while every e_c decays exponentially in real time; finite values, magnitude, and nonzero fraction are reported.",
+        "The local eligibility contribution is not clipped, while every q decays exponentially in real time; finite values, magnitude, and nonzero fraction are reported.",
         "",
         "At Goodness delivery, local-state persistence by delay:","",
         _table(["Delay ms","Train rows","Nonzero e","Mean e L2","Mean parameter delta"],
-               [[d,len(g),sum(r["plastic_state"]["total"]["l2"]>0 for r in g),
-                 aggregate(g)["state_total_l2_mean"],aggregate(g)["parameter_delta_norm"]]
+               [[d,len(g),sum(r["eligibility_trace"]["total"]["l2"]>0 for r in g),
+                 aggregate(g)["trace_total_l2_mean"],aggregate(g)["parameter_delta_norm"]]
                 for d in DELAYS_MS
                 for g in [[r for r in subsets["training"] if r["goodness_delay_ms"]==d]]]),
-        "At delivery every e_c is first decayed to that timestamp, then F_w uses 0.001*(g* - g_bar); only after all parameter updates is g_bar advanced in real time. Parameter changes are not behavioral learning evidence.",
+        "At delivery every q is first decayed to that timestamp, then the parameter update uses 0.001*(g* - g_bar) * q; only after all parameter updates is g_bar advanced in real time. Parameter changes are not behavioral learning evidence.",
         f"NaN / Inf counts across all logged episodes: {sum(r['nan_count'] for r in rows)} / {sum(r['inf_count'] for r in rows)}.",
         f"Seeds with rising frozen target p: {rising_target}; rising exact success: {rising_exact}; falling non-target p: {falling_non_target}; all three: {joint}.",
         f"Total elapsed seed time: {sum(seed_summaries[s]['elapsed_s'] for s in seeds):.3f} s.","",
@@ -148,10 +148,10 @@ def build(directory, audit_file):
         _table(["Source","SHA256"],[[p,h] for p,h in lock["source_sha256"].items()]),
         "## Conclusion","",
         "Pilot trend only: no SUPPORTED/PARTIAL/NOT SUPPORTED classification at this scale. Exact success is evaluation-only. A positive fractional g* means the target bit was active; it does not by itself prove one-hot mapping. Parameter or e changes alone are not learning evidence.","",
-        "Q1: Whether the current local correlation state plus delayed scalar Goodness forms a reproducible visual-to-action mapping is not decided at pilot scale; the frozen-minus-initial deltas above are trend indicators only.",
+        "Q1: Whether the current local eligibility state plus delayed scalar Goodness forms a reproducible visual-to-action mapping is not decided at pilot scale; the frozen-minus-initial deltas above are trend indicators only.",
         f"Q2: Frozen target p by delay is {frozen_delay_target[250]:.6f} (250 ms), {frozen_delay_target[500]:.6f} (500 ms), and {frozen_delay_target[1000]:.6f} (1000 ms). Interpret alongside exact success and the stratified tables; no time-rule change follows from this comparison.","",
         f"Frozen minus initial: exact success {trend['exact_success']:+.6f}, target p {trend['target_p']:+.6f}, non-target p {trend['non_target_mean_p']:+.6f}.","",
-        "Limitations: These results assess the frozen candidate under the target-bit inverse-active-count Stage 0 Goodness. They do not resolve which future F_e/F_w rule the architecture should use.",
+        "Limitations: These results assess the frozen candidate under the target-bit inverse-active-count Stage 0 Goodness. They do not resolve which future local learning rule the architecture should use.",
     ]
     return "\n".join(lines)+"\n"
 

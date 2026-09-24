@@ -29,7 +29,8 @@ def test_same_time_teacher_is_effective_scalar(teacher,make_runtime):
     signal=runtime.generate_goodness(now_ms=100,teacher=teacher,teacher_time_ms=100)
     assert signal.g_eff==teacher
     assert signal.calibration_loss==pytest.approx(.5*(teacher-.25)**2)
-    assert adapter.linear.bias!=before or teacher==.25
+    # Teacher calibration reports c_g only; it reuses no eligibility trace.
+    assert torch.equal(adapter.linear.bias,before)
 
 
 def test_local_calibration_excludes_ordinary_groups(make_runtime):
@@ -39,11 +40,10 @@ def test_local_calibration_excludes_ordinary_groups(make_runtime):
     initial={id(p):p.clone() for p in runtime.parameters()}
     signal=runtime.generate_goodness(now_ms=0,teacher=.75)
     assert signal.g_eff==.75
-    assert adapter.linear.bias.item()==pytest.approx(.25+.1*.5*learner.states[id(adapter.linear.bias)].item())
-    for i,g in learner.groups.items():
-        if i!=learner.goodness_id:
-            for p in g.values():
-                torch.testing.assert_close(p,initial[id(p)])
+    assert torch.equal(adapter.linear.bias,initial[id(adapter.linear.bias)])
+    for g in learner.groups.values():
+        for p in g.values():
+            torch.testing.assert_close(p,initial[id(p)])
 
 
 def test_no_teacher_reuse_and_disabled_goodness(make_runtime):

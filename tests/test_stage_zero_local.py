@@ -49,21 +49,59 @@ def test_stage_zero_group_ownership_and_freeze():
     assert set(model.groups)==set(range(10))
     assert {id(p) for p in model.eye.parameters()}<=set(map(id,model.groups[0].values()))
     assert {id(p) for p in model.hand.parameters()}<=set(map(id,model.groups[1].values()))
-    assert len(model.plasticity.states)==sum(len(g) for g in model.groups.values())
+    assert len(model.plasticity.traces)==sum(len(g) for g in model.groups.values())
     before={id(p):p.clone() for p in model.plasticity.parameters.values()}
     model.reset_phase(False)
     row=model.episode(phase="initial",episode=0,target=0,color="red",delay_ms=1000,
                       start_ms=0,generator=torch.Generator().manual_seed(12))
     assert row["frame_times_ms"]==[0,250,500]
     assert row["goodness_time_ms"]==1500
-    assert row["plastic_state"]["total"]["l2"]==0
+    assert row["eligibility_trace"]["total"]["l2"]==0
     assert all(torch.equal(p,before[id(p)]) for p in model.plasticity.parameters.values())
     model.reset_phase(True)
     row=model.episode(phase="training",episode=0,target=0,color="blue",delay_ms=500,
                       start_ms=1750,generator=torch.Generator().manual_seed(13))
-    assert row["plastic_state"]["total"]["l2"]>0
+    assert row["eligibility_trace"]["total"]["l2"]>0
     model.reset_phase(False)
     assert model.state_stats()["total"]["l2"]==0
+
+    model.reset_phase(False)
+
+    before={
+        id(p): p.clone()
+        for p in model.plasticity.parameters.values()
+    }
+
+    model.episode(
+        phase="frozen",
+        episode=0,
+        target=0,
+        color="red",
+        delay_ms=250,
+        start_ms=0,
+        generator=torch.Generator().manual_seed(1),
+    )
+
+    assert all(
+        torch.equal(
+            block.z,
+            block.z_bar,
+        )
+        for block in model.core.blocks
+    )
+
+    assert all(
+        trace.count_nonzero() == 0
+        for trace in model.plasticity.traces.values()
+    )
+
+    assert all(
+        torch.equal(
+            p,
+            before[id(p)],
+        )
+        for p in model.plasticity.parameters.values()
+    )
 
 
 @pytest.mark.parametrize(
@@ -91,7 +129,7 @@ def test_aggregate_separates_fractional_goodness_from_exact_success():
             "target_p":.5,"non_target_mean_p":.5,
             "non_target_false_rate":(active-int(target_hit))/26,
             "exact_event_probability":0.,"parameter_norm":1.,
-            "parameter_delta_norm":0.,"plastic_state":{"total":{"l2":0.}},
+            "parameter_delta_norm":0.,"eligibility_trace":{"total":{"l2":0.}},
             "nan_count":0,"inf_count":0,
         })
     result=aggregate(rows)

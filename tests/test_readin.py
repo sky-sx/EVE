@@ -90,4 +90,4 @@ def test_runtime_forced_readin_and_local_tags_ignore_visitation_order(make_runti
         for i in range(8):
             for name, parameter in left.plasticity.groups[i].items():
                 other = right.plasticity.groups[i][name]
-                torch.testing.assert_close(left.plasticity.states[id(parameter)], right.plasticity.states[id(other)], rtol=0, atol=0)
+                torch.testing.assert_close(left.plasticity.traces[id(parameter)], right.plasticity.traces[id(other)], rtol=0, atol=0)

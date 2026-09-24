@@ -13,7 +13,7 @@ from .control import DiscreteSignal, sample_discrete
 from .core import Core
 from .hand import HAND_DISCRETE_NAMES
 from .mechanical import MechanicalLog
-from .plasticity import LocalEvent, Plasticity
+from .plasticity import Plasticity
 
 
 READINS = ("eye", "ear")
@@ -74,27 +74,85 @@ class Runtime(nn.Module):
         self.execution_enabled = {"hand": False, "speak": False, "route": True, "goodness": self.goodness_active}
         self.executors: dict = {}
         self.plasticity: Plasticity | None = None
+        self.perturbation_generator: torch.Generator | None = None
 
-    def enable_plasticity(self, **hyperparameters) -> Plasticity:
-        """Install a replaceable local rule; no e-prop state is created."""
+    def enable_plasticity(
+        self,
+        **hyperparameters,
+    ) -> Plasticity:
         if self.plasticity is not None:
             self.plasticity.detach_adapters()
-        reverse = {block_id: name for name, block_id in self.organ_blocks.items()}
+
+        reverse = {
+            block_id: name
+            for name, block_id
+            in self.organ_blocks.items()
+        }
+
         groups = {}
+
         for i, block in enumerate(self.core.blocks):
-            parameters = {f"block.{name}": parameter for name, parameter in block.named_parameters()}
+            parameters = {
+                f"block.{name}": parameter
+                for name, parameter
+                in block.named_parameters()
+            }
+
             organ = reverse.get(i)
+
             if organ is not None:
-                parameters.update({f"adapter.{name}": parameter for name, parameter in self.adapters[organ].named_parameters()})
+                parameters.update({
+                    f"adapter.{name}": parameter
+                    for name, parameter
+                    in self.adapters[organ].named_parameters()
+                })
+
             groups[i] = parameters
-        self.plasticity = Plasticity(groups, self.organ_blocks["goodness"], **hyperparameters)
-        self.plasticity.attach_adapters(self.adapters, route_id=self.organ_blocks["route"])
+
+        self.plasticity = Plasticity(
+            groups,
+            self.organ_blocks["goodness"],
+            **hyperparameters,
+        )
+
+        self.plasticity.attach_adapters(
+            self.adapters,
+            route_id=self.organ_blocks["route"],
+        )
+
         for block in self.core.blocks:
-            block.local_observer = lambda parameter, pre, post, kind: self.plasticity.observe(
-                parameter, LocalEvent(
-                    pre, post, self.plasticity._event_time_ms, kind)
-            )
+            def observer(
+                parameter,
+                contribution,
+                time_ms,
+                learner=self.plasticity,
+            ):
+                learner.accumulate(
+                    parameter,
+                    contribution,
+                    now_ms=time_ms,
+                )
+
+            block.local_observer = observer
+
         return self.plasticity
+
+    def set_perturbation_generator(
+        self,
+        generator: torch.Generator | None,
+    ) -> None:
+        if (
+            generator is not None
+            and not isinstance(
+                generator,
+                torch.Generator,
+            )
+        ):
+            raise TypeError(
+                "perturbation generator must be torch.Generator or None"
+            )
+
+        self.perturbation_generator = generator
 
     @torch.no_grad()
     def step(
@@ -105,6 +163,21 @@ class Runtime(nn.Module):
         """One mock/world tick. Returned diagnostics contain no live graphs."""
         if learn and self.plasticity is None:
             self.enable_plasticity()
+        if self.plasticity is not None:
+            for block in self.core.blocks:
+                block.set_learning(
+                    learn,
+                    perturbation_scale=(
+                        self.plasticity.perturbation_scale
+                        if learn
+                        else 0.0
+                    ),
+                    generator=(
+                        self.perturbation_generator
+                        if learn
+                        else None
+                    ),
+                )
         updated = self.update_blocks(now_ms=now_ms, readins=readins)
         route = self.generate_route(now_ms=now_ms, generator=generator)
         hand = self.generate_hand(now_ms=now_ms, generator=generator)
@@ -171,9 +244,16 @@ class Runtime(nn.Module):
         return HandSignal(discrete, continuous)
 
     def _observe_discrete(self, name: str, signal: DiscreteSignal, *, now_ms: int) -> None:
-        # The terminal itself sees q, its own noise, and the actual event.
-        # No score function or global feedback is constructed.
-        self.plasticity.observe_control(self.adapters[name], signal, now_ms=now_ms)
+        # The terminal itself sees q, its sampled Bernoulli event, and the
+        # analytic score. No global feedback is constructed.
+        if self.plasticity is None:
+            return
+        self.plasticity.observe_control(
+            name,
+            self.adapters[name],
+            signal,
+            now_ms=now_ms,
+        )
 
     @torch.no_grad()
     def generate_speak(self, *, now_ms: int = 0) -> Tensor:

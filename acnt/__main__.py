@@ -45,7 +45,7 @@ def build_mock_runtime(*, log_file: str | None = None, seed: int = 41) -> Runtim
     }
     runtime = Runtime(core, adapters, dict(zip(ORGANS, range(6))))
     runtime.mechanical_log = MechanicalLog(log_file)
-    runtime.enable_plasticity(learning_rate=0.0001, tau_e_s=1.0, tau_g_s=5.0, parameter_clip=(-10., 10.))
+    runtime.enable_plasticity(learning_rate=0.0001, tau_q_s=1.0, tau_g_s=5.0, parameter_clip=(-10., 10.))
     with torch.no_grad():
         for block in core.blocks:
             block.z.copy_(torch.linspace(-0.5, 0.5, n))

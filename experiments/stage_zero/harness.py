@@ -1,4 +1,4 @@
-"""Only orchestration: all F_e and F_w calls use acnt.plasticity."""
+"""Only orchestration: all local eligibility and Goodness calls use acnt.plasticity."""
 from __future__ import annotations
 
 import math
@@ -10,13 +10,14 @@ import torch
 from acnt import Block, Core
 from acnt.adapters import EyeAdapter, HandAdapter
 from acnt.control import sample_discrete
-from acnt.plasticity import LocalEvent, Plasticity
+from acnt.plasticity import Plasticity
 from .environment import ACTIONS, exact_success, potential_goodness, render, stimulus_hash
 
 
 class StageZero:
     def __init__(self, seed: int, device: str = "cpu", *,
-                 tau_e_s: float = 0.25, tau_g_s: float = 5.0):
+                 tau_q_s: float = 1.0, tau_g_s: float = 5.0,
+                 perturbation_scale: float = 0.1):
         self.seed, self.device = seed, torch.device(device)
         torch.manual_seed(seed)
         if self.device.type == "cuda":
@@ -34,7 +35,11 @@ class StageZero:
                 group.update({"adapter."+name: p for name, p in adapter.named_parameters()})
             self.groups[i] = group
         self.plasticity = Plasticity(
-            self.groups, goodness_id=None, tau_e_s=tau_e_s, tau_g_s=tau_g_s)
+            self.groups, goodness_id=None, tau_q_s=tau_q_s, tau_g_s=tau_g_s,
+            perturbation_scale=perturbation_scale)
+        # A dedicated perturbation stream, never shared with the Hand generator.
+        self.perturbation_generator = torch.Generator(device=self.device)
+        self.perturbation_generator.manual_seed(seed * 1000003 + 900001)
         self.cache = {}
         self._learning = False
         self._previous = {id(p): p.detach().clone() for p in self.plasticity.parameters.values()}
@@ -47,21 +52,30 @@ class StageZero:
             self.plasticity.attach_adapters({"eye": self.eye, "hand": self.hand})
         for block in self.core.blocks:
             block.local_observer = self._observe_block if learning else None
+            block.set_learning(
+                learning,
+                perturbation_scale=(
+                    self.plasticity.perturbation_scale if learning else 0.0
+                ),
+                generator=(
+                    self.perturbation_generator if learning else None
+                ),
+            )
 
-    def _observe_block(self, parameter, pre, post, kind):
-        self.plasticity.observe(parameter, LocalEvent(
-            pre, post, self.plasticity._event_time_ms, kind))
+    def _observe_block(self, parameter, contribution, time_ms):
+        self.plasticity.accumulate(parameter, contribution, now_ms=time_ms)
 
     def reset_phase(self, learning: bool):
         self.set_learning(learning)
         self.plasticity.clear()
         for block in self.core.blocks:
-            for name in ("z", "a", "r"):
+            for name in ("z", "z_bar", "a", "r"):
                 getattr(block, name).zero_()
             if block.o is not None:
                 block.o.zero_()
             block.A.clear()
             block.At.clear()
+            block.learning_frames.clear()
             block.active = True
         self._previous = {id(p): p.detach().clone() for p in self.plasticity.parameters.values()}
 
@@ -98,21 +112,21 @@ class StageZero:
     def state_stats(self):
         group = {}
         for i, params in self.groups.items():
-            group[str(i)] = self._summarize([self.plasticity.states[id(p)] for p in params.values()])
-        eye = [self.plasticity.states[id(p)] for p in self.eye.parameters()]
-        hand = [self.plasticity.states[id(p)] for p in self.hand.parameters()]
-        core = [self.plasticity.states[id(p)] for b in self.core.blocks for p in b.parameters()]
+            group[str(i)] = self._summarize([self.plasticity.traces[id(p)] for p in params.values()])
+        eye = [self.plasticity.traces[id(p)] for p in self.eye.parameters()]
+        hand = [self.plasticity.traces[id(p)] for p in self.hand.parameters()]
+        core = [self.plasticity.traces[id(p)] for b in self.core.blocks for p in b.parameters()]
         terminal = list(self.hand.network[-1].parameters())
-        all_states = list(self.plasticity.states.values())
+        all_traces = list(self.plasticity.traces.values())
         return {
             "groups": group, "eye_adapter": self._summarize(eye),
             "hand_adapter": self._summarize(hand),
-            "ordinary_blocks": self._summarize([self.plasticity.states[id(p)]
+            "ordinary_blocks": self._summarize([self.plasticity.traces[id(p)]
                                                 for b in list(self.core.blocks)[2:]
                                                 for p in b.parameters()]),
             "core_all": self._summarize(core),
-            "terminal_hand": self._summarize([self.plasticity.states[id(p)] for p in terminal]),
-            "total": self._summarize(all_states),
+            "terminal_hand": self._summarize([self.plasticity.traces[id(p)] for p in terminal]),
+            "total": self._summarize(all_traces),
         }
 
     @torch.no_grad()
@@ -130,11 +144,11 @@ class StageZero:
         q = self.hand(self.core.blocks[1].z)
         signal = sample_discrete(q, tau=0.25, threshold=0., generator=generator)
         if self._learning:
-            self.plasticity.observe_control(self.hand, signal, now_ms=action_time)
+            self.plasticity.observe_control("hand", self.hand, signal, now_ms=action_time)
         g = potential_goodness(target, signal.a)
         exact = exact_success(target, signal.a)
         delivery = action_time + delay_ms
-        # No Core, Adapter, or F_e call takes place between action and delivery.
+        # No Core, Adapter, or eligibility call takes place between action and delivery.
         before_state = self.state_stats()
         g_bar_before = self.plasticity.g_bar
         modulation = None
@@ -148,7 +162,7 @@ class StageZero:
         ptarget = float(probs[target])
         exact_event_probability = float(probs[target] * torch.prod(torch.cat(
             (1-probs[:target], 1-probs[target+1:]))))
-        finite_tensors = [*self.plasticity.parameters.values(), *self.plasticity.states.values()]
+        finite_tensors = [*self.plasticity.parameters.values(), *self.plasticity.traces.values()]
         nan_count = sum(int(torch.isnan(v).sum()) for v in finite_tensors)
         inf_count = sum(int(torch.isinf(v).sum()) for v in finite_tensors)
         return {
@@ -167,8 +181,8 @@ class StageZero:
             "non_target_false_rate": (sum(bits)-int(bits[target]))/26,
             "active_bit_count": sum(bits), "exact_event_probability": exact_event_probability,
             "parameter_norm": norm, "parameter_delta_norm": delta,
-            "plastic_state": after_state,
-            "pre_goodness_plastic_state": before_state,
+            "eligibility_trace": after_state,
+            "pre_goodness_eligibility_trace": before_state,
             "g_bar_before": g_bar_before, "g_bar_after": g_bar_after,
             "goodness_modulation": modulation,
             "nan_count": nan_count, "inf_count": inf_count,
@@ -179,13 +193,12 @@ class StageZero:
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"core": self.core.state_dict(), "eye": self.eye.state_dict(),
                     "hand": self.hand.state_dict(),
-                    "plastic_states": {f"{i}:{name}": self.plasticity.states[id(p)].cpu()
-                                       for i, group in self.groups.items()
-                                       for name, p in group.items()},
+                    "eligibility_traces": {f"{i}:{name}": self.plasticity.traces[id(p)].cpu()
+                                           for i, group in self.groups.items()
+                                           for name, p in group.items()},
                     "seed": self.seed}, path)
 
     def changed_groups(self, initial):
         return {str(i): {name: float((p.detach()-initial[id(p)]).norm())
                          for name, p in group.items() if float((p.detach()-initial[id(p)]).norm()) > 0}
                 for i, group in self.groups.items()}
-

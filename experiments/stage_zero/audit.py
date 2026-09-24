@@ -106,9 +106,9 @@ def audit(directory, config_path=None):
                     if row["goodness_modulation"] is None or not math.isclose(
                             row["goodness_modulation"],expected_modulation,rel_tol=1e-12,abs_tol=1e-12):
                         raise AssertionError("Goodness modulation mismatch")
-                    expected_trace=row["pre_goodness_plastic_state"]["total"]["l2"]*math.exp(
-                        -(delay/1000)/lock["tau_e_s"])
-                    if not math.isclose(row["plastic_state"]["total"]["l2"],expected_trace,
+                    expected_trace=row["pre_goodness_eligibility_trace"]["total"]["l2"]*math.exp(
+                        -(delay/1000)/lock["tau_q_s"])
+                    if not math.isclose(row["eligibility_trace"]["total"]["l2"],expected_trace,
                                         rel_tol=2e-5,abs_tol=1e-8):
                         raise AssertionError("real-time local trace decay mismatch")
                     delta_ms=0 if goodness_time is None else row["goodness_time_ms"]-goodness_time
@@ -120,12 +120,12 @@ def audit(directory, config_path=None):
                 elif row["goodness_modulation"] is not None or row["g_bar_before"]!=.5 or row["g_bar_after"]!=.5:
                     raise AssertionError("evaluation changed Goodness metabolism")
                 if phase in ("initial","frozen") and (row["parameter_delta_norm"]!=0 or
-                                                     row["plastic_state"]["total"]["l2"]!=0):
-                    raise AssertionError("evaluation updated parameters or e")
+                                                     row["eligibility_trace"]["total"]["l2"]!=0):
+                    raise AssertionError("evaluation updated parameters or q")
                 if row["nan_count"] or row["inf_count"]:
                     raise AssertionError("nonfinite model state")
-                if not math.isfinite(row["plastic_state"]["total"]["l2"]):
-                    raise AssertionError("nonfinite local plastic norm")
+                if not math.isfinite(row["eligibility_trace"]["total"]["l2"]):
+                    raise AssertionError("nonfinite local eligibility norm")
                 exact_p=p[target]
                 for j in range(27):
                     if j!=target:

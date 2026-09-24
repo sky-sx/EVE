@@ -13,12 +13,14 @@ def test_initialization_shapes_and_parameter_inventory():
     assert block.active and block.ticktime == 1 and block.hold_tick == 4
     assert block.z.shape == block.a.shape == (3,)
     assert block.r.shape == block.o.shape == (6,)
+    assert block.z_bar.shape == (3,)
     assert [tuple(weight.shape) for weight in block.W_ij] == [(6, 2), (6, 3), (6, 5)]
     assert block.nlm.weight1.shape == (3, 8, 12)
     assert block.nlm.bias1.shape == (3, 8)
     assert block.nlm.weight2.shape == (3, 2, 4)
     assert block.nlm.bias2.shape == (3, 2)
     assert list(block.A) == [] and list(block.At) == []
+    assert list(block.learning_frames) == []
 
 
 def test_private_nlm_matches_explicit_per_neuron_calculation():
@@ -82,3 +84,83 @@ def test_inactive_update_changes_nothing():
     assert list(block.A) == [] and list(block.At) == []
     for name, value in before.items():
         torch.testing.assert_close(getattr(block, name), value, rtol=0, atol=0)
+
+
+def test_no_perturbation_when_learning_disabled():
+    torch.manual_seed(3)
+
+    block = make_block()
+
+    block.set_learning(
+        False,
+        perturbation_scale=0.1,
+    )
+
+    block.update(
+        now_ms=0,
+        active_z={},
+    )
+
+    torch.testing.assert_close(
+        block.z,
+        block.z_bar,
+        rtol=0,
+        atol=0,
+    )
+
+
+def test_learning_publishes_perturbed_z():
+    block = make_block()
+    # Perturbation is only meaningful while a local observer consumes it.
+    block.local_observer = lambda *_: None
+
+    generator = torch.Generator().manual_seed(9)
+
+    block.set_learning(
+        True,
+        perturbation_scale=0.1,
+        generator=generator,
+    )
+
+    block.update(
+        now_ms=0,
+        active_z={},
+    )
+
+    assert not torch.equal(
+        block.z,
+        block.z_bar,
+    )
+
+    assert torch.isfinite(block.z).all()
+
+
+def test_learning_frames_align_with_history():
+    block = make_block(
+        hold_tick=3,
+    )
+
+    generator = torch.Generator().manual_seed(7)
+
+    block.set_learning(
+        True,
+        perturbation_scale=0.1,
+        generator=generator,
+    )
+
+    for now_ms in (
+        0,
+        250,
+        500,
+        750,
+    ):
+        block.update(
+            now_ms=now_ms,
+            active_z={},
+        )
+
+        assert (
+            len(block.learning_frames)
+            == len(block.A)
+            == len(block.At)
+        )

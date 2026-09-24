@@ -72,3 +72,13 @@ def sample_discrete(
         raise FloatingPointError("discrete sampling produced non-finite noise or probabilities")
     a = q + noise > threshold_tensor
     return DiscreteSignal(q=q, noise=noise, threshold=threshold_tensor, p=p, a=a, tau=tau)
+
+
+def discrete_score(
+    signal: DiscreteSignal,
+) -> Tensor:
+    """The Bernoulli score of one sampled control, a terminal-local fact."""
+    return (
+        signal.a.to(signal.p.dtype)
+        - signal.p
+    ) / signal.tau

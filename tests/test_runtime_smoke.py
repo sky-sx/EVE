@@ -22,7 +22,7 @@ def test_whole_runtime_with_sparse_teacher_and_finite_local_states():
         assert len(row["hand_continuous"])==2
         assert -1<=row["goodness_modulation"]<=1
         assert all(torch.isfinite(p).all() for p in runtime.parameters())
-        assert all(torch.isfinite(e).all() for e in runtime.plasticity.states.values())
+        assert all(torch.isfinite(e).all() for e in runtime.plasticity.traces.values())
     assert any(not torch.equal(p,before[id(p)]) for p in runtime.parameters())
 
 
@@ -34,11 +34,11 @@ def test_delayed_feedback_reads_existing_local_state(make_runtime):
     signal=runtime.generate_goodness(now_ms=0,teacher=.9)
     adapter=runtime.adapters["hand"]
     terminal=adapter.network[-1]
-    e=learner.states[id(terminal.bias)].clone()
+    e=learner.traces[id(terminal.bias)].clone()
     before=terminal.bias.clone()
     assert runtime.learn_goodness(signal,delivered_ms=1000)==pytest.approx(.4)
     decayed=e*torch.exp(torch.tensor(-1.))
-    torch.testing.assert_close(learner.states[id(terminal.bias)],decayed)
+    torch.testing.assert_close(learner.traces[id(terminal.bias)],decayed)
     torch.testing.assert_close(terminal.bias,before+.0001*.4*decayed)
 
 
