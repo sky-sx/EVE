@@ -26,6 +26,23 @@ def test_conv_and_bias_local_values():
     torch.testing.assert_close(bias,torch.tensor([2.,-3.]))
 
 
+
+def test_grouped_nlm_correlation_is_neuron_local():
+    rule=CorrelationRule()
+    pre=torch.tensor([[1.,2.],[10.,20.]])
+    post=torch.tensor([[3.,4.],[30.,40.]])
+    value=rule.F_e(LocalEvent(pre,post,0,"grouped_dense"))
+    expected=torch.tensor([
+        [[3.,6.],[4.,8.]],
+        [[300.,600.],[400.,800.]],
+    ])
+    torch.testing.assert_close(value,expected)
+    # No d=0 post is ever multiplied by d=1 pre (or vice versa).
+    assert value[0,0,0]==3 and value[1,0,0]==300
+    bias=rule.F_e(LocalEvent(torch.ones_like(post),post,0,"grouped_bias"))
+    torch.testing.assert_close(bias,post)
+
+
 @pytest.mark.parametrize("delay",[250,500,1000])
 def test_goodness_wait_decays_trace_before_weight_update(delay):
     p=nn.Parameter(torch.tensor([1.,2.]))
@@ -68,7 +85,8 @@ def test_all_parameters_unique_and_production_goodness_exception(make_runtime):
     assert len(learner.states)==sum(len(x) for x in learner.groups.values())
     assert len(learner.states)==len({id(p) for g in learner.groups.values() for p in g.values()})
     for i,group in learner.groups.items():
-        assert {"block.b","block.W_ij.0","block.W_c.0","block.b_c.0"}<=set(group)
+        assert {"block.b","block.W_ij.0","block.nlm.weight1","block.nlm.bias1",
+                "block.nlm.weight2","block.nlm.bias2"}<=set(group)
         for p in group.values():
             assert learner.states[id(p)].shape==p.shape
             assert not learner.states[id(p)].requires_grad
@@ -79,6 +97,28 @@ def test_all_parameters_unique_and_production_goodness_exception(make_runtime):
     torch.testing.assert_close(bg,previous)
     learner.calibrate_goodness(.5,now_ms=1000)
     assert not torch.equal(bg,previous)
+
+def test_nlm_events_register_shapes_and_goodness_updates_without_autograd(make_runtime):
+    runtime=make_runtime()
+    learner=runtime.enable_plasticity()
+    block=runtime.core.blocks[0]
+    learner.set_event_time(0)
+    block.update(now_ms=0,active_z={})
+    nlm_parameters={
+        "block.nlm.weight1":block.nlm.weight1,
+        "block.nlm.bias1":block.nlm.bias1,
+        "block.nlm.weight2":block.nlm.weight2,
+        "block.nlm.bias2":block.nlm.bias2,
+    }
+    for name,parameter in nlm_parameters.items():
+        assert learner.groups[0][name] is parameter
+        assert learner.states[id(parameter)].shape==parameter.shape
+        assert not learner.states[id(parameter)].requires_grad
+        assert parameter.grad is None
+    before={id(p):p.clone() for p in nlm_parameters.values()}
+    learner.apply_goodness(1.,now_ms=250)
+    assert any(not torch.equal(p,before[id(p)]) for p in nlm_parameters.values())
+    assert all(torch.isfinite(p).all() and p.grad is None for p in nlm_parameters.values())
 
 
 def test_route_optional_without_adapter():

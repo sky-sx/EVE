@@ -13,4 +13,4 @@
 
 `n` 是各器官对应 Block 的神经元数。六个器官分别占用不同 Block。当前 eye Adapter 接受完整 1080p 张量；ear Adapter 接受原始音频窗口，不把文字、题单或 Teacher 文本直接送入 ReadIn。实际截图/录音采集、DirectInput 设备执行和声学几何计算尚未接入。
 
-Adapter 中每个可塑连接按与 Block 相同的局部 `e_c/F_e/F_w` 接口更新。当前 `CorrelationRule` 只是可替换候选。Adapter 输出后，hand/route 的离散坐标各自加独立 Logistic 噪声并经过硬阈值；不使用 Softmax、Bernoulli sampler、梯度或额外评价流。连续坐标不经过这一步。具体规则见[架构边界核对](clarifications.md)。
+Adapter 中每个可塑连接按与 Block 相同的局部 `e_c/F_e/F_w` 接口更新。当前 `CorrelationRule` 只是可替换候选。Adapter 输出后，hand/route 的离散坐标各自加独立 Logistic 噪声并经过硬阈值；不使用 Softmax、Bernoulli sampler、梯度或额外评价流。连续坐标不经过这一步。具体边界见[当前唯一架构规范](canonical_architecture.txt)。

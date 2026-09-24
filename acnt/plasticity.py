@@ -58,6 +58,15 @@ class CorrelationRule:
             product = product.reshape_as(module.weight) / (outputs.shape[0] * outputs.shape[-1])
         elif event.kind == "bias":
             product = post.reshape(-1, post.shape[-1]).mean(0)
+        elif event.kind == "grouped_dense":
+            if pre.ndim != 2 or post.ndim != 2 or pre.shape[0] != post.shape[0]:
+                raise ValueError("grouped_dense requires [neuron, feature] activities")
+            # Each neuron contributes only output[d] outer input[d].
+            product = torch.einsum("no,ni->noi", post, pre)
+        elif event.kind == "grouped_bias":
+            if post.ndim != 2:
+                raise ValueError("grouped_bias requires [neuron, feature] output")
+            product = post
         elif event.kind in ("dense", "control"):
             x = pre.reshape(-1, pre.shape[-1])
             y = post.reshape(-1, post.shape[-1])

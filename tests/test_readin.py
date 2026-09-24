@@ -84,7 +84,7 @@ def test_runtime_forced_readin_and_local_tags_ignore_visitation_order(make_runti
             runtime.update_blocks(now_ms=now, readins={"ear": torch.ones(1, 32)}, order=order)
             runtime.generate_hand(now_ms=now, generator=torch.Generator().manual_seed(31))
         for a, b in zip(left.core.blocks, right.core.blocks):
-            for key in ("z", "r", "a", "h"):
+            for key in ("z", "r", "a"):
                 torch.testing.assert_close(getattr(a, key), getattr(b, key), rtol=0, atol=0)
             assert list(a.At) == list(b.At)
         for i in range(8):

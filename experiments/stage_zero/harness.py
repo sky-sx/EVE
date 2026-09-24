@@ -48,16 +48,15 @@ class StageZero:
         for block in self.core.blocks:
             block.local_observer = self._observe_block if learning else None
 
-    def _observe_block(self, parameter, pre, post):
+    def _observe_block(self, parameter, pre, post, kind):
         self.plasticity.observe(parameter, LocalEvent(
-            pre, post, self.plasticity._event_time_ms,
-            "dense" if parameter.ndim == 2 else "bias"))
+            pre, post, self.plasticity._event_time_ms, kind))
 
     def reset_phase(self, learning: bool):
         self.set_learning(learning)
         self.plasticity.clear()
         for block in self.core.blocks:
-            for name in ("z", "a", "r", "h"):
+            for name in ("z", "a", "r"):
                 getattr(block, name).zero_()
             if block.o is not None:
                 block.o.zero_()

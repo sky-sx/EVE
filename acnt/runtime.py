@@ -90,10 +90,9 @@ class Runtime(nn.Module):
         self.plasticity = Plasticity(groups, self.organ_blocks["goodness"], **hyperparameters)
         self.plasticity.attach_adapters(self.adapters, route_id=self.organ_blocks["route"])
         for block in self.core.blocks:
-            block.local_observer = lambda parameter, pre, post: self.plasticity.observe(
+            block.local_observer = lambda parameter, pre, post, kind: self.plasticity.observe(
                 parameter, LocalEvent(
-                    pre, post, self.plasticity._event_time_ms,
-                    "dense" if parameter.ndim == 2 else "bias")
+                    pre, post, self.plasticity._event_time_ms, kind)
             )
         return self.plasticity
 

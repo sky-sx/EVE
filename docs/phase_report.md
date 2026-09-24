@@ -2,9 +2,13 @@
 
 日期：2026-09-22。最高优先级依据是[当前架构原文](canonical_architecture.txt)。起点 main 为 `a7c72597bdbac10819a88c802b3cb25b1b9a6c83`。旧 e-prop Stage 0 的程序与两份 NOT SUPPORTED 报告保留在[历史归档](../archive/stage_zero_legacy/README.md)；下面的数字属于此前 strict exact-one-hot Goodness 的 Stage 0 正式运行，不能作为当前 `1/n` Goodness 的结果。
 
+> **适用性边界：** 本报告中的全部 Stage Zero 长训练数字使用
+> pre-correction Block temporal implementation。它们不能外推为 corrected
+> synapse mixing + CTM per-neuron private NLM + real-time age Block 的学习结论。
+
 | 部分 | 当前代码位置 | 本轮核验 |
 | --- | --- | --- |
-| Block/Core | `acnt/block.py`、`acnt/core.py` | 10 个 100 神经元 Block 全 active，统一旧 z snapshot，3 次 250 ms Eye 事件传播 |
+| Block/Core | `acnt/block.py`、`acnt/core.py` | 当前代码为 synapse mixing + A/At + per-neuron real-time NLM；表中长训练结果仍来自修正前实现 |
 | Eye/Hand | `acnt/adapters.py`、`acnt/control.py` | 只构造 Eye 与 27 位 Hand；红/蓝 A–Z 和全绿 1080p RGB；独立 Logistic 噪声与硬阈值 |
 | Local Plasticity | `acnt/plasticity.py` | 原样使用 `CorrelationRule` 数学；Stage 0 的 `goodness_id=None` 让 10 组都接收外部 `g*`；无本地事件时 `e` 不变 |
 | 新 Stage 0 | [活动代码](../experiments/stage_zero/README.md)、[锁定配置](../reports/stage_zero_local_plasticity_lock.json) | 此前 strict-reward 五 seed × (270 初始 + 1080 训练 + 270 冻结) 全部完成；8100 行 raw 独立审计通过。当前 `1/n` 外部 Goodness 尚未正式运行 |

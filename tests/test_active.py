@@ -14,7 +14,7 @@ def make_core():
 
 
 def snapshot(block):
-    return {name: getattr(block, name).clone() for name in ("z", "a", "r", "h")}, list(block.At), [a.clone() for a in block.A]
+    return {name: getattr(block, name).clone() for name in ("z", "a", "r")}, list(block.At), [a.clone() for a in block.A]
 
 
 def assert_unchanged(block, saved):

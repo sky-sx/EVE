@@ -1,231 +1,120 @@
-记一下，我做如下调整，你接下来就把这个当ACNT的现在架构，不多不少，有且仅有如下架构设计：
-readin：eye，ear，readout：hand，speak，goodness，route；core：block。
-对于eye，采用1080p截图经adapter输入对应block，同时强制激活一次对应block；
-对于ear，采用原始音频经过adapter输入对应block；
-对于hand，是对应block的输出，经adapter转化为键盘鼠标的directinput；
-对于speak，是对应block的输出，经adapter转化为模拟仿生发声器官的参数（约30维）；
-对于goodness，是对应block的输出经adapter转化为一维好度值（0～1）；
-对于route，是对应block的输出经adapter转化为总block上限数维的01block激活与休眠控制；
-以上的adapter皆为神经网络，训练时其参数与block参数一样采用Local Plasticity Dynamics（局部塑性动力学）；正式ACNT不运行e-prop；
-每个readin和readout都对应一个且仅对应一个不同block，readin与readin，readout与readout，read in与readout对应不同block；
-每个block B_i有如下状态：
-bool active：是否激活；
-int neure size of B_i：B_i内有的神经元数量
-int ticktime(ms):B_i的时间观感参数调整；
-int hold_tick：block内选取最新预激活历史的条数；
-vector<FP32>z(neure size of B_i)：这是activation，或者说block的输出状态；
-vector<FP32>a(neure size of B_i)：这是preactivation，预激活；
-vector<FP32>o(2*neure size of B_i)：这是readin adapter 的输出，仅与readin_adapter对应的block有；
-queue<vector<FP32> >A(hold_tick)(neure size of B_i)：这里最新hold_tick条存预激活历史；
-queue<int>At(hold_tick)：对应A历史的时间t（ms）；
-vector<vector<FP32> >W[number of total blocks](2*neure size of B_i)(neure size of B_j)：记录B_j向B_i的z_j的转移矩阵权重W_i,j，包括i=j；
-vector<FP32>b(2*neure size of B_i)：偏置bias b_i；
-vector<FP32>r(2*neure size of B_i)：类ctm中间计算量；
-vector<vector <FP32> >W_c[hold_tick](neure size of B_i)(2*neure size of B_i)：记录将cfc前后两半逐元素乘后的结果转化为a的权重,层归一化用；
-vector<FP32>b_c[hold_tick](neure size of B_i)：计算cfc时的偏置bias b_c；
-sigma()函数，定义为逐元素x变为(1+e^-x)^-1;
-LN()层归一化函数
-对于block，一次更新为
-如果 B_i 有 readin adapter：
-    o = readin_adapter(外部输入)；
-没有：o=0；
-r = o + b + sum_{j active} W_ij * z_j;
-a = LN(r[0 : neure size of B_i] ⊙ sigma(r[neure size of B_i : 2*neure size of B_i]));
-t_last = time(0);
-if(A.size()==hold_tick)A.pop();
-if(At.size()==hold_tick)At.pop();
-A.push_back(a);
-At.push_back(t_last);
-h = vector<FP32>(neure size of B_i, 0);
-for idx =  A.size()-1 ..0:
-    a_k = A[idx];
-    t_k = At[idx];
-    delta_t_ms = t_last - t_k;
-    t_last=t_k;
-    m = [a_k;h];此处指拼接两个向量；
-    h_c = W_c[idx] * m + b_c[idx];
-    h_c = LN(h_c);
-    gamma = sigma(delta_t_ms/ticktime_ms);
-    h = (1 - gamma) * h_c + gamma * h;
-end for
-z_i = h;
-关于route：
-	route对应的block强制永久激活；
-关于readin：
-	每个readin都会在有新输入到达时无视route强制激活一次block；
-关于所有readout：
-	最终产生的操作控制信号，有人控开关，如果关上的话将仅正常输出控制信号到机械日志，但不执行操作，不返回任何状态给core。也就是操作失败只记录机械日志，不告知core；
-	即使成功操作，也不会主动返回任何消息（比如操作成功码）给core，毕竟谁家好人自己身体要靠传出神经反向传递消息给大脑的，除了goodness更新用的，那个算内分泌，没招；
-关于goodness：
-	goodness是一个readout，对应一个且仅对应一个block，记该block为B_g，其adapter为A_g；
-	A_g是神经网络；A_g与B_g共同构成goodness readout子系统，其参数同样只采用局部塑性动力学更新；
-	B_g不是readin，因此没有readin adapter，o=0；
-	B_g按block一次更新规则更新，得到z_g；
-	当B_g goodness人控开关开启时：
-	g_ = clamp(A_g(z_g), 0, 1)；
-	g作为goodness readout的唯一输出，用于训练；
-	当B_g goodness人控开关关闭时：
-	仅正常输出g到机械日志，不返回任何状态给core；也就是goodness输出失败只记录机械日志，不告知core；
-	B_g的active由人工开关控制；
-	goodness输出只有一维标量g∈[0,1]；不设并列输出轴；
-	定义：
-		g = clamp(A_g(z_g), 0, 1)，内部自评输出；
-		g* ∈ [0,1]，可选外部好度标签/目标；
-		g_eff：有效好度训练标量。同一时刻存在准确g*时，g_eff = g*，即g*覆盖g；否则g_eff = g。除goodness readout子系统自身外，其他block和adapter只把g_eff作为唯一全局塑性调制信号；
-	goodness readout子系统不能通过“把自己输出的g变大”来训练，否则会形成自我奖励漏洞；
-	当存在外部g*时，定义仅供goodness readout子系统使用的校准标量c_g = g* - g；B_g与A_g只允许利用各自局部活动、自己的local plastic state以及c_g进行校准，使g逐步拟合g*；c_g不发送给其他block/adapter，也不构成第二条全局Goodness；
-	当不存在g*时，不对B_g/A_g进行上述teacher校准；此时g可以作为g_eff供其他神经组织使用；
-	同一个对象允许g_{t1}(o) ≠ g_{t2}(o)；
-	tips:goodness其实就是在实时拟合实现对teacher好度输出散点的连续化和超分辨
-关于运行时实时参数塑性训练采用Local Plasticity Dynamics：
-	正式ACNT的参数改变靠且仅靠局部塑性动力学；生产运行中不运行e-prop，不维护∂z/∂θ、∂q/∂θ、Jacobian、backward sensitivity、BPTT图或其他全局梯度状态；
-	对每个B_i，仍记其可训练参数集合：
-		θ_i={W_{i,j} | j∈所有block，含i=j} ∪ {b_i} ∪ {W_{c,i}[k], b_{c,i}[k] | k=0..hold_tick-1} ∪ {adapter_i}；
-	其中adapter_i只在B_i对应某readin或某readout时存在；因readin与readout对应不同block，故至多一个；无对应则无adapter；
-	每个可塑的局部连接/局部参数单元c维护自己的局部突触痕迹e_c；e_c初值为0，不是e-prop eligibility，也不保存梯度或全局敏感度；
-	局部事件发生在真实时刻t时，先按距该连接上次痕迹更新时间的真实时间Δt衰减，再加入仅由该连接自身pre/post局部活动形成的项：
-		e_c ← exp(-Δt/τ_e)e_c + F(pre,post)；
-	τ_e>0，以秒计；F(pre,post)只允许读取该连接真实存在的局部pre/post活动，不得读取目标、全局误差、Jacobian或其他连接状态；
-	对于W_ij：局部pre来自B_j当前z_j，局部post来自B_i真实产生的局部神经活动；
-	对于W_c/b_c：只允许读取其所在Block temporal/CfC计算中真实存在的两端局部活动；bias可以视为来自常数1输入的局部连接；
-	对于readin/readout adapter：adapter内部每个局部连接同样只读取自己的pre/post活动并形成自己的e_c；adapter不享有额外通道；
-	Goodness到达前，即使等待期间没有任何forward或局部事件，也必须先把当前e_c按真实时间衰减到Goodness到达时刻，再进行参数更新；
-	除Goodness ReadOut自身B_g/A_g外，全部可塑参数共同维护一个全局近期Goodness内部代谢基线，记为G_bar，初值0.5；
-	收到唯一g_eff时，先使用更新前的G_bar计算：
-		M = g_eff - G_bar；
-	随后所有上述可塑参数统一按各自当前局部痕迹更新：
-		Δw_c = η M e_c；
-	全部参数完成本次更新之后，才按距上次Goodness的真实时间Δt更新基线：
-		G_bar ← λ_G G_bar + (1-λ_G)g_eff；
-		λ_G = exp(-Δt/τ_G)，τ_G>0，以秒计；
-	G_bar只是唯一Goodness的内部代谢基线，不是第二评价流，不作为新的ReadIn/ReadOut，不向world或Core输出；
-	Goodness ReadOut自身B_g/A_g不使用g_eff、M或G_bar进行自我强化；当同刻存在g*时，仍保持原定义c_g=g*-g；
-	B_g/A_g只允许用各自局部pre/post活动形成的同样时间化e_c以及c_g进行teacher校准；c_g不发送给其他Block/Adapter，也不是第二条全局Goodness；
-	Eye、Ear、Core、Hand、Speak、Route及其Adapter不设器官特例，全部遵守同一“局部突触痕迹 + 全局Goodness神经调制”原则；
-	延迟Goodness到达时不回放计算图、不回放过去活动；参数只读取衰减到到达时刻后仍保留的e_c、唯一M及自身w_c；
-	当前CorrelationRule保留局部相关活动作为F(pre,post)的第一版实验候选；F的更合适局部形式仍可通过实验比较，但真实时间衰减、M、参数更新顺序与G_bar更新顺序属于正式架构，不是候选项；
-	正式ACNT不使用e-prop、梯度、Jacobian、BPTT、backward sensitivity、策略梯度、固定随机反馈或credit assignment；除同刻teacher校准c_g外，整个ACNT只有g_eff这一条全局评价流；
-关于e-prop的定位：
-	e-prop不再属于正式ACNT架构，不进入生产运行，不作为参数更新机制，也不为生产模型长期保存任何e-prop状态；
-	只允许在很小的科学对照系统中作为oracle/benchmark，例如4个Block的toy system中计算较完整的sensitivity，用于测量Local Plasticity Dynamics相对梯度信息丢失了多少、方向一致性如何、任务性能差多少；
-	e-prop对照结果只能用于研究、诊断和选择F_e/F_w候选，不能在正式ACNT运行时偷偷给Local Plasticity Dynamics提供梯度、teacher trace或额外credit信号；
-对ACNT训练，我们的原始数据准备要有：
-	中英文音频长录音；
-	动画，纪录片等，包含音频和图像；
-	蒸馏大模型用的题单；
-	teacherVLM：deepseek v4 api；
-	一台虚拟机；
-	模拟发声器官（30维）VocalTractLab这类的，我们需要用这个的声学几何计算，不然我真的没法转出音频；
-	题单/teacherVLM的文本不直接作为readin；如进入ACNT，先渲染为图像或语音，分别走eye/ear。
-对我们的ACNT训练，有如下几个阶段：
-	0阶段：验证可跑性
-		block总数：10；
-		强制要求每个block用100个神经元；
-		强制关闭route，goodness，ear，speak；
-		只留	eye，hand；
-		强制全部block始终激活；
-		模拟图像输入，黑底，26个字母，红色与蓝色，还有一个全绿屏幕；
-		仅允许键盘26个字母输出，鼠标左键click输出（非真实控制，仅日志输出；本Stage 0外部g*在目标动作位未激活时为0，目标位激活时为1/n，其中n是Hand全部激活位数；只有目标位单独激活时为1；exact one-hot success仅作为评价指标）；
-关于最终离散控制的随机干扰：
-对于所有最终需要形成01离散操作的readout，不直接由adapter输出01；
-adapter先输出对应离散操作的连续倾向值，记为q；
-对每个离散控制量独立加入随机干扰ε，再经过硬阈值形成最终01操作：
-a = 1[q + ε > θ]；
-其中a∈{0,1}；
-θ为该离散控制量的阈值；
-ε为该离散控制量自己的随机干扰，不同离散控制量默认使用独立ε，不共用同一个随机数；
-第一版ε采用Logistic分布：
-ε ~ Logistic(0, τ)；
-其中τ控制随机干扰强度；
-因此：
-p = P(a=1|q) = sigma((q-θ)/τ)；
-也就是说，Bernoulli随机控制仅作为该机制的概率解释，实际统一实现按：
-连续神经倾向q + noise ε + hard threshold → 01实际操作；
-不额外建立Bernoulli sampler模块；
-以后允许修改noise的分布、强度以及时间相关性，但不改变上述“神经倾向 + noise + threshold”的基本离散控制接口；
+# ACNT 当前唯一架构规范
 
-该随机干扰只用于最终需要形成离散事件的控制量；
-对于hand：
-	键盘每一个可独立按下/释放的键控制分别独立进行上述随机干扰；
-	鼠标左键、右键、中键等离散按键控制分别独立进行上述随机干扰；
-	多个键允许同时成立，例如K=1且S=1，因此不使用Softmax，不要求所有离散动作概率和为1；
-	鼠标位移等连续控制量不经过该01阈值机制，仍由adapter连续输出；
-对于route：
-	route adapter对总block上限数个block分别输出一个连续倾向q_i；
-	每个block分别具有独立noise ε_i；
-	最终：
-		active_i = 1[q_i + ε_i > θ_i]；
-	所以多个block可以同时激活，也可以同时休眠；
-	route block自身永久强制active，不受该随机干扰结果关闭；
-对于speak：
-	约30维仿生发声器官参数属于连续控制量，不强制经过01随机阈值；
-对于goodness：
-	g属于连续一维好度值，不经过该随机阈值机制；
+本文只定义当前仍成立的 ACNT v0.x 架构，不记录候选演变、实验历史或训练资料计划。
 
-随机干扰发生在readout adapter完成神经计算之后、机械操作真正形成之前；
-因此：
-	block/core内部状态与计算不因为随机探索而直接加入参数噪声；
-	随机性只作用于对应的离散控制决策；
-	实际world只经历随机干扰后真正发生的那一个动作；
-	不假设能够返回同一个world状态尝试另一个动作；
-	不要求同时得到正反两个动作的结果；
-	整个训练始终沿单条不可逆时间轨迹向前运行；
+## 1. 总体结构
 
-对于人控开关：
-	先正常完成adapter输出、noise干扰和最终控制信号生成；
-	若对应readout的人控执行开关关闭，则最终控制信号仅写入机械日志，不真实执行；
-	不向core返回“被禁止执行”“执行失败”等状态；
-	该规则与原readout规则保持一致；
+系统由 ReadIn、Core 与 ReadOut 组成。Core 是固定容量的 Block 集合；Block 可以 active 或 dormant，但不会因休眠被删除。
 
-关于最终离散控制与Local Plasticity Dynamics：
-由于最终：
-a = 1[q + ε > θ]
-为硬离散操作，因此正式ACNT不对a、q、hard threshold或world求导，也不构造∂a/∂q、∂q/∂θ、log-policy gradient或e-prop eligibility；
-连续神经倾向q、此次本地noise realization以及最终实际形成的离散事件a，都是该readout终端本地真实发生的信息；它们可以进入本连接的F(pre,post)，但不会作为额外world反馈返回core；
-离散控制readout不建立F^ctrl器官特例，其内部连接与Eye/Core/其他Adapter完全使用同一正式接口：
-	e_c ← exp(-Δt/τ_e)e_c + F(local_pre,local_post)；
-其中local_post允许包含该终端实际形成的q与a等本地输出活动；F仍只能读取本连接局部活动；
-当未来唯一g_eff到达时，先把e_c衰减到到达时刻，并用更新前的G_bar计算M=g_eff-G_bar，再统一通过：
-	Δw_c = η M e_c；
-进行更新；全部参数更新后才按正式公式更新G_bar；
-不要求同一world状态重新尝试另一个动作，不要求知道未发生动作的结果，不要求world可微，也不要求离散控制可微；
-如果noise造成某个离散动作偶然发生，那么该动作是否能在未来被增强或抑制，只能取决于：
-	这次动作前后在局部神经连接中留下了什么e_c；
-	之后到达的唯一g_eff；
-	衰减后的e_c与唯一M怎样按正式公式修改局部参数；
-这里不固定(a-p)/τ、REINFORCE、straight-through estimator或其他policy-gradient公式为正式机制；这些都只能作为实验对照候选；
-若一个readout同时具有多个彼此独立的离散控制量，每个控制量仍拥有自己的noise和实际事件a；它们只通过各自涉及的局部连接形成local plastic state，不建立Softmax竞争，也不共享第二个reward；
-route与hand都遵守这一规则；route block自身永久强制active这一硬规则不参与学习；
-因此当前离散控制训练可以概括为：
-	block/readout产生连续神经倾向q；
-	noise使唯一现实时间线上偶尔产生不同的离散操作；
-	hard threshold产生真实01控制；
-	相关局部神经连接仅依据自己真实经历的pre/post/output活动形成时间化局部突触痕迹e_c；
-	延迟到达的唯一g_eff先与G_bar形成M，再调制已衰减到该时刻的e_c对应参数变化；
-整个过程不存在全局backward sensitivity，不要求DAG，不要求world reset，不要求在同一状态分别尝试两个动作。
+六个器官必须分别绑定六个不同的 designated Block：
 
-关于0阶段：
-0阶段其余设计不变；
-由于route强制关闭，route不参与随机干扰实验；
-goodness强制关闭，因此g仍由外部读取机械日志后提供；
-hand中的26个键盘字母以及鼠标左键click属于离散最终动作，因此加入上述noise + threshold机制；
-初始noise采用Logistic分布；
-每个字母键和鼠标左键拥有独立noise；
-26个字母之间不使用Softmax，因此理论上允许多个字母键在同一控制时刻同时产生按下倾向；
-实际是否形成对应DirectInput仍受0阶段“仅日志输出、不真实控制”的原规则限制；
-Stage 0其余网络、1/n外部Goodness和协议不变；
-当前 Stage 0 所有 Block 的 ticktime = 250 ms；
-当前统一采用：
+- ReadIn：Eye、Ear。
+- ReadOut：Hand、Speak、Goodness、Route。
 
-    τ_e = ticktime / 1000 = 0.25 s
+Eye 接收 1080p 屏幕像素；Ear 接收原始音频。文本若要进入系统，必须先成为允许的感知形式。Hand 产生键盘、鼠标按钮与位移控制；Speak 产生连续发声器官参数；Goodness 产生唯一标量；Route 产生各 Block 的 active/dormant 控制。
 
-局部痕迹更新：
+ReadIn 的 Adapter 输出写入其 Block 的 o。新 ReadIn 输入强制 designated Block 更新一次，即使 Route 未选中它；Core 调用完成后 o 被消费并清零。Route Block 永久 active。Goodness Block 是否 active 只由人控开关决定，Route 不能覆盖这两个角色约束。
 
-    e_c ← exp(-Δt / τ_e) e_c + F(local_pre, local_post)
+## 2. Block 状态与参数
 
-当前阶段先使用统一 τ_e；
-未来异步 Block 使用：
+Block i 定义：
 
-    τ_e,i = ticktime_i / 1000
+- neuron_size n_i；
+- scheduler 间隔与真实时间归一化尺度 ticktime_i，单位 ms；
+- 历史长度 hold_tick=M_i；
+- committed output z_i in R^(n_i)；
+- 当前 pre-activation a_i in R^(n_i)；
+- synapse accumulator r_i in R^(2n_i)；
+- ReadIn Block 的输入 o_i in R^(2n_i)，其他 Block 视为零；
+- 历史 A_i，保存最近 M_i 个 a_i；
+- 历史时间 At_i，保存 A_i 每项对应的逻辑时间戳，单位 ms；
+- 对每个 source Block j 的 W_ij in R^(2n_i x n_j)；
+- synapse bias b_i in R^(2n_i)；
+- 每个 neuron 私有的 NLM 参数。
 
-即 Block 的运行时间尺度同时作为其局部可塑性痕迹时间尺度。
+A 与 At oldest-first、一一对应。只有 Block 真正 update 时才追加 (a_i, now_ms)；超过 hold_tick 时 FIFO 删除最旧一对。now_ms 是真实逻辑时间，不是计算耗时。时间不得倒退，失败的 update 不得留下 partial commit。
+
+生产状态与可塑参数均为 FP32。持久状态在 update 后 detach；正式参数更新不建立 autograd graph。
+
+## 3. Snapshot synapse mixing
+
+一次 Core scheduling event 首先抓取所有 active source 的 OLD committed z snapshot。同一事件中的所有 destination 都读取这一个 snapshot；本轮刚计算出的新 z 不会被本轮后访问的 Block 读取。
+
+对 active destination Block i：
+
+r_i = o_i + b_i + sum_(j in active) W_ij z_j
+
+令 r_i 的左右两半各为 n_i 维，则：
+
+a_i = LN(r_i[0:n_i] elementwise_mul sigmoid(r_i[n_i:2n_i]))
+
+LayerNorm 跨本 Block 的 neuron 维执行，无可学习 affine 参数。这一 Linear -> GLU -> LayerNorm 阶段是跨 neuron、跨 Block 的 synapse mixing。不同 neuron_size 的 Block 通过对应形状的 W_ij 连接。
+
+## 4. Per-neuron real-time NLM
+
+跨 neuron mixing 只发生在 synapse stage。时间历史处理只发生在 private NLM；NLM_d 不读取其他 neuron 的历史。
+
+当前时刻 t_now 对历史项 k 的 real-time age 为：
+
+age_k = (t_now - t_k) / ticktime_i
+
+t_now、t_k 与 ticktime_i 都用 ms，因此 age_k 无量纲。age 直接作为输入；不施加裁剪、指数、对数或额外时间变换。ticktime 同时承担 Core scheduler 间隔尺度与 NLM age 归一化尺度。
+
+当当前历史长度 K <= M_i 时，为 neuron d 构造三个长度 M_i 的向量并右对齐真实项：
+
+- activation_d = [a_d^(1), ..., a_d^(K)]；
+- age = [age_1, ..., age_K]；
+- validity = [1, ..., 1]。
+
+左侧 padding 的 activation、age、validity 都为 0。validity 用于区分真实零 activation 与尚不存在的 slot。Block 内所有 neuron 共享 age 与 validity；activation history 是 neuron-specific；时间戳只在 At 保存一份。
+
+x_d = activation_d concat age concat validity in R^(3M_i)
+
+所有 neuron 用 grouped parameter tensor 并行计算，但数学上等价于独立模型：
+
+u_d = W1_d x_d + b1_d in R^(2H)
+q_d = GLU(u_d) in R^H
+v_d = W2_d q_d + b2_d in R^2
+z_d = GLU(v_d) in R
+
+默认 H=nlm_hidden_dim=4。W1_d、b1_d、W2_d、b2_d 都只属于 neuron d。最终并行得到 z_i in R^(n_i)。
+
+一次真实 BlockRun 的提交顺序为：读取 old snapshot；计算 r；计算 a；形成候选 A/At；构造 NLM 输入；计算全部 z；验证有限性；一次性 commit r、a、z、A、At。
+
+## 5. ReadOut 与机械边界
+
+ReadOut Adapter 只读取其 designated Block 的 committed z。Hand 与 Route 的每个离散坐标由连续倾向 q 加独立 Logistic noise 后与 threshold 比较：
+
+action_k = 1[q_k + noise_k > threshold_k]
+
+各坐标独立，不使用动作间 Softmax 竞争。鼠标位移、Speak 与 Goodness 是连续量。
+
+机械执行开关位于最终信号之后。关闭时仍生成信号并记录机械日志，但不执行外部动作。执行结果与失败不得反馈回 Core。Route 的角色覆盖在采样后执行：Route 自身保持 active，Goodness 保持人控状态，ReadIn 强制更新规则保持有效。
+
+## 6. 唯一 Goodness
+
+Goodness 只有一个标量 g in [0,1]。当同一事件存在准确外部 g* 时，普通连接使用 g_eff=g*；否则在 Goodness 启用时使用 g。不得增加新的 Goodness 轴或全局 credit signal。
+
+Goodness Block 与 Adapter 不用自己的输出自我强化。同刻存在 g* 时，它们只接收局部校准 c_g=g*-g。其他连接只接收唯一 g_eff。
+
+## 7. Local Plasticity Dynamics
+
+每个普通可塑参数元素维护自己的局部 eligibility 状态 e_c：
+
+e_c <- exp(-Delta_t/tau_e) e_c + F(local_pre, local_post)
+
+Goodness 到达时：
+
+M = g_eff - G_bar
+Delta_w = eta M e
+
+G_bar 按现有真实时间 EMA 更新。Goodness 子系统的校准沿现有 c_g 路径进行。Local Plasticity 不使用梯度、BPTT、policy gradient 或额外全局反馈。
+
+Dense 参数的局部候选使用真实 linear input/output。bias 将输入视为常数 1。private grouped NLM linear 对 X[n,in]、Y[n,out] 定义：
+
+F_W[d,o,i] = Y[d,o] * X[d,i]
+F_b[d,o] = Y[d,o]
+
+这里只允许同一 neuron d 的两端相乘。第一层 local post 是其真实 pre-GLU linear output；GLU 结果是第二层 local pre；第二层 local post 同样是 pre-GLU linear output。不构造 derivative。
+
+Adapter 的 Linear/Conv 与离散 control terminal 继续使用同一局部 observer 框架。当前 CorrelationRule 是可替换的局部候选，不是额外架构轴。

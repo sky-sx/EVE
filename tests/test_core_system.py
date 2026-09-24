@@ -20,21 +20,21 @@ def test_500_steps_with_intermittent_asynchronous_updates():
         core.step(now_ms=tick * tick, order=[3, 1, 0] if tick % 2 else [0, 2, 1, 3])
         for block in core.blocks:
             assert len(block.A) == len(block.At) <= 3
-            assert all(torch.isfinite(getattr(block, name)).all() for name in ("z", "a", "r", "h"))
+            assert all(torch.isfinite(getattr(block, name)).all() for name in ("z", "a", "r"))
             assert all(torch.isfinite(a).all() for a in block.A)
 
 
 def test_nonfinite_calculation_rejected_without_partial_commit():
     block = Block(0, 2, [2])
     block.update(now_ms=0)
-    old_z, old_a, old_r, old_h = [getattr(block, name).clone() for name in ("z", "a", "r", "h")]
+    old_z, old_a, old_r = [getattr(block, name).clone() for name in ("z", "a", "r")]
     old_history = [a.clone() for a in block.A]
     with torch.no_grad():
         block.b.fill_(float("inf"))
     with pytest.raises(FloatingPointError, match="non-finite"):
         block.update(now_ms=1)
     assert list(block.At) == [0]
-    for name, expected in zip(("z", "a", "r", "h"), (old_z, old_a, old_r, old_h)):
+    for name, expected in zip(("z", "a", "r"), (old_z, old_a, old_r)):
         torch.testing.assert_close(getattr(block, name), expected)
     torch.testing.assert_close(block.A[0], old_history[0])
 

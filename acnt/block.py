@@ -1,7 +1,7 @@
-"""Canonical Block equations with an optional one-update local graph."""
+"""Canonical ACNT Block with CTM-style private neuron-level models."""
 
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import math
 from time import monotonic_ns
 
@@ -10,12 +10,51 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 
-class Block(nn.Module):
-    """One FP32, non-batched Block. Times are integer milliseconds.
+LocalObserver = Callable[[nn.Parameter, Tensor, Tensor, str], None]
 
-    A/At store oldest first; W_c[idx] follows the current queue index.
-    LN has no learned affine parameters: these are absent from canonical theta.
-    Persistent states are detached; an observer may see only local activities.
+
+class NeuronLevelModel(nn.Module):
+    """Two private grouped Linear/GLU layers, evaluated for all neurons at once."""
+
+    def __init__(self, neuron_size: int, input_dim: int, hidden_dim: int = 4) -> None:
+        super().__init__()
+        if any(type(value) is not int or value < 1 for value in (neuron_size, input_dim, hidden_dim)):
+            raise ValueError("NLM dimensions must be positive integers")
+        self.neuron_size = neuron_size
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.weight1 = nn.Parameter(torch.empty(neuron_size, 2 * hidden_dim, input_dim))
+        self.bias1 = nn.Parameter(torch.zeros(neuron_size, 2 * hidden_dim))
+        self.weight2 = nn.Parameter(torch.empty(neuron_size, 2, hidden_dim))
+        self.bias2 = nn.Parameter(torch.zeros(neuron_size, 2))
+        self._reset_parameters()
+
+    def _reset_parameters(self) -> None:
+        bound1 = math.sqrt(6.0 / (self.input_dim + 2 * self.hidden_dim))
+        bound2 = math.sqrt(6.0 / (self.hidden_dim + 2))
+        nn.init.uniform_(self.weight1, -bound1, bound1)
+        nn.init.uniform_(self.weight2, -bound2, bound2)
+
+    def forward(self, x: Tensor, observer: LocalObserver | None = None) -> Tensor:
+        if x.shape != (self.neuron_size, self.input_dim):
+            raise ValueError(f"NLM input must have shape ({self.neuron_size}, {self.input_dim})")
+        linear1 = torch.einsum("noi,ni->no", self.weight1, x) + self.bias1
+        if observer is not None:
+            observer(self.weight1, x.detach(), linear1.detach(), "grouped_dense")
+            observer(self.bias1, torch.ones_like(linear1), linear1.detach(), "grouped_bias")
+        hidden = F.glu(linear1, dim=-1)
+        linear2 = torch.einsum("noi,ni->no", self.weight2, hidden) + self.bias2
+        if observer is not None:
+            observer(self.weight2, hidden.detach(), linear2.detach(), "grouped_dense")
+            observer(self.bias2, torch.ones_like(linear2), linear2.detach(), "grouped_bias")
+        return F.glu(linear2, dim=-1).squeeze(-1)
+
+
+class Block(nn.Module):
+    """One FP32, non-batched Block. Times and ticktime are milliseconds.
+
+    A/At store pre-activations and their logical timestamps, oldest first.
+    Persistent states are detached; observers see only local connection ends.
     """
 
     def __init__(
@@ -26,6 +65,7 @@ class Block(nn.Module):
         *,
         ticktime: float = 1.0,
         hold_tick: int = 4,
+        nlm_hidden_dim: int = 4,
         active: bool = True,
         readin: bool = False,
         ln_eps: float = 1e-5,
@@ -35,6 +75,8 @@ class Block(nn.Module):
             raise ValueError("neuron_size must be a positive integer")
         if type(hold_tick) is not int or hold_tick < 1:
             raise ValueError("hold_tick must be a positive integer")
+        if type(nlm_hidden_dim) is not int or nlm_hidden_dim < 1:
+            raise ValueError("nlm_hidden_dim must be a positive integer")
         if isinstance(ticktime, bool) or not isinstance(ticktime, (int, float)) or not math.isfinite(ticktime) or ticktime <= 0:
             raise ValueError("ticktime must be a finite positive number of milliseconds")
         if not source_sizes or any(type(n) is not int or n < 1 for n in source_sizes):
@@ -53,6 +95,7 @@ class Block(nn.Module):
         self.source_sizes = tuple(source_sizes)
         self.ticktime = float(ticktime)
         self.hold_tick = hold_tick
+        self.nlm_hidden_dim = nlm_hidden_dim
         self.active = active
         self.ln_eps = ln_eps
         n = neuron_size
@@ -60,30 +103,22 @@ class Block(nn.Module):
             [nn.Parameter(torch.empty(2 * n, size, dtype=torch.float32)) for size in source_sizes]
         )
         self.b = nn.Parameter(torch.zeros(2 * n, dtype=torch.float32))
-        self.W_c = nn.ParameterList(
-            [nn.Parameter(torch.empty(n, 2 * n, dtype=torch.float32)) for _ in range(hold_tick)]
-        )
-        self.b_c = nn.ParameterList(
-            [nn.Parameter(torch.zeros(n, dtype=torch.float32)) for _ in range(hold_tick)]
-        )
-        for weight in [*self.W_ij, *self.W_c]:
+        for weight in self.W_ij:
             nn.init.xavier_uniform_(weight)
+        self.nlm = NeuronLevelModel(n, 3 * hold_tick, nlm_hidden_dim)
 
-        for name, size in (("z", n), ("a", n), ("r", 2 * n), ("h", n)):
+        for name, size in (("z", n), ("a", n), ("r", 2 * n)):
             self.register_buffer(name, torch.zeros(size, dtype=torch.float32))
-        # Only a ReadIn Block has an o vector. Otherwise the formula uses zero.
         self.register_buffer("o", torch.zeros(2 * n, dtype=torch.float32) if readin else None)
         self.A: deque[Tensor] = deque(maxlen=hold_tick)
         self.At: deque[int] = deque(maxlen=hold_tick)
-        self.local_observer = None
+        self.local_observer: LocalObserver | None = None
 
     @staticmethod
     def sigma(x: Tensor) -> Tensor:
-        """Elementwise 1 / (1 + exp(-x)), evaluated stably."""
         return torch.sigmoid(x)
 
     def LN(self, x: Tensor) -> Tensor:
-        """Normalize all neurons; population variance, epsilon, no affine gain."""
         return F.layer_norm(x, (self.neuron_size,), eps=self.ln_eps)
 
     def _check_vector(self, value: Tensor, size: int, name: str) -> None:
@@ -94,25 +129,45 @@ class Block(nn.Module):
         if not torch.isfinite(value).all():
             raise ValueError(f"{name} must contain finite values")
 
+    def nlm_input(self, history: Sequence[Tensor], times: Sequence[int], *, now_ms: int) -> Tensor:
+        """Build right-aligned [activation | real-time age | validity] rows."""
+        if len(history) != len(times) or len(history) > self.hold_tick:
+            raise ValueError("history and timestamps must correspond within hold_tick")
+        if type(now_ms) is not int:
+            raise ValueError("now_ms must be integer milliseconds")
+        if times and (any(type(t) is not int for t in times) or any(t > now_ms for t in times)):
+            raise ValueError("history timestamps must be integer milliseconds not later than now")
+        m, n, k = self.hold_tick, self.neuron_size, len(history)
+        activation = self.b.new_zeros((n, m))
+        age = self.b.new_zeros(m)
+        validity = self.b.new_zeros(m)
+        if k:
+            values = torch.stack(tuple(history))
+            if values.shape != (k, n) or values.dtype != torch.float32 or values.device != self.b.device:
+                raise ValueError("A entries must be FP32 neuron vectors on the Block device")
+            activation[:, -k:] = values.transpose(0, 1)
+            age[-k:] = self.b.new_tensor([(now_ms - t) / self.ticktime for t in times])
+            validity[-k:] = 1
+        result = torch.cat((activation, age.expand(n, -1), validity.expand(n, -1)), dim=-1)
+        if not torch.isfinite(result).all():
+            raise FloatingPointError(f"Block {self.block_id}: non-finite NLM input")
+        return result
+
     def update(self, *, now_ms: int | None = None, active_z: Mapping[int, Tensor] | None = None) -> Tensor:
-        # The production Block never constructs a gradient graph.
         with torch.no_grad():
             return self._update(now_ms=now_ms, active_z=active_z)
 
     def _update(self, *, now_ms: int | None, active_z: Mapping[int, Tensor] | None) -> Tensor:
-        """Update once using exactly the supplied active source states.
-
-        An omitted/empty mapping means no source contributes, including self.
-        Core constructs this mapping from the active set.
-        An inactive destination leaves all of its states and history untouched.
-        Explicit now_ms makes history timing deterministic in tests.
-        """
         if not self.active:
             return self.z
         if len(self.A) != len(self.At):
             raise ValueError("A and At must correspond one-to-one")
+        now_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
+        if type(now_ms) is not int:
+            raise ValueError("now_ms must be integer milliseconds")
+        if self.At and now_ms < self.At[-1]:
+            raise ValueError("time must not move backwards")
 
-        # r_i = o_i + b_i + sum_{j active} W_ij z_j.
         r = self.b.clone()
         if self.o is not None:
             self._check_vector(self.o, 2 * self.neuron_size, "o")
@@ -124,43 +179,20 @@ class Block(nn.Module):
             self._check_vector(z_j, self.source_sizes[j], f"z_{j}")
             r = r + self.W_ij[j] @ z_j.detach()
         n = self.neuron_size
-        # a_i = LN(r_i[:n] * sigma(r_i[n:])).
         a = self.LN(r[:n] * self.sigma(r[n:]))
         if self.local_observer is not None:
             for j, z_j in sources.items():
-                self.local_observer(self.W_ij[j], z_j.detach(), r.detach())
-            self.local_observer(self.b, torch.ones_like(r), r.detach())
+                self.local_observer(self.W_ij[j], z_j.detach(), r.detach(), "dense")
+            self.local_observer(self.b, torch.ones_like(r), r.detach(), "bias")
 
-        # Canonical t_last is sampled after a is formed. Tests may supply t.
-        now_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
-        if type(now_ms) is not int:
-            raise ValueError("now_ms must be integer milliseconds")
-        if self.At and now_ms < self.At[-1]:
-            raise ValueError("time must not move backwards")
-
-        # Pop the oldest pair when full, then append the new pair.
         history = [*(entry.detach() for entry in self.A), a][-self.hold_tick :]
         times = [*self.At, now_ms][-self.hold_tick :]
-        h = torch.zeros_like(self.z)
-        t_last = now_ms
-        for idx in range(len(history) - 1, -1, -1):
-            a_k, t_k = history[idx], times[idx]
-            delta_t = t_last - t_k
-            t_last = t_k
-            m = torch.cat((a_k, h))
-            h_c = self.LN(self.W_c[idx] @ m + self.b_c[idx])
-            # delta_t and ticktime are both millisecond intervals.
-            gamma = self.sigma(self.b.new_tensor(delta_t / self.ticktime))
-            if self.local_observer is not None:
-                self.local_observer(self.W_c[idx], m.detach(), h_c.detach())
-                self.local_observer(self.b_c[idx], torch.ones_like(h_c), h_c.detach())
-            h = (1 - gamma) * h_c + gamma * h
-
-        for name, value in (("r", r), ("a", a), ("h", h), ("z", h)):
+        z = self.nlm(self.nlm_input(history, times, now_ms=now_ms), self.local_observer)
+        for name, value in (("r", r), ("a", a), ("z", z)):
             if not torch.isfinite(value).all():
                 raise FloatingPointError(f"Block {self.block_id}: non-finite {name}")
-        # Commit together so a failed calculation cannot leave half a history.
-        self.r, self.a, self.h, self.z = [value.detach().clone() for value in (r, a, h, h)]
+
+        self.r, self.a, self.z = [value.detach().clone() for value in (r, a, z)]
         self.A.clear()
         self.A.extend(value.detach().clone() for value in history)
         self.At.clear()

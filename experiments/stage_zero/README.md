@@ -1,5 +1,9 @@
 # Current Local Plasticity Stage 0
 
+The harness now uses snapshot synapse mixing plus A/At and grouped per-neuron
+real-time NLMs. Any long-run result produced before this correction is
+historical only; the next formal run must record the corrected source hashes.
+
 Run from the repository root:
 
 ```powershell
