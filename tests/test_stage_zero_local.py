@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from experiments.stage_zero.environment import (
-    ACTIONS, balanced_colors, balanced_delays, balanced_targets, exact_success, potential_goodness,
+    ACTIONS, DELAYS_MS, balanced_colors, balanced_delays, balanced_targets, exact_success, potential_goodness,
     phase_schedule, render, stimulus_hash,
 )
 from experiments.stage_zero.audit import audit_goodness
@@ -16,7 +16,7 @@ def test_balanced_independent_environment_schedule():
         targets=[x[0] for x in schedule]
         delays=[x[2] for x in schedule]
         assert all(targets.count(i)==count//27 for i in range(27))
-        assert all(delays.count(i)==count//3 for i in (250,500,1000))
+        assert all(delays.count(d)==count//len(DELAYS_MS) for d in DELAYS_MS)
         assert len(set(seeds.values()))==4
         for target in range(26):
             colors=[color for t,color,_ in schedule if t==target]
