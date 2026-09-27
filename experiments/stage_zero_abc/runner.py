@@ -1,4 +1,4 @@
-"""Runner for the minimal ABC perturbation-eprop baseline."""
+"""Runner for the minimal deterministic ABC baseline."""
 
 from __future__ import annotations
 
@@ -39,7 +39,6 @@ DEFAULT_DEVICE = "cuda"
 LEARNING_RATE = 0.001
 TAU_Q_S = 1.0
 TAU_G_S = 5.0
-PERTURBATION_SCALE = 0.1
 ACTION_TAU = 0.25
 
 SCHEMA = 1
@@ -116,9 +115,6 @@ def config(
         "tau_g_s":
             TAU_G_S,
 
-        "perturbation_scale":
-            PERTURBATION_SCALE,
-
         "action_tau":
             ACTION_TAU,
 
@@ -145,9 +141,6 @@ def config(
 
         "curriculum":
             False,
-
-        "perturbation_seed_rule":
-            "seed*1000003+900001",
 
         "target_seed_rule":
             "seed*1000003+phase_index*10007+1",
@@ -362,8 +355,6 @@ def run_seed(
         learning_rate=LEARNING_RATE,
         tau_q_s=TAU_Q_S,
         tau_g_s=TAU_G_S,
-        perturbation_scale=
-            PERTURBATION_SCALE,
         action_tau=ACTION_TAU,
     )
 

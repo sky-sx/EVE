@@ -74,7 +74,6 @@ class Runtime(nn.Module):
         self.execution_enabled = {"hand": False, "speak": False, "route": True, "goodness": self.goodness_active}
         self.executors: dict = {}
         self.plasticity: Plasticity | None = None
-        self.perturbation_generator: torch.Generator | None = None
         # Discrete ReadOut eligibility is accumulated only while learning.
         self.learning = True
 
@@ -139,23 +138,6 @@ class Runtime(nn.Module):
 
         return self.plasticity
 
-    def set_perturbation_generator(
-        self,
-        generator: torch.Generator | None,
-    ) -> None:
-        if (
-            generator is not None
-            and not isinstance(
-                generator,
-                torch.Generator,
-            )
-        ):
-            raise TypeError(
-                "perturbation generator must be torch.Generator or None"
-            )
-
-        self.perturbation_generator = generator
-
     @torch.no_grad()
     def step(
         self, *, now_ms: int, readins: Mapping[str, Tensor] | None = None,
@@ -168,19 +150,7 @@ class Runtime(nn.Module):
         self.learning = learn
         if self.plasticity is not None:
             for block in self.core.blocks:
-                block.set_learning(
-                    learn,
-                    perturbation_scale=(
-                        self.plasticity.perturbation_scale
-                        if learn
-                        else 0.0
-                    ),
-                    generator=(
-                        self.perturbation_generator
-                        if learn
-                        else None
-                    ),
-                )
+                block.set_learning(learn)
         updated = self.update_blocks(now_ms=now_ms, readins=readins)
         route = self.generate_route(now_ms=now_ms, generator=generator)
         hand = self.generate_hand(now_ms=now_ms, generator=generator)

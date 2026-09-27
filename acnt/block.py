@@ -193,7 +193,6 @@ class Block(nn.Module):
 
         for name, size in (
             ("z", n),
-            ("z_bar", n),
             ("a", n),
             ("r", 2 * n),
         ):
@@ -206,8 +205,6 @@ class Block(nn.Module):
 
         self.local_observer: LocalObserver | None = None
         self.learning_enabled = False
-        self.perturbation_scale = 0.0
-        self.perturbation_generator: torch.Generator | None = None
 
     @staticmethod
     def sigma(x: Tensor) -> Tensor:
@@ -274,18 +271,11 @@ class Block(nn.Module):
     def set_learning(
         self,
         enabled: bool,
-        *,
-        perturbation_scale: float = 0.0,
-        generator: torch.Generator | None = None,
     ) -> None:
         if type(enabled) is not bool:
             raise TypeError("enabled must be bool")
-        if perturbation_scale < 0 or not math.isfinite(perturbation_scale):
-            raise ValueError("perturbation_scale must be finite and nonnegative")
 
         self.learning_enabled = enabled
-        self.perturbation_scale = float(perturbation_scale)
-        self.perturbation_generator = generator
 
     def _emit_eligibility(
         self,
@@ -304,106 +294,6 @@ class Block(nn.Module):
             parameter,
             contribution.detach(),
             now_ms,
-        )
-
-    def _accumulate_local_eligibility(
-        self,
-        *,
-        now_ms: int,
-        xi: Tensor,
-        nlm_cache: dict[str, Tensor],
-        frames: Sequence[SynapseFrame],
-    ) -> None:
-        if self.local_observer is None:
-            return
-
-        c = self.perturbation_scale
-        if c <= 0:
-            return
-
-        cotangent = xi / c
-
-        nlm_grads = self.nlm.local_vjp(
-            nlm_cache,
-            cotangent,
-        )
-
-        self._emit_eligibility(
-            self.nlm.weight1,
-            nlm_grads["weight1"],
-            now_ms=now_ms,
-        )
-        self._emit_eligibility(
-            self.nlm.bias1,
-            nlm_grads["bias1"],
-            now_ms=now_ms,
-        )
-        self._emit_eligibility(
-            self.nlm.weight2,
-            nlm_grads["weight2"],
-            now_ms=now_ms,
-        )
-        self._emit_eligibility(
-            self.nlm.bias2,
-            nlm_grads["bias2"],
-            now_ms=now_ms,
-        )
-
-        history_grad = nlm_grads["x"][:, :self.hold_tick]
-
-        k = len(frames)
-        if k == 0:
-            return
-
-        history_grad = history_grad[:, -k:]
-
-        weight_contributions = [
-            torch.zeros_like(weight)
-            for weight in self.W_ij
-        ]
-        bias_contribution = torch.zeros_like(self.b)
-
-        for slot, frame in enumerate(frames):
-            v = history_grad[:, slot]
-
-            c_a = self.LN_vjp(
-                frame.a,
-                frame.ln_scale,
-                v,
-            )
-
-            delta_l = c_a * frame.rho
-            delta_g = (
-                c_a
-                * frame.l
-                * frame.rho
-                * (1.0 - frame.rho)
-            )
-            delta_r = torch.cat(
-                (delta_l, delta_g),
-                dim=0,
-            )
-
-            bias_contribution.add_(delta_r)
-
-            for source_id, source_z in frame.sources.items():
-                weight_contributions[source_id].add_(
-                    delta_r.unsqueeze(1)
-                    * source_z.unsqueeze(0)
-                )
-
-        for source_id, contribution in enumerate(weight_contributions):
-            if contribution.count_nonzero():
-                self._emit_eligibility(
-                    self.W_ij[source_id],
-                    contribution,
-                    now_ms=now_ms,
-                )
-
-        self._emit_eligibility(
-            self.b,
-            bias_contribution,
-            now_ms=now_ms,
         )
 
     def update(self, *, now_ms: int | None = None, active_z: Mapping[int, Tensor] | None = None) -> Tensor:
@@ -505,38 +395,11 @@ class Block(nn.Module):
             now_ms=now_ms,
         )
 
-        z_bar, nlm_cache = self.nlm(
-            nlm_x,
-            return_cache=True,
-        )
-
-        if (
-            self.learning_enabled
-            and self.local_observer is not None
-            and self.perturbation_scale > 0
-        ):
-            xi = torch.randn(
-                z_bar.shape,
-                dtype=z_bar.dtype,
-                device=z_bar.device,
-                generator=self.perturbation_generator,
-            )
-
-            z = z_bar + self.perturbation_scale * xi
-
-            self._accumulate_local_eligibility(
-                now_ms=now_ms,
-                xi=xi.detach(),
-                nlm_cache=nlm_cache,
-                frames=frames,
-            )
-        else:
-            z = z_bar
+        z = self.nlm(nlm_x)
 
         for name, value in (
             ("r", r),
             ("a", a),
-            ("z_bar", z_bar),
             ("z", z),
         ):
             if not torch.isfinite(value).all():
@@ -546,7 +409,6 @@ class Block(nn.Module):
 
         self.r = r.detach().clone()
         self.a = a.detach().clone()
-        self.z_bar = z_bar.detach().clone()
         self.z = z.detach().clone()
 
         self.A.clear()

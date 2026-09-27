@@ -1,4 +1,4 @@
-"""Minimal 2-Block ABC harness for perturbation-eprop validation."""
+"""Minimal 2-Block ABC harness for deterministic ACNT learning validation."""
 
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ class StageZeroABC(torch.nn.Module):
         learning_rate: float = 0.001,
         tau_q_s: float = 1.0,
         tau_g_s: float = 5.0,
-        perturbation_scale: float = 0.1,
         action_tau: float = 0.25,
     ) -> None:
         super().__init__()
@@ -103,18 +102,9 @@ class StageZeroABC(torch.nn.Module):
             learning_rate=learning_rate,
             tau_q_s=tau_q_s,
             tau_g_s=tau_g_s,
-            perturbation_scale=perturbation_scale,
         )
 
         self.action_tau = float(action_tau)
-
-        self.perturbation_generator = torch.Generator(
-            device=self.device,
-        )
-
-        self.perturbation_generator.manual_seed(
-            seed * 1000003 + 900001
-        )
 
         self._learning = False
 
@@ -164,19 +154,7 @@ class StageZeroABC(torch.nn.Module):
                 else None
             )
 
-            block.set_learning(
-                learning,
-                perturbation_scale=(
-                    self.plasticity.perturbation_scale
-                    if learning
-                    else 0.0
-                ),
-                generator=(
-                    self.perturbation_generator
-                    if learning
-                    else None
-                ),
-            )
+            block.set_learning(learning)
 
     def reset_phase(
         self,
@@ -189,7 +167,6 @@ class StageZeroABC(torch.nn.Module):
         for block in self.core.blocks:
             for name in (
                 "z",
-                "z_bar",
                 "a",
                 "r",
             ):

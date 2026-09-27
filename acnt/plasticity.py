@@ -1,11 +1,8 @@
-"""Connection-local plasticity for the production ACNT runtime.
+"""Connection-local eligibility storage and Goodness-modulated plasticity.
 
-Every parameter tensor owns one local eligibility trace q. Real elapsed time
-decays that trace, while each Block supplies only its own analytic local VJP
-contribution from the instantaneous perturbation. The one global Goodness
-scalar is converted to M = g_eff - g_bar before the ordinary parameters are
-updated. No autograd, Jacobian, e-prop state, credit assignment machinery, or
-global backward signal is used.
+Each registered parameter owns a real-time decaying eligibility trace.
+This module stores and applies eligibility contributions supplied by Blocks
+or Adapters. It does not define neuron perturbation or alter forward dynamics.
 """
 
 from collections.abc import Mapping
@@ -30,7 +27,6 @@ class Plasticity:
         learning_rate: float = 0.001,
         tau_q_s: float = 1.0,
         tau_g_s: float = 5.0,
-        perturbation_scale: float = 0.1,
         parameter_clip: tuple[float, float] | None = None,
     ) -> None:
         self.groups = {i: dict(parameters) for i, parameters in groups.items()}
@@ -57,15 +53,9 @@ class Plasticity:
         if not math.isfinite(tau_g_s) or tau_g_s <= 0:
             raise ValueError("tau_g_s must be finite and positive")
 
-        if not math.isfinite(perturbation_scale) or perturbation_scale <= 0:
-            raise ValueError(
-                "perturbation_scale must be finite and positive"
-            )
-
         self.learning_rate = float(learning_rate)
         self.tau_q_s = float(tau_q_s)
         self.tau_g_s = float(tau_g_s)
-        self.perturbation_scale = float(perturbation_scale)
 
         self.traces = {
             key: torch.zeros_like(p)
