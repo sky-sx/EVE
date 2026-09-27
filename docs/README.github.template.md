@@ -2,6 +2,8 @@
 
 > README 模板：替换所有 `{{占位符}}`，删除不适用项后使用。模板不是运行证据。
 
+当前候选：Persistent ΔW Plasticity，状态为 IMPLEMENTED / NOT YET FORMALLY VALIDATED。填入实测结果时区分单元测试、OR/XOR sanity 和正式 ACNT 行为学习。历史 Local Plasticity / CorrelationRule 报告仅为被替代机制的证据。
+
 {{项目用途、当前阶段、已验证能力及尚未验证的边界}}
 
 ## 安装与复现

@@ -97,24 +97,41 @@ Goodness 只有一个标量 g in [0,1]。当同一事件存在准确外部 g* �
 
 Goodness Block 与 Adapter 不用自己的输出自我强化。同刻存在 g* 时，它们只接收局部校准 c_g=g*-g。其他连接只接收唯一 g_eff。
 
-## 7. Local Plasticity Dynamics
+## 7. Persistent Delta-W Plasticity
 
-每个普通可塑参数元素维护自己的局部 eligibility 状态 e_c：
+这是候选长期学习机制，尚未正式验证行为学习能力。普通 Block / Adapter 的所有可塑参数元素（含 bias）组成 Θ；Goodness designated Block 与其 Adapter 整组排除，不允许用自身输出自我强化。calibrate_goodness 保留现有仅返回校准标量、不更新参数的接口。
 
-e_c <- exp(-Delta_t/tau_e) e_c + F(local_pre, local_post)
+每个普通参数张量对应同 shape、同 device 的持久 FP32 delta_w；它不是 nn.Parameter，requires_grad=False，也不参与 forward。
 
-Goodness 到达时：
+Δw_i^0 = s_i δ,  s_i ∈ {-1,+1},  P(s_i=+1)=P(s_i=-1)=1/2
 
-M = g_eff - G_bar
-Delta_w = eta M e
+δ = delta_magnitude，默认 0.001。第一版 |Δw_i| 固定，没有额外 learning rate、动量、权重衰减或自适应步幅。
 
-G_bar 按现有真实时间 EMA 更新。Goodness 子系统的校准沿现有 c_g 路径进行。Local Plasticity 不使用梯度、BPTT、policy gradient 或额外全局反馈。
+第一次有效 G 仅设置 previous_goodness=G，不移动 W、不反转 ΔW。在下一轮真实 forward 前，从所有普通参数元素的统一 flat 空间等概率、无放回抽样：
 
-Dense 参数的局部候选使用真实 linear input/output。bias 将输入视为常数 1。private grouped NLM linear 对 X[n,in]、Y[n,out] 定义：
+S_t ⊂ Θ
+|S_t| = max(1, floor(subset_fraction × |Θ|))，当 Θ 为空时不创建 movement。
 
-F_W[d,o,i] = Y[d,o] * X[d,i]
-F_b[d,o] = Y[d,o]
+subset_fraction 默认 0.001，是学习规则的一部分；不是按 tensor、Block 或 layer 抽样。参数注册顺序确定 flat offset，使用 sparse indices，不创建全模型 Boolean mask。独立 plasticity_seed 默认 0；初始化符号使用独立 CPU torch.Generator，subset 使用独立 random.Random，均以该 seed 初始化，不消耗 Hand/Route action RNG。ABC 与 sanity 使用 seed+300000。
 
-这里只允许同一 neuron d 的两端相乘。第一层 local post 是其真实 pre-GLU linear output；GLU 结果是第二层 local pre；第二层 local post 同样是 pre-GLU linear output。不构造 derivative。
+参数在正常 ReadIn → Core → ReadOut → environment → Goodness 前真实移动：
 
-Adapter 的 Linear/Conv 与离散 control terminal 继续使用同一局部 observer 框架。当前 CorrelationRule 是可替换的局部候选，不是额外架构轴。
+w_i^(t+1) = w_i^t + Δw_i^t,  i ∈ S_t
+w_i^(t+1) = w_i^t,           i ∉ S_t
+
+可选 parameter_clip 默认 None，仅裁剪刚移动的元素，不改变 ΔW。更新前后检查有限性；NaN/Inf 立即报错，裁剪不得隐藏溢出。
+
+新有效 Goodness 到达后，比较同一个 Goodness 的两个连续真实时刻：
+
+M_t = G_t - G_(t-1)
+
+Δw_i^(t+1) = -Δw_i^t,  当 M_t < 0 且 i ∈ S_t
+Δw_i^(t+1) =  Δw_i^t,  其他情况
+
+然后 previous_goodness=G_t，消费当前 pending subset。M_t 是 derived scalar，不是第二个评价系统。正变化和零变化都保持方向。坏结果绝对不 rollback W；未来再次抽到该元素时才按新方向移动。
+
+最多一个 unresolved learning trial。begin_trial 在已有 pending 时抛 RuntimeError，不覆盖旧 subset、不叠加新 movement；允许等待任意 idle delay 后消费对应 Goodness。无 pending 的有效 Goodness 可刷新比较基准，但不反转方向。调用方负责传递当前 trial 对应的 Goodness；本版不支持 overlapping delayed trials、跨冻结阶段的旧反馈或乱序 credit assignment。
+
+learn=False 时不移动 W、不反转 ΔW、不抽样、不消耗学习 RNG，并清除 previous_goodness 与 pending runtime credit。已发生的 movement 不回滚，长期 ΔW 保留。恢复学习的第一轮只建立新的 Goodness baseline。
+
+约束：no rollback；no autograd；no gradient；no eligibility；no BPTT；no replay requirement；single irreversible trajectory。生产路径没有局部 observer、学习 forward hook 或 backward cache。此机制不声称等价于梯度估计；它仅实现持久方向、随机稀疏参数运动、连续 Goodness 比较与方向保留/反转。

@@ -74,16 +74,12 @@ class Runtime(nn.Module):
         self.execution_enabled = {"hand": False, "speak": False, "route": True, "goodness": self.goodness_active}
         self.executors: dict = {}
         self.plasticity: Plasticity | None = None
-        # Discrete ReadOut eligibility is accumulated only while learning.
         self.learning = True
 
     def enable_plasticity(
         self,
         **hyperparameters,
     ) -> Plasticity:
-        if self.plasticity is not None:
-            self.plasticity.detach_adapters()
-
         reverse = {
             block_id: name
             for name, block_id
@@ -116,26 +112,6 @@ class Runtime(nn.Module):
             **hyperparameters,
         )
 
-        self.plasticity.attach_adapters(
-            self.adapters,
-            route_id=self.organ_blocks["route"],
-        )
-
-        for block in self.core.blocks:
-            def observer(
-                parameter,
-                contribution,
-                time_ms,
-                learner=self.plasticity,
-            ):
-                learner.accumulate(
-                    parameter,
-                    contribution,
-                    now_ms=time_ms,
-                )
-
-            block.local_observer = observer
-
         return self.plasticity
 
     @torch.no_grad()
@@ -149,8 +125,9 @@ class Runtime(nn.Module):
             self.enable_plasticity()
         self.learning = learn
         if self.plasticity is not None:
-            for block in self.core.blocks:
-                block.set_learning(learn)
+            self.plasticity.set_learning(learn)
+            if learn:
+                self.plasticity.begin_trial()
         updated = self.update_blocks(now_ms=now_ms, readins=readins)
         route = self.generate_route(now_ms=now_ms, generator=generator)
         hand = self.generate_hand(now_ms=now_ms, generator=generator)
@@ -164,7 +141,8 @@ class Runtime(nn.Module):
             "history_lengths": [len(block.A) for block in self.core.blocks],
             "z_norms": [float(block.z.norm()) for block in self.core.blocks],
             "g": float(goodness.g), "g_eff": goodness.g_eff, "teacher": goodness.teacher,
-            "calibration_loss": goodness.calibration_loss, "goodness_modulation": modulation,
+            "calibration_loss": goodness.calibration_loss, "goodness_delta": modulation,
+            "plasticity": self.plasticity.diagnostics() if self.plasticity else None,
             "route_sampled": route.a.tolist(),
             "hand_discrete": hand.discrete.a.tolist(), "hand_continuous": hand.continuous.detach().tolist(),
             "speak": speak.detach().tolist(), "mechanical_records": len(self.mechanical_log.records),
@@ -177,7 +155,9 @@ class Runtime(nn.Module):
         delivered_ms = signal.time_ms if delivered_ms is None else delivered_ms
         if type(delivered_ms) is not int or delivered_ms < signal.time_ms:
             raise ValueError("delivery cannot precede the goodness event")
-        return None if signal.g_eff is None else self.plasticity.apply_goodness(signal.g_eff, now_ms=delivered_ms)
+        if not self.learning or signal.g_eff is None:
+            return None
+        return self.plasticity.apply_goodness(signal.g_eff, now_ms=delivered_ms)
 
     def set_execution_enabled(self, name: str, enabled: bool) -> None:
         if name not in READOUTS or type(enabled) is not bool:
@@ -208,25 +188,11 @@ class Runtime(nn.Module):
         count = adapter.discrete_controls
         discrete = sample_discrete(raw[:count], tau=self.noise_scale, threshold=threshold, generator=generator)
         continuous = raw[count:]
-        if self.plasticity is not None:
-            self._observe_discrete("hand", discrete, now_ms=now_ms)
         self._emit("hand", {
             "discrete": dict(zip(HAND_DISCRETE_NAMES, discrete.a.tolist())),
             "continuous": {"dx": float(continuous[0].detach()), "dy": float(continuous[1].detach())},
         }, now_ms)
         return HandSignal(discrete, continuous)
-
-    def _observe_discrete(self, name: str, signal: DiscreteSignal, *, now_ms: int) -> None:
-        # The terminal itself sees q, its sampled Bernoulli event, and the
-        # analytic score. No global feedback is constructed.
-        if self.plasticity is None or not self.learning:
-            return
-        self.plasticity.observe_control(
-            name,
-            self.adapters[name],
-            signal,
-            now_ms=now_ms,
-        )
 
     @torch.no_grad()
     def generate_speak(self, *, now_ms: int = 0) -> Tensor:
@@ -280,9 +246,6 @@ class Runtime(nn.Module):
     def generate_route(self, *, now_ms: int = 0, generator: torch.Generator | None = None, threshold: float | Tensor = 0.0) -> DiscreteSignal:
         """q + independent Logistic noise + threshold -> next active set."""
         signal = sample_discrete(self.decode_readout("route", now_ms=now_ms), tau=self.noise_scale, threshold=threshold, generator=generator)
-        if self.plasticity is not None:
-            # Observe the actual terminal event before role overrides.
-            self._observe_discrete("route", signal, now_ms=now_ms)
         mask = signal.a.tolist()
         # Role invariants take precedence over route's stochastic proposals.
         mask[self.organ_blocks["route"]] = True
@@ -299,8 +262,6 @@ class Runtime(nn.Module):
         if name not in READINS:
             raise ValueError("only eye and ear are ReadIn organs")
         block = self.core.blocks[self.organ_blocks[name]]
-        if self.plasticity is not None:
-            self.plasticity.set_event_time(now_ms)
         o = self.adapters[name](external_input)
         block._check_vector(o, 2 * block.neuron_size, "ReadIn output")
         block.o = o
@@ -312,8 +273,6 @@ class Runtime(nn.Module):
         if name not in READOUTS:
             raise ValueError("only hand, speak, goodness and route are ReadOut organs")
         block = self.core.blocks[self.organ_blocks[name]]
-        if self.plasticity is not None:
-            self.plasticity.set_event_time(now_ms)
         return self.adapters[name](block.z)
 
     @torch.no_grad()
@@ -335,8 +294,6 @@ class Runtime(nn.Module):
         # Validate time before accepting an external input or changing flags.
         for i in range(len(self.core.blocks)):
             self.core.is_due(i, now_ms)
-        if self.plasticity is not None:
-            self.plasticity.set_event_time(now_ms)
         for name, external in inputs.items():
             self.encode_readin(name, external, now_ms=now_ms)
         forced = {self.organ_blocks[name] for name in inputs}

@@ -1,1 +1,1 @@
-"""Current Local Plasticity Stage 0 experiment."""
+"""Historical environment and report audit utilities; current protocol: stage_zero_abc."""

@@ -29,14 +29,14 @@ def test_same_time_teacher_is_effective_scalar(teacher,make_runtime):
     signal=runtime.generate_goodness(now_ms=100,teacher=teacher,teacher_time_ms=100)
     assert signal.g_eff==teacher
     assert signal.calibration_loss==pytest.approx(.5*(teacher-.25)**2)
-    # Teacher calibration reports c_g only; it reuses no eligibility trace.
+    # Teacher calibration reports c_g only; it does not move parameters.
     assert torch.equal(adapter.linear.bias,before)
 
 
 def test_local_calibration_excludes_ordinary_groups(make_runtime):
     runtime=make_runtime()
     adapter=configure(runtime,.25)
-    learner=runtime.enable_plasticity(learning_rate=.1)
+    learner=runtime.enable_plasticity(delta_magnitude=.1)
     initial={id(p):p.clone() for p in runtime.parameters()}
     signal=runtime.generate_goodness(now_ms=0,teacher=.75)
     assert signal.g_eff==.75

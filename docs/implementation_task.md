@@ -1,13 +1,11 @@
 # 当前 ACNT 工程缺口
 
-当前实现边界以 [canonical_architecture.txt](canonical_architecture.txt) 为唯一规范。Block 已实现 snapshot synapse mixing、A/At、real-time age/validity 与 grouped per-neuron private NLM；Local Plasticity 已观察全部 NLM grouped 参数，且不使用 autograd。
+唯一规范见 [canonical_architecture.txt](canonical_architecture.txt)。普通 Block / Adapter 参数已统一交给 Persistent ΔW Plasticity；Goodness designated group 排除。Block 仅负责神经动力学；学习在 forward 前进行稀疏真实参数运动，在 Goodness 后决定未来方向。
 
-仍待实现或核验：
+1. 在固定 source hash、独立种子和短预算预检基础上，正式验证 [ABC Stage Zero](stage_zero_plan.md)。单元测试和参数变化不证明行为学习。
+2. 研究连续 Goodness 差值在输入变化、随机动作和世界变化下的混杂因素，以及长期稳定性与固定步幅适用范围。
+3. delayed Goodness 当前仅允许一个未评价 trial；overlapping trials 尚未定义，不能绕过 unresolved 检查。
+4. 接入真实截图、音频与键鼠执行；机械结果不得返回 Core。Speak 到声学几何的映射仍待接入。
+5. 通用 checkpoint 恢复仍需独立设计；ABC checkpoint 保存方向、学习 RNG、参数和诊断用于检查，不声称能完整恢复世界轨迹。
 
-1. 接入真实截图与音频采集，同时保持 EVE 的感知边界。
-2. 接入键鼠 DirectInput 机械执行；执行结果与失败不得返回 Core。
-3. 将 Speak 的连续输出接入约 30 维发声器官到声学几何的映射。
-4. 在 corrected source hash 上重新执行正式 Stage Zero；修正前的长训练结果不能用于判断当前 Block。
-5. 为当前 CorrelationRule 继续建立可复现实验与独立审计。参数发生变化、一次 smoke 或非零 eligibility 都不等于学会任务。
-
-旧实验和候选机制只留在历史归档，不接回生产运行路径。
+不升级版本号，不增加其他 production learning mode。历史实验代码和数字仅供历史审计。

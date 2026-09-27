@@ -1,517 +1,189 @@
-"""Connection-local eligibility storage and Goodness-modulated plasticity.
+"""Persistent parameter directions on a single irreversible trajectory."""
 
-Each registered parameter owns a real-time decaying eligibility trace.
-This module stores and applies eligibility contributions supplied by Blocks
-or Adapters. It does not define neuron perturbation or alter forward dynamics.
-"""
-
+from bisect import bisect_right
 from collections.abc import Mapping
 import math
+import random
 
 import torch
-from torch import Tensor, nn
+from torch import nn
 
 
 class Plasticity:
-    """One eligibility trace per parameter element, owned by its Block or Adapter.
+    """Move a global sparse subset before forward; evaluate its direction once.
 
-    When present, the goodness Block and Adapter only receive c_g. Every other
-    connection receives the one global g_eff when that scalar arrives.
+    A bad result reverses selected directions, never the parameter movement.
+    Parameter registration order defines the reproducible flat sampling space.
+    Move modules to their final device before registering their parameters.
     """
 
-    def __init__(
-        self,
-        groups: Mapping[int, Mapping[str, nn.Parameter]],
-        goodness_id: int | None,
-        *,
-        learning_rate: float = 0.001,
-        tau_q_s: float = 1.0,
-        tau_g_s: float = 5.0,
-        parameter_clip: tuple[float, float] | None = None,
-    ) -> None:
-        self.groups = {i: dict(parameters) for i, parameters in groups.items()}
+    @torch.no_grad()
+    def __init__(self, groups: Mapping[int, Mapping[str, nn.Parameter]],
+                 goodness_id: int | None, *, delta_magnitude: float = 0.001,
+                 subset_fraction: float = 0.001, plasticity_seed: int = 0,
+                 parameter_clip: tuple[float, float] | None = None) -> None:
+        self.groups = {i: dict(group) for i, group in groups.items()}
         if goodness_id is not None and goodness_id not in self.groups:
             raise ValueError("goodness Block must have a parameter group")
         self.goodness_id = goodness_id
-        self.parameters = {id(p): p for group in self.groups.values() for p in group.values()}
-        if len(self.parameters) != sum(len(group) for group in self.groups.values()):
+        all_parameters = [p for group in self.groups.values() for p in group.values()]
+        if len({id(p) for p in all_parameters}) != len(all_parameters):
             raise ValueError("each parameter must belong to exactly one Block group")
+        if not math.isfinite(delta_magnitude) or delta_magnitude <= 0:
+            raise ValueError("delta_magnitude must be finite and positive")
+        magnitude = torch.tensor(delta_magnitude, dtype=torch.float32)
+        if not torch.isfinite(magnitude) or magnitude <= 0:
+            raise ValueError("delta_magnitude must be representable in FP32")
+        if not math.isfinite(subset_fraction) or not 0 < subset_fraction <= 1:
+            raise ValueError("subset_fraction must be in (0,1]")
+        if type(plasticity_seed) is not int:
+            raise ValueError("plasticity_seed must be an integer")
         if parameter_clip is not None and (
             len(parameter_clip) != 2 or
             not all(math.isfinite(v) for v in parameter_clip) or
             parameter_clip[0] > parameter_clip[1]
         ):
             raise ValueError("parameter_clip must be ordered finite bounds")
+        for p in all_parameters:
+            if p.dtype != torch.float32 or not p.is_contiguous():
+                raise ValueError("parameters must be contiguous FP32 tensors")
+            if not torch.isfinite(p).all():
+                raise FloatingPointError("non-finite parameter")
+        self.parameters = {id(p): p for i, group in self.groups.items()
+                           if i != goodness_id for p in group.values()}
+        self.delta_magnitude = float(delta_magnitude)
+        self.subset_fraction = float(subset_fraction)
+        self.plasticity_seed = plasticity_seed
         self.parameter_clip = parameter_clip
-
-        if not math.isfinite(learning_rate) or learning_rate < 0:
-            raise ValueError("learning_rate must be finite and nonnegative")
-
-        if not math.isfinite(tau_q_s) or tau_q_s <= 0:
-            raise ValueError("tau_q_s must be finite and positive")
-
-        if not math.isfinite(tau_g_s) or tau_g_s <= 0:
-            raise ValueError("tau_g_s must be finite and positive")
-
-        self.learning_rate = float(learning_rate)
-        self.tau_q_s = float(tau_q_s)
-        self.tau_g_s = float(tau_g_s)
-
-        self.traces = {
-            key: torch.zeros_like(p)
+        # Both streams belong exclusively to learning, independent of action RNG.
+        self.rng = random.Random(plasticity_seed)
+        signs = torch.Generator(device="cpu").manual_seed(plasticity_seed)
+        self.delta_w = {
+            key: (torch.randint(0, 2, p.shape, generator=signs, dtype=torch.int64)
+                  .to(device=p.device, dtype=torch.float32).mul_(2).sub_(1).mul_(magnitude.item()))
             for key, p in self.parameters.items()
         }
+        self._keys = list(self.parameters)
+        self._ends = []
+        total = 0
+        for p in self.parameters.values():
+            total += p.numel()
+            self._ends.append(total)
+        self.total_elements = total
+        self.learning = True
+        self.reset_credit()
 
-        self.trace_times_ms: dict[int, int | None] = {
-            key: None
-            for key in self.parameters
-        }
-        self.g_bar = 0.5
+    def reset_credit(self) -> None:
+        """Discard runtime comparison state, preserving W, directions and RNG."""
+        self.previous_goodness: float | None = None
         self.goodness_time_ms: int | None = None
-        self._event_time_ms: int | None = None
-        self._excluded_controls: dict[int, int] = {}
-        self._hooks = []
-        self._discrete_adapters: dict[
-            str,
-            tuple[nn.Module, dict],
-        ] = {}
+        self.pending_indices: tuple[int, ...] | None = None
+        self._pending: dict[int, torch.Tensor] = {}
+        self.selected_parameter_count = 0
+        self.delta_flip_count = 0
+        self.goodness_delta: float | None = None
 
-    def attach_adapters(
-        self,
-        adapters: Mapping[str, nn.Module],
-        *,
-        route_id: int | None = None,
-    ) -> None:
-        self.detach_adapters()
+    def set_learning(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be bool")
+        if not enabled or enabled != self.learning:
+            self.reset_credit()
+        self.learning = enabled
 
-        for name in ("hand", "route"):
-            if name not in adapters:
-                continue
+    def _validate_finite(self) -> None:
+        for key, p in self.parameters.items():
+            d = self.delta_w[key]
+            if p.device != d.device or p.dtype != torch.float32:
+                raise ValueError("registered parameter device/dtype changed")
+            if not torch.isfinite(p).all() or not torch.isfinite(d).all():
+                raise FloatingPointError("non-finite parameter or delta_w")
 
-            adapter = adapters[name]
+    @torch.no_grad()
+    def begin_trial(self) -> int:
+        if not self.learning:
+            return 0
+        if self.pending_indices is not None:
+            raise RuntimeError("unresolved learning trial requires Goodness before another movement")
+        self.selected_parameter_count = 0
+        self.delta_flip_count = 0
+        self.goodness_delta = None
+        if self.previous_goodness is None or not self.total_elements:
+            return 0
+        self._validate_finite()
+        count = max(1, math.floor(self.total_elements * self.subset_fraction))
+        # Uniform sampling without replacement, O(k) storage at sparse fractions.
+        selected = tuple(sorted(self.rng.sample(range(self.total_elements), count)))
+        local = {}
+        for index in selected:
+            slot = bisect_right(self._ends, index)
+            offset = self._ends[slot - 1] if slot else 0
+            local.setdefault(self._keys[slot], []).append(index - offset)
+        updates = {}
+        pending = {}
+        for key, indices in local.items():
+            p = self.parameters[key]
+            idx = torch.tensor(indices, dtype=torch.long, device=p.device)
+            proposed = p.view(-1)[idx] + self.delta_w[key].view(-1)[idx]
+            # Detect overflow before clipping could hide it.
+            if not torch.isfinite(proposed).all():
+                raise FloatingPointError("non-finite proposed parameter")
+            if self.parameter_clip is not None:
+                proposed.clamp_(*self.parameter_clip)
+            if not torch.isfinite(proposed).all():
+                raise FloatingPointError("non-finite clipped parameter")
+            pending[key] = idx
+            updates[key] = proposed
+        for key, values in updates.items():
+            self.parameters[key].view(-1)[pending[key]] = values
+        self.pending_indices = selected
+        self._pending = pending
+        self.selected_parameter_count = count
+        self._validate_finite()
+        return count
 
-            linears = [
-                module
-                for module in adapter.modules()
-                if isinstance(module, nn.Linear)
-            ]
-
-            if not linears:
-                raise ValueError(
-                    f"{name} requires at least one Linear layer"
-                )
-
-            cache: dict = {
-                "layers": [],
-            }
-
-            def make_hook(cache_ref):
-                @torch.no_grad()
-                def hook(module, inputs, output):
-                    cache_ref["layers"].append({
-                        "module": module,
-                        "input": inputs[0].detach().clone(),
-                        "output": output.detach().clone(),
-                    })
-                return hook
-
-            hook = make_hook(cache)
-            for layer in linears:
-                self._hooks.append(
-                    layer.register_forward_hook(hook)
-                )
-
-            self._discrete_adapters[name] = (
-                adapter,
-                cache,
-            )
-
-        if (
-            "route" in adapters
-            and route_id is not None
-        ):
-            self._excluded_controls[
-                id(adapters["route"])
-            ] = route_id
-
-    def detach_adapters(self) -> None:
-        for hook in self._hooks:
-            hook.remove()
-
-        self._hooks.clear()
-
-        if hasattr(self, "_discrete_adapters"):
-            self._discrete_adapters.clear()
-
-        self._excluded_controls.clear()
-
-    def set_event_time(self, now_ms: int) -> None:
-        """Record the real timestamp of the current scheduling event."""
-        self._validate_time(now_ms, "local event time")
-        self._event_time_ms = now_ms
-
-    @staticmethod
-    def _validate_time(now_ms: int | None, label: str) -> None:
+    @torch.no_grad()
+    def apply_goodness(self, g_eff: float, *, now_ms: int) -> float | None:
+        if not self.learning:
+            return None
+        if not math.isfinite(g_eff) or not 0 <= g_eff <= 1:
+            raise ValueError("effective goodness must be in [0,1]")
         if type(now_ms) is not int:
-            raise ValueError(f"{label} must be integer milliseconds")
-
-    def _decay_trace(
-        self,
-        key: int,
-        now_ms: int,
-    ) -> None:
-        last_ms = self.trace_times_ms[key]
-
-        if last_ms is not None:
-            if now_ms < last_ms:
-                raise ValueError(
-                    "eligibility time must not move backwards"
-                )
-
-            dt_s = (now_ms - last_ms) / 1000.0
-            decay = math.exp(-dt_s / self.tau_q_s)
-
-            self.traces[key].mul_(decay)
-
-        self.trace_times_ms[key] = now_ms
-
-    def _decay_groups(
-        self,
-        block_ids,
-        now_ms: int,
-    ) -> tuple[int, ...]:
-        ids = tuple(block_ids)
-
-        for block_id in ids:
-            for parameter in self.groups[block_id].values():
-                self._decay_trace(
-                    id(parameter),
-                    now_ms,
-                )
-
-        return ids
-
-    @torch.no_grad()
-    def accumulate(
-        self,
-        parameter: nn.Parameter,
-        contribution: Tensor,
-        *,
-        now_ms: int,
-    ) -> None:
-        key = id(parameter)
-
-        if key not in self.traces:
-            raise ValueError(
-                "eligibility parameter is not registered"
-            )
-
-        self._validate_time(
-            now_ms,
-            "local eligibility time",
-        )
-
-        if contribution.shape != parameter.shape:
-            raise ValueError(
-                "eligibility contribution shape mismatch"
-            )
-
-        if contribution.dtype != parameter.dtype:
-            raise ValueError(
-                "eligibility contribution dtype mismatch"
-            )
-
-        if contribution.device != parameter.device:
-            raise ValueError(
-                "eligibility contribution device mismatch"
-            )
-
-        if not torch.isfinite(contribution).all():
-            raise FloatingPointError(
-                "non-finite eligibility contribution"
-            )
-
-        self._decay_trace(
-            key,
-            now_ms,
-        )
-
-        self.traces[key].add_(
-            contribution.detach()
-        )
-
-        if not torch.isfinite(self.traces[key]).all():
-            raise FloatingPointError(
-                "non-finite eligibility trace"
-            )
-
-    @torch.no_grad()
-    def observe_control(
-        self,
-        name: str,
-        adapter: nn.Module,
-        signal,
-        *,
-        now_ms: int,
-    ) -> None:
-        self._validate_time(
-            now_ms,
-            "local eligibility time",
-        )
-
-        if name not in self._discrete_adapters:
-            raise ValueError(
-                f"{name} discrete adapter is not attached"
-            )
-
-        attached_adapter, cache = self._discrete_adapters[name]
-
-        if attached_adapter is not adapter:
-            raise ValueError(
-                "discrete adapter mismatch"
-            )
-
-        layers = cache["layers"]
-
-        if not layers:
-            raise ValueError(
-                "discrete adapter must run before observe_control"
-            )
-
-        score = (
-            signal.a.to(signal.p.dtype)
-            - signal.p
-        ) / signal.tau
-
-        excluded = self._excluded_controls.get(
-            id(adapter)
-        )
-
-        if excluded is not None:
-            score = score.clone()
-            if 0 <= excluded < score.numel():
-                score[excluded] = 0.0
-
-        terminal_info = layers[-1]
-        terminal = terminal_info["module"]
-        terminal_input = terminal_info["input"]
-
-        count = signal.q.numel()
-
-        if terminal.out_features < count:
-            raise ValueError(
-                "terminal layer has fewer outputs than discrete controls"
-            )
-
-        delta = torch.zeros(
-            terminal.out_features,
-            dtype=terminal_input.dtype,
-            device=terminal_input.device,
-        )
-
-        delta[:count] = score
-
-        self.accumulate(
-            terminal.weight,
-            delta.unsqueeze(1)
-            * terminal_input.unsqueeze(0),
-            now_ms=now_ms,
-        )
-
-        if terminal.bias is not None:
-            self.accumulate(
-                terminal.bias,
-                delta,
-                now_ms=now_ms,
-            )
-
-        if len(layers) >= 2:
-            previous_info = layers[-2]
-            previous = previous_info["module"]
-            previous_input = previous_info["input"]
-            previous_output = previous_info["output"]
-
-            hidden_delta = (
-                terminal.weight.detach().T
-                @ delta
-            )
-
-            hidden_delta = hidden_delta * (
-                previous_output > 0
-            ).to(hidden_delta.dtype)
-
-            self.accumulate(
-                previous.weight,
-                hidden_delta.unsqueeze(1)
-                * previous_input.unsqueeze(0),
-                now_ms=now_ms,
-            )
-
-            if previous.bias is not None:
-                self.accumulate(
-                    previous.bias,
-                    hidden_delta,
-                    now_ms=now_ms,
-                )
-
-        cache["layers"].clear()
-
-    @torch.no_grad()
-    def _apply(
-        self,
-        block_ids,
-        scalar: float,
-        *,
-        teacher: bool = False,
-    ) -> float:
-        if not math.isfinite(scalar):
-            raise ValueError(
-                "plasticity modulator must be finite"
-            )
-
-        proposals = []
-
-        for block_id in block_ids:
-            for parameter in self.groups[block_id].values():
-                trace = self.traces[id(parameter)]
-
-                value = (
-                    parameter.detach()
-                    + self.learning_rate
-                    * scalar
-                    * trace
-                )
-
-                if self.parameter_clip is not None:
-                    value = value.clamp(
-                        *self.parameter_clip
-                    )
-
-                if (
-                    value.shape != parameter.shape
-                    or not torch.isfinite(value).all()
-                ):
-                    raise FloatingPointError(
-                        "plasticity proposed an invalid parameter"
-                    )
-
-                proposals.append(
-                    (parameter, value)
-                )
-
-        for parameter, value in proposals:
-            parameter.copy_(value)
-
-        return scalar
-
-    def apply_goodness(
-        self,
-        g_eff: float,
-        *,
-        now_ms: int,
-    ) -> float:
-        if (
-            not math.isfinite(g_eff)
-            or not 0 <= g_eff <= 1
-        ):
-            raise ValueError(
-                "effective goodness must be in [0,1]"
-            )
-
-        self._validate_time(
-            now_ms,
-            "goodness delivery time",
-        )
-
-        block_ids = self._decay_groups(
-            (
-                i
-                for i in self.groups
-                if i != self.goodness_id
-            ),
-            now_ms,
-        )
-
-        if (
-            self.goodness_time_ms is not None
-            and now_ms < self.goodness_time_ms
-        ):
-            raise ValueError(
-                "goodness time must not move backwards"
-            )
-
-        modulation = (
-            float(g_eff)
-            - self.g_bar
-        )
-
-        self._apply(
-            block_ids,
-            modulation,
-        )
-
-        delta_ms = (
-            0
-            if self.goodness_time_ms is None
-            else now_ms - self.goodness_time_ms
-        )
-
-        retention = math.exp(
-            -(delta_ms / 1000.0)
-            / self.tau_g_s
-        )
-
-        self.g_bar = (
-            retention * self.g_bar
-            + (1.0 - retention)
-            * float(g_eff)
-        )
-
+            raise ValueError("goodness time must be integer milliseconds")
+        if self.goodness_time_ms is not None and now_ms < self.goodness_time_ms:
+            raise ValueError("goodness time must not move backwards")
+        self._validate_finite()
+        change = None if self.previous_goodness is None else float(g_eff) - self.previous_goodness
+        self.delta_flip_count = 0
+        if change is not None and change < 0 and self.pending_indices is not None:
+            for key, indices in self._pending.items():
+                d = self.delta_w[key].view(-1)
+                d[indices] = -d[indices]
+            self.delta_flip_count = len(self.pending_indices)
+        self.previous_goodness = float(g_eff)
         self.goodness_time_ms = now_ms
+        self.goodness_delta = change
+        self.pending_indices = None
+        self._pending = {}
+        self._validate_finite()
+        return change
 
-        return modulation
-
-    @torch.no_grad()
-    def calibrate_goodness(
-        self,
-        c_g: float,
-        *,
-        now_ms: int,
-    ) -> float:
+    def calibrate_goodness(self, c_g: float, *, now_ms: int) -> float:
+        """Preserve the existing scalar-only calibration interface; no update."""
         if self.goodness_id is None:
-            raise RuntimeError(
-                "no goodness Block is registered"
-            )
-
-        if (
-            not math.isfinite(c_g)
-            or not -1 <= c_g <= 1
-        ):
-            raise ValueError(
-                "calibration scalar must be in [-1,1]"
-            )
-
-        self._validate_time(
-            now_ms,
-            "goodness calibration time",
-        )
-
+            raise RuntimeError("no goodness Block is registered")
+        if not math.isfinite(c_g) or not -1 <= c_g <= 1:
+            raise ValueError("calibration scalar must be in [-1,1]")
+        if type(now_ms) is not int:
+            raise ValueError("goodness calibration time must be integer milliseconds")
         return float(c_g)
 
-    def clear(self) -> None:
-        for trace in self.traces.values():
-            trace.zero_()
-
-        for key in self.trace_times_ms:
-            self.trace_times_ms[key] = None
-
-        self.g_bar = 0.5
-        self.goodness_time_ms = None
-        self._event_time_ms = None
-
-        for _, cache in getattr(
-            self,
-            "_discrete_adapters",
-            {},
-        ).values():
-            cache["layers"].clear()
+    def diagnostics(self) -> dict:
+        return {"parameter_elements": self.total_elements,
+                "selected_parameter_count": self.selected_parameter_count,
+                "delta_flip_count": self.delta_flip_count,
+                "goodness_delta": self.goodness_delta,
+                "previous_goodness": self.previous_goodness,
+                "pending": self.pending_indices is not None,
+                "delta_magnitude": self.delta_magnitude,
+                "subset_fraction": self.subset_fraction,
+                "plasticity_seed": self.plasticity_seed}

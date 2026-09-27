@@ -32,9 +32,9 @@ class StageZeroABC(torch.nn.Module):
         seed: int,
         device: str = "cpu",
         *,
-        learning_rate: float = 0.001,
-        tau_q_s: float = 1.0,
-        tau_g_s: float = 5.0,
+        delta_magnitude: float = 0.001,
+        subset_fraction: float = 0.001,
+        plasticity_seed: int | None = None,
         action_tau: float = 0.25,
     ) -> None:
         super().__init__()
@@ -99,9 +99,9 @@ class StageZeroABC(torch.nn.Module):
         self.plasticity = Plasticity(
             self.groups,
             goodness_id=None,
-            learning_rate=learning_rate,
-            tau_q_s=tau_q_s,
-            tau_g_s=tau_g_s,
+            delta_magnitude=delta_magnitude,
+            subset_fraction=subset_fraction,
+            plasticity_seed=seed + 300000 if plasticity_seed is None else plasticity_seed,
         )
 
         self.action_tau = float(action_tau)
@@ -117,44 +117,9 @@ class StageZeroABC(torch.nn.Module):
 
         self.set_learning(False)
 
-    def _observe_block(
-        self,
-        parameter,
-        contribution,
-        time_ms,
-    ) -> None:
-        self.plasticity.accumulate(
-            parameter,
-            contribution,
-            now_ms=time_ms,
-        )
-
-    def set_learning(
-        self,
-        learning: bool,
-    ) -> None:
-        if type(learning) is not bool:
-            raise TypeError(
-                "learning must be bool"
-            )
-
-        self.plasticity.detach_adapters()
-
+    def set_learning(self, learning: bool) -> None:
+        self.plasticity.set_learning(learning)
         self._learning = learning
-
-        if learning:
-            self.plasticity.attach_adapters({
-                "hand": self.hand,
-            })
-
-        for block in self.core.blocks:
-            block.local_observer = (
-                self._observe_block
-                if learning
-                else None
-            )
-
-            block.set_learning(learning)
 
     def reset_phase(
         self,
@@ -162,27 +127,7 @@ class StageZeroABC(torch.nn.Module):
     ) -> None:
         self.set_learning(learning)
 
-        self.plasticity.clear()
-
-        for block in self.core.blocks:
-            for name in (
-                "z",
-                "a",
-                "r",
-            ):
-                getattr(
-                    block,
-                    name,
-                ).zero_()
-
-            if block.o is not None:
-                block.o.zero_()
-
-            block.A.clear()
-            block.At.clear()
-            block.learning_frames.clear()
-
-            block.active = True
+        self.plasticity.reset_credit()
 
         self._previous = {
             id(parameter):
@@ -289,7 +234,7 @@ class StageZeroABC(torch.nn.Module):
             ),
         }
 
-    def trace_stats(self):
+    def delta_w_stats(self):
         block0 = list(
             self.core.blocks[0]
             .parameters()
@@ -311,35 +256,35 @@ class StageZeroABC(torch.nn.Module):
 
         return {
             "block0": self._summarize(
-                self.plasticity.traces[
+                self.plasticity.delta_w[
                     id(parameter)
                 ]
                 for parameter
                 in block0
             ),
             "block1": self._summarize(
-                self.plasticity.traces[
+                self.plasticity.delta_w[
                     id(parameter)
                 ]
                 for parameter
                 in block1
             ),
             "hand": self._summarize(
-                self.plasticity.traces[
+                self.plasticity.delta_w[
                     id(parameter)
                 ]
                 for parameter
                 in hand
             ),
             "terminal_hand": self._summarize(
-                self.plasticity.traces[
+                self.plasticity.delta_w[
                     id(parameter)
                 ]
                 for parameter
                 in terminal
             ),
             "total": self._summarize(
-                self.plasticity.traces.values()
+                self.plasticity.delta_w.values()
             ),
         }
 
@@ -358,6 +303,9 @@ class StageZeroABC(torch.nn.Module):
             raise ValueError(
                 "ABC baseline requires delay_ms == 0"
             )
+
+        if self._learning:
+            self.plasticity.begin_trial()
 
         frame_times = [
             start_ms
@@ -400,14 +348,6 @@ class StageZeroABC(torch.nn.Module):
             generator=action_generator,
         )
 
-        if self._learning:
-            self.plasticity.observe_control(
-                "hand",
-                self.hand,
-                signal,
-                now_ms=action_time,
-            )
-
         goodness = potential_goodness(
             target,
             signal.a,
@@ -422,32 +362,9 @@ class StageZeroABC(torch.nn.Module):
             action_time + delay_ms
         )
 
-        trace_before_goodness = (
-            self.trace_stats()
-        )
-
-        g_bar_before = (
-            self.plasticity.g_bar
-        )
-
-        modulation = None
-
+        goodness_delta = None
         if self._learning:
-            modulation = (
-                self.plasticity
-                .apply_goodness(
-                    goodness,
-                    now_ms=goodness_time,
-                )
-            )
-
-        trace_after_goodness = (
-            self.trace_stats()
-        )
-
-        g_bar_after = (
-            self.plasticity.g_bar
-        )
+            goodness_delta = self.plasticity.apply_goodness(goodness, now_ms=goodness_time)
 
         parameter_norm, parameter_delta = (
             self._parameter_stats()
@@ -501,7 +418,7 @@ class StageZeroABC(torch.nn.Module):
             .parameters
             .values(),
             *self.plasticity
-            .traces
+            .delta_w
             .values(),
         ]
 
@@ -562,16 +479,10 @@ class StageZeroABC(torch.nn.Module):
                 parameter_norm,
             "parameter_delta_norm":
                 parameter_delta,
-            "eligibility_trace":
-                trace_after_goodness,
-            "pre_goodness_eligibility_trace":
-                trace_before_goodness,
-            "g_bar_before":
-                g_bar_before,
-            "g_bar_after":
-                g_bar_after,
-            "goodness_modulation":
-                modulation,
+            "delta_w": self.delta_w_stats(),
+            "selected_parameter_count": self.plasticity.selected_parameter_count,
+            "delta_flip_count": self.plasticity.delta_flip_count,
+            "goodness_delta": goodness_delta,
             "nan_count":
                 nan_count,
             "inf_count":
@@ -626,10 +537,10 @@ class StageZeroABC(torch.nn.Module):
                     self.core.state_dict(),
                 "hand":
                     self.hand.state_dict(),
-                "eligibility_traces": {
+                "delta_w": {
                     f"{i}:{name}":
                         self.plasticity
-                        .traces[
+                        .delta_w[
                             id(parameter)
                         ]
                         .detach()
@@ -639,8 +550,10 @@ class StageZeroABC(torch.nn.Module):
                     for name, parameter
                     in group.items()
                 },
-                "seed":
-                    self.seed,
+                "plasticity_rng": self.plasticity.rng.getstate(),
+                "plasticity_diagnostics": self.plasticity.diagnostics(),
+                "pending_indices": self.plasticity.pending_indices,
+                "seed": self.seed,
             },
             path,
         )

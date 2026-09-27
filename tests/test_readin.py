@@ -74,7 +74,7 @@ def test_readin_o_is_one_pulse_and_zero_sample_is_a_real_event(make_runtime):
     hook.remove()
 
 
-def test_runtime_forced_readin_and_local_tags_ignore_visitation_order(make_runtime):
+def test_runtime_forced_readin_and_directions_ignore_visitation_order(make_runtime):
     left, right = make_runtime(), make_runtime()
     for runtime in (left, right):
         runtime.enable_plasticity()
@@ -88,6 +88,8 @@ def test_runtime_forced_readin_and_local_tags_ignore_visitation_order(make_runti
                 torch.testing.assert_close(getattr(a, key), getattr(b, key), rtol=0, atol=0)
             assert list(a.At) == list(b.At)
         for i in range(8):
+            if i == left.plasticity.goodness_id:
+                continue
             for name, parameter in left.plasticity.groups[i].items():
                 other = right.plasticity.groups[i][name]
-                torch.testing.assert_close(left.plasticity.traces[id(parameter)], right.plasticity.traces[id(other)], rtol=0, atol=0)
+                torch.testing.assert_close(left.plasticity.delta_w[id(parameter)], right.plasticity.delta_w[id(other)], rtol=0, atol=0)

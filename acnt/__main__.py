@@ -45,7 +45,7 @@ def build_mock_runtime(*, log_file: str | None = None, seed: int = 41) -> Runtim
     }
     runtime = Runtime(core, adapters, dict(zip(ORGANS, range(6))))
     runtime.mechanical_log = MechanicalLog(log_file)
-    runtime.enable_plasticity(learning_rate=0.0001, tau_q_s=1.0, tau_g_s=5.0, parameter_clip=(-10., 10.))
+    runtime.enable_plasticity(delta_magnitude=0.001, subset_fraction=0.001, plasticity_seed=0)
     with torch.no_grad():
         for block in core.blocks:
             block.z.copy_(torch.linspace(-0.5, 0.5, n))
@@ -89,7 +89,7 @@ def main() -> None:
             "changed_parameter_tensors": [name for name, p in runtime.named_parameters() if not torch.equal(p, before[name])],
             "teacher_steps": [row["tick"] for row in rows if row["teacher"] is not None],
             "distinct_active_sets": len({tuple(row["next_active"]) for row in rows}),
-            "local_plasticity": True, "stage_0_run": False,
+            "persistent_delta_w": True, "stage_0_run": False,
         }
         target = Path(args.summary_file)
         target.parent.mkdir(parents=True, exist_ok=True)

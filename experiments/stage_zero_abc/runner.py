@@ -36,9 +36,8 @@ DEFAULT_SEEDS = (
 
 DEFAULT_DEVICE = "cuda"
 
-LEARNING_RATE = 0.001
-TAU_Q_S = 1.0
-TAU_G_S = 5.0
+DELTA_MAGNITUDE = 0.001
+SUBSET_FRACTION = 0.001
 ACTION_TAU = 0.25
 
 SCHEMA = 1
@@ -106,21 +105,17 @@ def config(
         "exact_success":
             "target is the only active bit; evaluation only",
 
-        "learning_rate":
-            LEARNING_RATE,
-
-        "tau_q_s":
-            TAU_Q_S,
-
-        "tau_g_s":
-            TAU_G_S,
+        "learning_mechanism": "Persistent Delta-W Plasticity",
+        "delta_magnitude": DELTA_MAGNITUDE,
+        "subset_fraction": SUBSET_FRACTION,
+        "plasticity_seed_rule": "seed + 300000",
 
         "action_tau":
             ACTION_TAU,
 
         "threshold": 0.0,
 
-        "g_bar_initial": 0.5,
+        "previous_goodness_initial": None,
 
         "parameter_clip": None,
 
@@ -251,17 +246,17 @@ def aggregate(
                 ]
                 for row in rows
             ) / n,
-        "trace_total_l2_mean":
+        "delta_w_total_l2_mean":
             sum(
                 row[
-                    "eligibility_trace"
+                    "delta_w"
                 ]["total"]["l2"]
                 for row in rows
             ) / n,
-        "trace_total_l2_max":
+        "delta_w_total_l2_max":
             max(
                 row[
-                    "eligibility_trace"
+                    "delta_w"
                 ]["total"]["l2"]
                 for row in rows
             ),
@@ -352,9 +347,8 @@ def run_seed(
     model = StageZeroABC(
         seed,
         device,
-        learning_rate=LEARNING_RATE,
-        tau_q_s=TAU_Q_S,
-        tau_g_s=TAU_G_S,
+        delta_magnitude=DELTA_MAGNITUDE,
+        subset_fraction=SUBSET_FRACTION,
         action_tau=ACTION_TAU,
     )
 
@@ -378,7 +372,6 @@ def run_seed(
         / f"seed_{seed}.jsonl"
     )
 
-    initial_g_bar = None
 
     with raw_path.open(
         "w",
@@ -401,16 +394,6 @@ def run_seed(
                     phase_index,
                 )
             )
-
-            if phase == "training":
-                if initial_g_bar is None:
-                    raise AssertionError(
-                        "initial phase must run before training"
-                    )
-
-                model.plasticity.g_bar = (
-                    initial_g_bar
-                )
 
             action_generator = (
                 torch.Generator(
@@ -457,16 +440,6 @@ def run_seed(
                 clock_ms = (
                     row["goodness_time_ms"]
                     + 250
-                )
-
-            if phase == "initial":
-                initial_g_bar = (
-                    sum(
-                        row["g_star"]
-                        for row
-                        in phase_rows
-                    )
-                    / len(phase_rows)
                 )
 
             log.flush()

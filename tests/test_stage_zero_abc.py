@@ -214,114 +214,28 @@ def test_abc_has_no_trainable_input_adapter():
     )
 
 
-def test_frozen_abc_has_no_perturbation_trace_or_parameter_update():
-    model = StageZeroABC(
-        11,
-    )
-
-    model.reset_phase(
-        False
-    )
-
-    before = {
-        id(parameter):
-        parameter.clone()
-        for parameter
-        in model.plasticity
-        .parameters
-        .values()
-    }
-
-    action_generator = (
-        torch.Generator()
-        .manual_seed(19)
-    )
-
-    model.episode(
-        phase="frozen",
-        episode=0,
-        target=0,
-        delay_ms=0,
-        start_ms=0,
-        action_generator=
-            action_generator,
-    )
-
-    assert all(
-        torch.equal(
-            block.z,
-            block.z_bar,
-        )
-        for block
-        in model.core.blocks
-    )
-
-    assert all(
-        trace.count_nonzero()
-        == 0
-        for trace
-        in model.plasticity
-        .traces
-        .values()
-    )
-
-    assert all(
-        torch.equal(
-            parameter,
-            before[
-                id(parameter)
-            ],
-        )
-        for parameter
-        in model.plasticity
-        .parameters
-        .values()
-    )
+def test_frozen_abc_preserves_parameters_directions_and_rng():
+    model = StageZeroABC(11)
+    model.reset_phase(False)
+    before = {k:p.clone() for k,p in model.plasticity.parameters.items()}
+    delta = {k:d.clone() for k,d in model.plasticity.delta_w.items()}
+    rng = model.plasticity.rng.getstate()
+    model.episode(phase="frozen", episode=0, target=0, delay_ms=0, start_ms=0,
+                  action_generator=torch.Generator().manual_seed(19))
+    assert model.plasticity.pending_indices is None
+    assert model.plasticity.rng.getstate() == rng
+    assert all(torch.equal(p,before[k]) for k,p in model.plasticity.parameters.items())
+    assert all(torch.equal(d,delta[k]) for k,d in model.plasticity.delta_w.items())
 
 
-def test_training_abc_generates_nonzero_eligibility_without_autograd():
-    model = StageZeroABC(
-        11,
-    )
-
-    model.reset_phase(
-        True
-    )
-
-    action_generator = (
-        torch.Generator()
-        .manual_seed(23)
-    )
-
-    row = model.episode(
-        phase="training",
-        episode=0,
-        target=1,
-        delay_ms=0,
-        start_ms=0,
-        action_generator=
-            action_generator,
-    )
-
-    assert (
-        row[
-            "pre_goodness_eligibility_trace"
-        ]["total"]["l2"]
-        > 0
-    )
-
-    assert all(
-        parameter.grad is None
-        for parameter
-        in model.parameters()
-    )
-
-    assert (
-        row["nan_count"]
-        == 0
-    )
-
-    assert (
-        row["inf_count"]
-        == 0
-    )
+def test_training_abc_moves_only_after_first_goodness_without_autograd():
+    model = StageZeroABC(11)
+    model.reset_phase(True)
+    generator = torch.Generator().manual_seed(23)
+    for episode in range(3):
+        row = model.episode(phase="training", episode=episode, target=1, delay_ms=0,
+                            start_ms=episode*750, action_generator=generator)
+        assert row["selected_parameter_count"] == (0 if episode == 0 else 3)
+        assert row["parameter_delta_norm"] == 0 if episode == 0 else row["parameter_delta_norm"] > 0
+        assert row["nan_count"] == row["inf_count"] == 0
+    assert all(p.grad is None for p in model.parameters())

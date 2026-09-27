@@ -1,1 +1,1 @@
-"""Active experiment namespace; the old e-prop Stage 0 is archived."""
+"""Current Delta-W sanity and ABC experiments; older mechanisms are archived."""

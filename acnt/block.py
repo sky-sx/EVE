@@ -1,29 +1,12 @@
 """Canonical ACNT Block with CTM-style private neuron-level models."""
 
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 import math
 from time import monotonic_ns
 
 import torch
 from torch import Tensor, nn
-from torch.nn import functional as F
-
-
-LocalObserver = Callable[[nn.Parameter, Tensor, int], None]
-
-
-@dataclass(frozen=True)
-class SynapseFrame:
-    """Detached local facts of one committed Block update."""
-
-    time_ms: int
-    l: Tensor
-    rho: Tensor
-    a: Tensor
-    ln_scale: Tensor
-    sources: dict[int, Tensor]
 
 
 class NeuronLevelModel(nn.Module):
@@ -48,7 +31,7 @@ class NeuronLevelModel(nn.Module):
         nn.init.uniform_(self.weight1, -bound1, bound1)
         nn.init.uniform_(self.weight2, -bound2, bound2)
 
-    def forward(self, x: Tensor, *, return_cache: bool = False):
+    def forward(self, x: Tensor) -> Tensor:
         if x.shape != (self.neuron_size, self.input_dim):
             raise ValueError(
                 f"NLM input must have shape ({self.neuron_size}, {self.input_dim})"
@@ -69,76 +52,14 @@ class NeuronLevelModel(nn.Module):
         rho2 = torch.sigmoid(gate2)
         z = (left2 * rho2).squeeze(-1)
 
-        if not return_cache:
-            return z
-
-        cache = {
-            "x": x.detach().clone(),
-            "left1": left1.detach().clone(),
-            "rho1": rho1.detach().clone(),
-            "hidden": hidden.detach().clone(),
-            "left2": left2.detach().clone(),
-            "rho2": rho2.detach().clone(),
-        }
-        return z, cache
-
-    def local_vjp(self, cache: dict[str, Tensor], cotangent: Tensor) -> dict[str, Tensor]:
-        if cotangent.shape != (self.neuron_size,):
-            raise ValueError(
-                f"NLM cotangent must have shape ({self.neuron_size},)"
-            )
-        if cotangent.dtype != torch.float32:
-            raise ValueError("NLM cotangent must use FP32")
-
-        x = cache["x"]
-        left1 = cache["left1"]
-        rho1 = cache["rho1"]
-        hidden = cache["hidden"]
-        left2 = cache["left2"]
-        rho2 = cache["rho2"]
-
-        c = cotangent.unsqueeze(-1)
-
-        d_left2 = c * rho2
-        d_gate2 = c * left2 * rho2 * (1.0 - rho2)
-        d_linear2 = torch.cat((d_left2, d_gate2), dim=-1)
-
-        grad_weight2 = d_linear2.unsqueeze(-1) * hidden.unsqueeze(1)
-        grad_bias2 = d_linear2
-
-        d_hidden = torch.einsum(
-            "no,noh->nh",
-            d_linear2,
-            self.weight2.detach(),
-        )
-
-        d_left1 = d_hidden * rho1
-        d_gate1 = d_hidden * left1 * rho1 * (1.0 - rho1)
-        d_linear1 = torch.cat((d_left1, d_gate1), dim=-1)
-
-        grad_weight1 = d_linear1.unsqueeze(-1) * x.unsqueeze(1)
-        grad_bias1 = d_linear1
-
-        grad_x = torch.einsum(
-            "no,noi->ni",
-            d_linear1,
-            self.weight1.detach(),
-        )
-
-        return {
-            "weight1": grad_weight1.detach(),
-            "bias1": grad_bias1.detach(),
-            "weight2": grad_weight2.detach(),
-            "bias2": grad_bias2.detach(),
-            "x": grad_x.detach(),
-        }
+        return z
 
 
 class Block(nn.Module):
     """One FP32, non-batched Block. Times and ticktime are milliseconds.
 
     A/At store pre-activations and their logical timestamps, oldest first.
-    Persistent states are detached; local learning uses only these frames.
+    Persistent states are detached after each committed update.
     """
 
     def __init__(
@@ -201,22 +122,15 @@ class Block(nn.Module):
         self.A: deque[Tensor] = deque(maxlen=hold_tick)
         self.At: deque[int] = deque(maxlen=hold_tick)
 
-        self.learning_frames: deque[SynapseFrame] = deque(maxlen=hold_tick)
-
-        self.local_observer: LocalObserver | None = None
-        self.learning_enabled = False
-
     @staticmethod
     def sigma(x: Tensor) -> Tensor:
         return torch.sigmoid(x)
 
-    def LN(self, x: Tensor, *, return_scale: bool = False):
+    def LN(self, x: Tensor) -> Tensor:
         mean = x.mean()
         centered = x - mean
         scale = torch.sqrt(centered.square().mean() + self.ln_eps)
         a = centered / scale
-        if return_scale:
-            return a, scale.detach().clone()
         return a
 
     def _check_vector(self, value: Tensor, size: int, name: str) -> None:
@@ -251,51 +165,6 @@ class Block(nn.Module):
             raise FloatingPointError(f"Block {self.block_id}: non-finite NLM input")
         return result
 
-    def LN_vjp(
-        self,
-        a: Tensor,
-        scale: Tensor,
-        cotangent: Tensor,
-    ) -> Tensor:
-        if a.shape != (self.neuron_size,):
-            raise ValueError("LN activation has wrong shape")
-        if cotangent.shape != (self.neuron_size,):
-            raise ValueError("LN cotangent has wrong shape")
-
-        return (
-            cotangent
-            - cotangent.mean()
-            - a * (a * cotangent).mean()
-        ) / scale
-
-    def set_learning(
-        self,
-        enabled: bool,
-    ) -> None:
-        if type(enabled) is not bool:
-            raise TypeError("enabled must be bool")
-
-        self.learning_enabled = enabled
-
-    def _emit_eligibility(
-        self,
-        parameter: nn.Parameter,
-        contribution: Tensor,
-        *,
-        now_ms: int,
-    ) -> None:
-        if self.local_observer is None:
-            return
-        if contribution.shape != parameter.shape:
-            raise ValueError("eligibility contribution shape mismatch")
-        if not torch.isfinite(contribution).all():
-            raise FloatingPointError("non-finite eligibility contribution")
-        self.local_observer(
-            parameter,
-            contribution.detach(),
-            now_ms,
-        )
-
     def update(self, *, now_ms: int | None = None, active_z: Mapping[int, Tensor] | None = None) -> Tensor:
         with torch.no_grad():
             return self._update(now_ms=now_ms, active_z=active_z)
@@ -311,11 +180,6 @@ class Block(nn.Module):
 
         if len(self.A) != len(self.At):
             raise ValueError("A and At must correspond one-to-one")
-
-        if len(self.learning_frames) not in (0, len(self.A)):
-            raise ValueError(
-                "learning frame history must align with activation history"
-            )
 
         now_ms = monotonic_ns() // 1_000_000 if now_ms is None else now_ms
 
@@ -337,7 +201,6 @@ class Block(nn.Module):
 
         sources = {} if active_z is None else active_z
 
-        detached_sources: dict[int, Tensor] = {}
 
         for j, z_j in sources.items():
             if type(j) is not int or not 0 <= j < len(self.W_ij):
@@ -350,7 +213,6 @@ class Block(nn.Module):
             )
 
             source = z_j.detach()
-            detached_sources[j] = source.clone()
             r = r + self.W_ij[j] @ source
 
         n = self.neuron_size
@@ -360,19 +222,7 @@ class Block(nn.Module):
         rho = torch.sigmoid(g)
         u = l * rho
 
-        a, ln_scale = self.LN(
-            u,
-            return_scale=True,
-        )
-
-        current_frame = SynapseFrame(
-            time_ms=now_ms,
-            l=l.detach().clone(),
-            rho=rho.detach().clone(),
-            a=a.detach().clone(),
-            ln_scale=ln_scale.detach().clone(),
-            sources=detached_sources,
-        )
+        a = self.LN(u)
 
         history = [
             *(entry.detach() for entry in self.A),
@@ -382,11 +232,6 @@ class Block(nn.Module):
         times = [
             *self.At,
             now_ms,
-        ][-self.hold_tick:]
-
-        frames = [
-            *self.learning_frames,
-            current_frame,
         ][-self.hold_tick:]
 
         nlm_x = self.nlm_input(
@@ -419,9 +264,6 @@ class Block(nn.Module):
 
         self.At.clear()
         self.At.extend(times)
-
-        self.learning_frames.clear()
-        self.learning_frames.extend(frames)
 
         if self.o is not None:
             self.o = self.o.detach().clone()
