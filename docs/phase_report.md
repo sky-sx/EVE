@@ -1,6 +1,6 @@
 # Persistent Delta-W Plasticity 实现与验证报告
 
-日期：2026-09-27。状态：**IMPLEMENTED / NOT YET FORMALLY VALIDATED**。尚无正式 ACNT 行为学习结论。
+日期：2026-09-27。状态：**IMPLEMENTED / NOT YET FORMALLY VALIDATED**。OR/XOR 200,000 step 机制 sanity：两个任务各 3/3 成功。尚无正式 ACNT 行为学习结论。
 
 ## 起点与基线
 
@@ -38,11 +38,45 @@ learn=False 清 runtime credit，保留 W/ΔW/RNG；恢复后首轮重建 baseli
 | XOR | 22 | 0.253921478987 | 0.251045763493 | 0.25 | 0.50 | False |
 | XOR | 33 | 0.260133177042 | 0.251538544893 | 0.50 | 0.75 | False |
 
-success 定义为四个输入全部分类正确。OR 0/3、XOR 0/3 成功；六次 MSE 均下降，部分 accuracy 下降。这仅证明短实验产生了可测量的损失变化，不能宣称学会 OR/XOR，更不能宣称 ACNT 行为学习已支持。没有做长训练或挑选成功 seed。
+success 定义为四个输入全部分类正确。OR 0/3、XOR 0/3 成功；六次 MSE 均下降，部分 accuracy 下降。这仅证明短实验产生了可测量的损失变化，不能宣称学会 OR/XOR，更不能宣称 ACNT 行为学习已支持。当时仅运行了短预算；后续 200,000 step 结果见下一节。
 
 本地原始 JSON：`runs/delta_w_sanity/smoke.json`；SHA256：`4c6b94b9e5ab067b4b7e51a439d1c8692ecdb13af493b977029f0eb96d51704d`。原始运行文件按仓库规则留在 runs，不上传；本表保留全部六次结果。
 
-## 最终验证
+## OR/XOR：200,000 step 结果更新
+
+更新日期：2026-09-27。依据用户已完成的 `runs/delta_w_sanity/200k.json` 重新汇总；本次未重跑训练。当前审阅代码提交为 `84f4bd6`；JSON 未记录运行时 commit、耗时、逐步轨迹或首次成功时间，因此不能据此确认这些信息。
+
+**结果：OR 3/3、XOR 3/3 成功，六次最终 truth-table accuracy 均为 100%。** 相同 seed 的初始 loss/accuracy 与此前 1,000 step 结果逐项一致；两个预算的成功数从各 0/3 提升到各 3/3。两份文件是独立结果快照，不能视为一次训练的连续日志。
+
+与结果配置对应的复现命令：
+
+```powershell
+python -m experiments.delta_w_sanity --device cpu --steps 200000 --seeds 11 22 33 --subset-fraction 0.001 --delta-magnitude 0.001 --output runs/delta_w_sanity/200k.json
+```
+
+CPU；2→3→1 MLP，tanh/sigmoid；13 个参数元素，每轮选择 1 个；每个任务/seed 200,000 次更新，共 1,200,000 次。plasticity_seed 为实验 seed + 300000。Goodness 为完整四行真值表的 `1-MSE`，success 为以 0.5 为阈值时四个预测全部正确。生产 Plasticity 算法用于该 toy 模型；它并非完整 ACNT 架构。
+
+| 任务 | seed | initial MSE | final MSE | initial accuracy | final accuracy | success |
+|---|---:|---:|---:|---:|---:|---|
+| OR | 11 | 0.28338804841 | 0 | 0.50 | 1.00 | True |
+| OR | 22 | 0.280968815088 | 0 | 0.00 | 1.00 | True |
+| OR | 33 | 0.309220641851 | 4.37886568949e-35 | 0.25 | 1.00 | True |
+| XOR | 11 | 0.255980789661 | 2.97609686895e-10 | 0.75 | 1.00 | True |
+| XOR | 22 | 0.253921478987 | 3.11442788226e-10 | 0.25 | 1.00 | True |
+| XOR | 33 | 0.260133177042 | 3.11481618276e-10 | 0.50 | 1.00 | True |
+
+| 任务 | 1,000 step 成功数 | 200,000 step 成功数 | 200,000 step 平均 final MSE |
+|---|---:|---:|---:|
+| OR | 0/3 | 3/3 | 1.4596218965e-35 |
+| XOR | 0/3 | 3/3 | 3.06844697799e-10 |
+
+OR 的两项 MSE 在存储精度下为 0，另一项约 4.38e-35；XOR 三项均约 3e-10。这支持该机制在所测三个 seed、固定真值表和 200,000 step 预算下学会 OR/XOR。文件仅包含初始与最终指标，无法判断中途是否单调改善、达到成功所需最小预算或收敛后长期稳定性；数值 0 也不代表任意精度下误差严格为零。
+
+该结果不提供 held-out 泛化、更多 seed 的成功率或 ACNT ABC 行为学习证据。正式 ACNT 状态仍为 **NOT YET FORMALLY VALIDATED**；此前短预算与历史 Stage Zero 结果保留作为不同实验的记录。
+
+原始文件保留在本地 `runs/delta_w_sanity/200k.json`，SHA256：`3035f4b072c1ce33e59cfc90d6633a39df44bf70cc04e21ba867d7d093fe0f20`。按现有仓库约定上传本报告中的全部六项汇总，不上传 runs 原始文件。
+
+## 实现提交的历史验证记录
 
 - `python -m pytest -q`（上述环境变量）：**178 passed in 4.98s**。覆盖初始化、全局元素抽样、首次 baseline、正/负/零变化、不回滚、冻结恢复、Goodness 排除、无 autograd、pending、裁剪与有限性、Runtime forward 前移动及 action RNG 独立性。
 - `python -m acnt --core-only --steps 12`：通过，12 tick。
@@ -64,4 +98,4 @@ success 定义为四个输入全部分类正确。OR 0/3、XOR 0/3 成功；六�
 
 未解决的科学问题：连续 G 差值同时受输入、动作噪声和世界变化影响；长期稳定性、固定步幅与稀疏比例适用范围未验证；overlapping delayed Goodness 尚未定义，当前只接受单 pending trial。通用 checkpoint 恢复、世界轨迹恢复不在本轮范围。
 
-与提示词的处理说明：算法语义无有意偏离。ABC 阶段切换保留神经历史，以满足连续不可逆轨迹；不再用 frozen/initial 阶段均值初始化训练 baseline。未升级版本。附件末尾“不要 git push”由用户本条最新“完成后上传 github”覆盖，因此完成验证后上传。未运行数小时正式训练。
+与提示词的处理说明：算法语义无有意偏离。ABC 阶段切换保留神经历史，以满足连续不可逆轨迹；不再用 frozen/initial 阶段均值初始化训练 baseline。未升级版本。附件末尾“不要 git push”由用户本条最新“完成后上传 github”覆盖，因此完成验证后上传。原实现提交未运行数小时正式训练；本次仅汇总用户提供的 200,000 step sanity 结果，未重跑训练。

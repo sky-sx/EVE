@@ -27,7 +27,7 @@
 
 Persistent ΔW Plasticity：**IMPLEMENTED / NOT YET FORMALLY VALIDATED**。默认 delta_magnitude=0.001、subset_fraction=0.001、plasticity_seed=0；首次 Goodness 只建基准，下一轮 forward 前移动参数，坏结果仅反转方向。冻结恢复重新建基准，延迟反馈最多允许一个未评价 trial。
 
-OR/XOR 是共用生产算法的极小机制 sanity；实际结果见[阶段报告](docs/phase_report.md)，不能外推为 ACNT 行为学习。当前唯一 Stage Zero 协议为 `experiments/stage_zero_abc`。旧 `experiments/stage_zero` 指向历史归档；此前 Local Plasticity / CorrelationRule 的 **NOT SUPPORTED** 报告与原始数字保持不变，不是新 ΔW 机制的验证结果。尚无正式 ACNT 行为学习结论。
+OR/XOR 是共用生产算法的极小机制 sanity；CPU 200,000 step、seed 11/22/33 下 OR 与 XOR 各 3/3 成功，最终准确率均为 100%；完整结果和 1,000 step 对比见[阶段报告](docs/phase_report.md)，不能外推为 ACNT 行为学习。当前唯一 Stage Zero 协议为 `experiments/stage_zero_abc`。旧 `experiments/stage_zero` 指向历史归档；此前 Local Plasticity / CorrelationRule 的 **NOT SUPPORTED** 报告与原始数字保持不变，不是新 ΔW 机制的验证结果。尚无正式 ACNT 行为学习结论。
 
 真实截图/音频采集、DirectInput 执行与仿生发声器官映射仍未接入。
 
