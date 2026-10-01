@@ -1,0 +1,58 @@
+{
+  "seed": 33,
+  "task": "cue",
+  "group_size": 32,
+  "groups": 125,
+  "modulation": "core",
+  "decisions": 1000,
+  "events": 4000,
+  "lr": 0.001,
+  "write_scale": 0.01,
+  "total_effective_parameters": 3122,
+  "writer_parameters": 81,
+  "writer_parameters_per_control": 0.648,
+  "neural_resets": 0,
+  "persistent_state_and_training_tensor_bytes": 2510008,
+  "first": {
+    "count": 100,
+    "expected_goodness": 0.5053646343946457,
+    "sampled_accuracy": 0.51
+  },
+  "last": {
+    "count": 100,
+    "expected_goodness": 0.5001227122545242,
+    "sampled_accuracy": 0.54
+  },
+  "all": {
+    "count": 1000,
+    "expected_goodness": 0.49725243905186656,
+    "sampled_accuracy": 0.523
+  },
+  "written_coordinates": 2614,
+  "self_written_coordinates": 81,
+  "write_path_length": 3.564108377144697,
+  "self_write_path_length": 3.321174424255082,
+  "parameter_change_norm": 0.5815613865852356,
+  "meta_clips": 0,
+  "actor_clips": 2,
+  "trace_clips": 0,
+  "score_clips": 0,
+  "source_hashes": {
+    "acnt/grouped_write.py": "dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc",
+    "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+    "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/grouped_write_online.py": "bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e"
+  },
+  "seconds": 196.33520259999932,
+  "limitations": [
+    "hybrid actor/writer score eligibility; no claim of biological identity",
+    "exponential trace rule preserved; origin/writes stopped in actor eligibility",
+    "eligibility value stopped in bootstrap derivatives",
+    "external 81-parameter writer bootstrap remains",
+    "anchored/broadcast modes explicitly use direct G; not autonomous Core-only credit",
+    "immediate reward toy; no lifelong/no-forgetting validation"
+  ]
+}

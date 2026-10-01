@@ -1,0 +1,49 @@
+{
+  "seed": 11,
+  "mode": "full",
+  "task": "cue",
+  "decisions": 1000,
+  "events": 4000,
+  "gap": 3,
+  "lr": 0.001,
+  "write_rate": 0.1,
+  "neural_resets": 0,
+  "first": {
+    "count": 100,
+    "expected_goodness": 0.5038238292932511,
+    "sample_accuracy": 0.55
+  },
+  "last": {
+    "count": 100,
+    "expected_goodness": 0.49694657266139985,
+    "sample_accuracy": 0.56
+  },
+  "all": {
+    "count": 1000,
+    "expected_goodness": 0.49621222564578055,
+    "sample_accuracy": 0.495
+  },
+  "outer_updates": 1000,
+  "controller_parameter_dim": 526,
+  "joint_state_dim": 145,
+  "actor_fast_parameter_dim": 33,
+  "persistent_state_and_training_tensor_bytes": 309868,
+  "meta_clips": 0,
+  "actor_write_path_length": 16.70856096103671,
+  "controller_change_norm": 1.6623250246047974,
+  "source_hashes": {
+    "acnt/self_write.py": "5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/self_write_online.py": "cf24c70b558e3375c96422fcef146d295699e7c25976fb9a0d2abf63fbfc8bbe"
+  },
+  "seconds": 62.7391123999987,
+  "limitations": [
+    "immediate feedback only",
+    "all-active synchronous seven-Block oracle",
+    "write one original Core connection and one Hand bias only",
+    "dense forward meta tangent, stop outer updates and clipped",
+    "synthetic world, no mechanical effects",
+    "constant/cue/switch tasks are not lifelong no-forgetting tests"
+  ]
+}

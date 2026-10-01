@@ -1,0 +1,111 @@
+{
+  "seed": 11,
+  "mode": "frozen_write",
+  "write_mode": "delta",
+  "decisions": 1000,
+  "neural_resets": 0,
+  "policy_future": {
+    "expected_goodness": 0.48398474268615244,
+    "sample_accuracy": 0.4766666666666667
+  },
+  "policy_last_100": {
+    "expected_goodness": 0.5288288304582238,
+    "sample_accuracy": 0.51
+  },
+  "future_majority_baseline": 0.5166666666666667,
+  "probes": {
+    "raw_audio": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 2.399753077634063,
+      "feature_std_rms": 0.6106959120132694,
+      "normalized_class_distance": 3.9463819010305583
+    },
+    "ear_adapter": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 1.9792153322222985,
+      "feature_std_rms": 0.3561529159172991,
+      "normalized_class_distance": 5.581026798705819
+    },
+    "ear_z_at_cue": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.9985714285714286,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 0.1116115384764416,
+      "feature_std_rms": 0.029311610445230795,
+      "normalized_class_distance": 3.375678944070968
+    },
+    "ear_z_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 0.13752041803902698,
+      "feature_std_rms": 0.04078864391875933,
+      "normalized_class_distance": 2.928216494847513
+    },
+    "hand_z_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.9514285714285714,
+      "future_accuracy": 0.57,
+      "class_mean_distance": 0.002063548846492076,
+      "feature_std_rms": 0.004886535340216758,
+      "normalized_class_distance": 0.34213311283735093
+    },
+    "hand_history_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 0.7766666666666666,
+      "class_mean_distance": 0.02038377406233213,
+      "feature_std_rms": 0.030956145559193817,
+      "normalized_class_distance": 1.1800651769658186
+    },
+    "hand_hidden": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.9257142857142857,
+      "future_accuracy": 0.56,
+      "class_mean_distance": 0.0006442640810815248,
+      "feature_std_rms": 0.0016564741100036607,
+      "normalized_class_distance": 0.2847650847747618
+    },
+    "write_block_z_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.7785714285714286,
+      "future_accuracy": 0.75,
+      "class_mean_distance": 0.005175113749735647,
+      "feature_std_rms": 0.008152641996739826,
+      "normalized_class_distance": 0.6219204491018349
+    }
+  },
+  "original_hand_supervised_probe": {
+    "train_accuracy": 0.7300000190734863,
+    "future_accuracy": 0.4833333194255829,
+    "steps": 2000,
+    "training_signal": "observer labels, diagnostic only"
+  },
+  "core_edge_initial_norm": 2.377450704574585,
+  "core_edge_final_norm": 6.009225368499756,
+  "credit_last_100": [],
+  "source_hashes": {
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/self_write_input_diagnostic.py": "5fafd23c48f2cd45282ec8aa9528120634e11d3fd132464cfa80b8f2014e59da"
+  },
+  "limitations": [
+    "observer probes use labels; not a training mechanism offered to the subject",
+    "linear separability is not proof that the self-write rule can learn the readout",
+    "one seed; chronological held-out prefix/suffix; only 1000 simulated decisions",
+    "probe features collected before the current action reward enters Core"
+  ]
+}

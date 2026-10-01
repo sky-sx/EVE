@@ -1,0 +1,15 @@
+
+=== g0_math_check ===
+G0 current event-flow partition forward max_abs=1.735e-18
+G0 current event-flow partition gradient max_abs=3.469e-18, rel=2.393e-16
+G0 smoke: PASS
+
+=== g1_cross_credit ===
+single-estimator cosine: mean=0.7511, min=0.0644, max=0.9840
+mean of 128 rank-4 estimators vs exact: cosine=0.987253, relative_error=0.194762
+G1 streaming low-rank statistical smoke: PASS
+
+=== g2_event_flow_time ===
+partition errors: {2: '0.000e+00', 4: '0.000e+00', 8: '6.939e-18', 16: '6.939e-18', 32: '6.939e-18', 128: '1.561e-17'}
+physical-time acc=0.9993; fake-dt acc=0.5100
+G2 smoke: PASS

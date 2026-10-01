@@ -1,0 +1,1543 @@
+{
+  "scope": "reviewed experiments in this conversation; regenerated reports, not rerun training",
+  "assembled_date": "2026-10-02",
+  "timezone": "Asia/Shanghai",
+  "source_run_dates": "2026-10-01 to 2026-10-02; stage filenames retain their original date",
+  "raw_trajectories_published": false,
+  "checkpoints_published": false,
+  "raw_records_verified": 56,
+  "source_versions": 39,
+  "records": [
+    {
+      "local_raw_path": "runs/address_write_online/ablations_v1/cue_seed_11_cut_write.json",
+      "local_raw_sha256": "5f09373711a8974315fcb8e07438c0251c1618807364db919a7c2fd2e306352b",
+      "local_raw_bytes": 257292,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/001.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/address_write_online/ablations_v1/cue_seed_11_no_write.json",
+      "local_raw_sha256": "543f9d4e57ae99fc65aa96b6b15d465546d48a654834f2aa61c6b68160dbbe05",
+      "local_raw_bytes": 257290,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/002.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/address_write_online/constant_control/constant_seed_11_no_write.json",
+      "local_raw_sha256": "bcc2f3312f480d82c29bd12b02a391a60496d6015ba78f3e973443023bc8a887",
+      "local_raw_bytes": 257546,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/003.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/address_write_online/constant_v1/constant_seed_11_full.json",
+      "local_raw_sha256": "f946ed0c38bcef447c13703cfa20e70bdd1a2792d49dd3412bcd8c197b0daebd",
+      "local_raw_bytes": 234652,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/004.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/address_write_online/cue_small_step/cue_seed_11_full.json",
+      "local_raw_sha256": "932790d324ac1956fad04973645548f88fa72579233e180a99d6ed6754d948b1",
+      "local_raw_bytes": 290108,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/005.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/address_write_online/cue_v1/cue_seed_11_full.json",
+      "local_raw_sha256": "ea04c070dd0ce6126b40b2d090ab535316279e0531dc40341de19af720952f02",
+      "local_raw_bytes": 290011,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/006.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/address_write_online/cue_v1/cue_seed_22_full.json",
+      "local_raw_sha256": "c8a52dc7db13c82bf7ba62f797c0a39b77f7b990f9f206bd10234b638ea033f4",
+      "local_raw_bytes": 289273,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/007.json",
+      "seed": 22,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/address_write_online/cue_v1/cue_seed_33_full.json",
+      "local_raw_sha256": "c332e92bd9c88f836ca6b5458873e46e4b3af1ac5cbc564e935f194da93dc494",
+      "local_raw_bytes": 272979,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/008.json",
+      "seed": 33,
+      "decisions": 1000,
+      "sources": {
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/address_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_duration/bounded_total_seed_66_600s_v1/result.json",
+      "local_raw_sha256": "4f93e14c23e465cb2c8e98412c24ebfd5a1701d9b4b05aa3ab2da29d5243ecb3",
+      "local_raw_bytes": 23825,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/009.json",
+      "seed": 66,
+      "decisions": 4673,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py",
+        "experiments/calibrated_write_benchmark.py": "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py",
+        "experiments/calibrated_write_duration.py": "reports/acnt_self_write_session_2026-10-02/sources/6125d4366618fbef752b35e26bb81d2c981b359596f30a4c2f41bdcff6abd777.py",
+        "acnt/goodness_prediction.py": "reports/acnt_self_write_session_2026-10-02/sources/2045d4098d23fb5b177b4a8e38b533a49f18cde3524bb43845e1304d0d2da86f.py",
+        "acnt/bounded_goodness.py": "reports/acnt_self_write_session_2026-10-02/sources/8adb7d0b730a318fdbf6ef43333fd5841dc24ed4e6d0928185475626de0a9eea.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_duration/fixed_cue_seed_44_600s_v1/result.json",
+      "local_raw_sha256": "4b55c70d5685cea106209f9b653553497442b408beb70f719743d2808997a3e4",
+      "local_raw_bytes": 15483,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/010.json",
+      "seed": 44,
+      "decisions": 4719,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py",
+        "experiments/calibrated_write_benchmark.py": "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py",
+        "experiments/calibrated_write_duration.py": "reports/acnt_self_write_session_2026-10-02/sources/19069038693c2e3bec4fe3207f8409e7fbba3ca73818d09ea43257225722315e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_duration/goodness_seed_55_600s_v1/result.json",
+      "local_raw_sha256": "2e8941963b0af4e986de220b9de93859df6bab52d164cd6beb33307051cb4bf2",
+      "local_raw_bytes": 18611,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/011.json",
+      "seed": 55,
+      "decisions": 4646,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py",
+        "experiments/calibrated_write_benchmark.py": "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py",
+        "experiments/calibrated_write_duration.py": "reports/acnt_self_write_session_2026-10-02/sources/9b87d47127f2a613e944156a59b8d6b68425e15a72b45d0b2492dbaf2fe5c2ff.py",
+        "acnt/goodness_prediction.py": "reports/acnt_self_write_session_2026-10-02/sources/2045d4098d23fb5b177b4a8e38b533a49f18cde3524bb43845e1304d0d2da86f.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/ablations_v1/cue_seed_11_cut_calibration.json",
+      "local_raw_sha256": "622aae407c2fe875c51e7be16244298832b4eb0d85c3d018f360ed6741011ac1",
+      "local_raw_bytes": 348369,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/012.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/ablations_v1/cue_seed_11_no_write.json",
+      "local_raw_sha256": "6c44d543a526910257f34a93ac886c24f603f8ffb146417d55c1a6a47802af66",
+      "local_raw_bytes": 337154,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/013.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/continual_v1/switch_seed_11_core.json",
+      "local_raw_sha256": "d0eb0c6df587a04df3e8e17a75bcc9f0ded7e81162c6cb028de4eebf229ab2a8",
+      "local_raw_bytes": 1152840,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/014.json",
+      "seed": 11,
+      "decisions": 3000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_continual.py": "reports/acnt_self_write_session_2026-10-02/sources/7d85146e5f6ba704adde0206a49b4e49edd102819f1690e675c784c1ff2e60b3.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/exploration_v1/switch_seed_11_core.json",
+      "local_raw_sha256": "5ed89d78fb5f87661c5bcf52f008c48e66e66e2ffd68358f78d4783d17d70f0f",
+      "local_raw_bytes": 1149980,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/015.json",
+      "seed": 11,
+      "decisions": 3000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/no_normalization_v1/cue_seed_11_core.json",
+      "local_raw_sha256": "67659377a0743bd39e28e30101a44d370b19322e895153ec50ea88944bca64e1",
+      "local_raw_bytes": 347148,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/016.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/pilot_v1/cue_seed_11_broadcast.json",
+      "local_raw_sha256": "7044e89880927deec5a45ff31b5b5b2aefa981cf7c0a0beb7064ec1a1299f633",
+      "local_raw_bytes": 346272,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/017.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/pilot_v1/cue_seed_11_core.json",
+      "local_raw_sha256": "1ae1edc066913efb1ddbf386dbeaa6d8034d34e629e6af90afe9f64a5603f67b",
+      "local_raw_bytes": 347495,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/018.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/short_trace_replicates_v1/cue_seed_22_core.json",
+      "local_raw_sha256": "42695c6a00c15ed4830a8166ede58ba051a505aa6f808fce8c116cacd85e8c1b",
+      "local_raw_bytes": 346549,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/019.json",
+      "seed": 22,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/short_trace_replicates_v1/cue_seed_33_core.json",
+      "local_raw_sha256": "229e82565cb12824f9474f7e76cd214d9df8e3d028cdc693802ea55341bb2dfc",
+      "local_raw_bytes": 346282,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/020.json",
+      "seed": 33,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/short_trace_v1/cue_seed_11_broadcast.json",
+      "local_raw_sha256": "59d3faf953dc341d19db9b2b0a6f66c6ce9639d74c3c169debb1305ac3f6669e",
+      "local_raw_bytes": 347100,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/021.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/short_trace_v1/cue_seed_11_core.json",
+      "local_raw_sha256": "6d08492fdb9cd1aeb282ea4ca6d53f98e306adece83af54caca3fc3702fb81be",
+      "local_raw_bytes": 346508,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/022.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/calibrated_write_online/switch_v1/switch_seed_11_core.json",
+      "local_raw_sha256": "adefc0b24382b3341b09cb4a653ae86ddbcf654ce663dd8606693919b948452f",
+      "local_raw_bytes": 1039742,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/023.json",
+      "seed": 11,
+      "decisions": 3000,
+      "sources": {
+        "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py",
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/calibrated_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/core_g32/cue_seed_11_g32_core.json",
+      "local_raw_sha256": "b3fdfada330da09afccb31f91e7e069e5686d87f51d258c233e553afa2dd1ecb",
+      "local_raw_bytes": 295769,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/024.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/core_g32/cue_seed_22_g32_core.json",
+      "local_raw_sha256": "209a57954f33fa74c87e294b421b6dd022522dafb2932b3add61b9dc13e879c0",
+      "local_raw_bytes": 295515,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/025.json",
+      "seed": 22,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/core_g32/cue_seed_33_g32_core.json",
+      "local_raw_sha256": "488371030d1bbe93e73dd72013b7f4b3716ca91f09e70488ed0194eab376c61f",
+      "local_raw_bytes": 295595,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/026.json",
+      "seed": 33,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/group_controls/cue_seed_11_g1_core.json",
+      "local_raw_sha256": "b1463b900d181da455001622fc75c39cf5a0d7bd66223adaa4e66b1e13408958",
+      "local_raw_bytes": 295819,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/027.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/group_controls/cue_seed_11_g8_core.json",
+      "local_raw_sha256": "49881d3e9e596d3ad87247ee1af59bb1912e244d8f0d753c8395f88422385993",
+      "local_raw_bytes": 295756,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/028.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/independent_capacity/cue_seed_11_g32_independent.json",
+      "local_raw_sha256": "e6c18e9083d1e029ff7d38ef92662bdacf66e424197ace8f5ccbbc3f0d761b3c",
+      "local_raw_bytes": 206247,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/029.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/4a0e520432fb868b98c14e0000d6bd956314563ac610d165ce833ecb04996125.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_independent_online.py": "reports/acnt_self_write_session_2026-10-02/sources/28683931748e0f4e0fee732ee05d851c820d60aecc9ebba628ded40d663cb390.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/reward_controls/cue_seed_11_g32_anchored.json",
+      "local_raw_sha256": "3a29e1e96d76909250f21d05932aa403ae9bf2a129da8acd000ff46f753e280d",
+      "local_raw_bytes": 296900,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/030.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/reward_controls/cue_seed_11_g32_broadcast.json",
+      "local_raw_sha256": "c06f31846a8c17f9e551ed2c4800594de09ea95238649f210552c6640fb929be",
+      "local_raw_bytes": 263132,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/031.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/rms_diagnostic/cue_seed_11_g32_broadcast_rms.json",
+      "local_raw_sha256": "be84ecd7c505f864583d9c3d2acacbb68440351605d6b3671afb193df35a2bbd",
+      "local_raw_bytes": 189097,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/032.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write_rms.py": "reports/acnt_self_write_session_2026-10-02/sources/402bc7f96712bd391e43456256cc9fc82d953b7fab32136a8449256168697317.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_rms_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0cb61b4c1d622d65096a09f098c9dd8a21c2fac2e1897762c4c8d5449bb3d972.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/grouped_write_online/short_trace_diagnostic/cue_seed_11_g32_broadcast_rms_short_trace.json",
+      "local_raw_sha256": "7b9f88e2a0dfd5c4d28c6927a566e4246d20fcca0773701c4561df58171cdff8",
+      "local_raw_bytes": 189203,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/033.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/grouped_write_rms.py": "reports/acnt_self_write_session_2026-10-02/sources/402bc7f96712bd391e43456256cc9fc82d953b7fab32136a8449256168697317.py",
+        "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py",
+        "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+        "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/grouped_write_rms_online.py": "reports/acnt_self_write_session_2026-10-02/sources/d2cd35723992aa3132f8d6c40169be71ca6c93785ec0886473cecd29fee9c3c0.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_cut_state/seed_11_cut_state.json",
+      "local_raw_sha256": "51d18a7ae59f6c4c3e12472bb4e0ae96420cbd3d5e80ed72b6d603ccc3fbebae",
+      "local_raw_bytes": 643190,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/034.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_delay_seed_11/seed_11_full.json",
+      "local_raw_sha256": "5c511e782d632ed3f48bf13b1691edd757b5d7b32b2d511573259aae8aeb0a79",
+      "local_raw_bytes": 643513,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/035.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/10070f3039f5e2bb73c3e3764fb6d7e18ca7ceafa293cdbc34ea197f4f7815aa.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_final_seed_11/seed_11_full.json",
+      "local_raw_sha256": "6c4eb99c95f2fe6a944402ecc71239d1f6aef16e79bdb3a4f8c90fe16ffe1888",
+      "local_raw_bytes": 1291930,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/036.json",
+      "seed": 11,
+      "decisions": 2000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_final_seed_22/seed_22_full.json",
+      "local_raw_sha256": "be2181c96bbf88ea658b236dfb9c287e5e90fe90961a2e0da260a113589601cd",
+      "local_raw_bytes": 1290447,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/037.json",
+      "seed": 22,
+      "decisions": 2000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_final_seed_33/seed_33_full.json",
+      "local_raw_sha256": "2c2e93729f7044e638f5115207db6526896b14c224c0af90d6457a12739e37e6",
+      "local_raw_bytes": 1288331,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/038.json",
+      "seed": 33,
+      "decisions": 2000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_freeze_core/seed_11_freeze_core.json",
+      "local_raw_sha256": "32c9253702567e348ce794758fdb42bc5bf3912dec76d4e088a9d2f507751970",
+      "local_raw_bytes": 640778,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/039.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_world_trace_controls/seed_11_cut_delay.json",
+      "local_raw_sha256": "82333c335926250f3083901c35d7cbd0c2fcaa75739bc2ff6ca277f7d636017a",
+      "local_raw_bytes": 610381,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/040.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/fixed_world_trace_controls/seed_11_full.json",
+      "local_raw_sha256": "928b163d1cf017e0d7113b75ca9593061dbc911c702fd5849f2d363320ca99f6",
+      "local_raw_bytes": 643371,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/041.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/full_2000_seed_11/seed_11_full.json",
+      "local_raw_sha256": "bdf06582dc7a6de60dfa01485f47a0169b4ac54eccf4818f550cdfe05cdf6c9a",
+      "local_raw_bytes": 1284301,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/042.json",
+      "seed": 11,
+      "decisions": 2000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/16fa84bdd2a9049ac74e4dc6e0d25e228711fe57c63f11f034442fa891d147e4.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0e35ab1ed91e83301ff3a2a5a26b267b685be2440b08d9119269fcac2ad81f26.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/full_2000_seed_22/seed_22_full.json",
+      "local_raw_sha256": "da0364d4423f7b5b5743f2bfa36e757fc5543d2cf44b0b6f97614c6119543175",
+      "local_raw_bytes": 1283669,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/043.json",
+      "seed": 22,
+      "decisions": 2000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/16fa84bdd2a9049ac74e4dc6e0d25e228711fe57c63f11f034442fa891d147e4.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0e35ab1ed91e83301ff3a2a5a26b267b685be2440b08d9119269fcac2ad81f26.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/original_acnt_online/full_2000_seed_33/seed_33_full.json",
+      "local_raw_sha256": "9f5f27c8a7e9cc4b55d14bd844bb3deeefea72dcb99032e42d71ffc068a88ebf",
+      "local_raw_bytes": 1285421,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/044.json",
+      "seed": 33,
+      "decisions": 2000,
+      "sources": {
+        "acnt/original_online.py": "reports/acnt_self_write_session_2026-10-02/sources/16fa84bdd2a9049ac74e4dc6e0d25e228711fe57c63f11f034442fa891d147e4.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/original_acnt_online.py": "reports/acnt_self_write_session_2026-10-02/sources/0e35ab1ed91e83301ff3a2a5a26b267b685be2440b08d9119269fcac2ad81f26.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_input_diagnostic/delta/seed_11_frozen_write.json",
+      "local_raw_sha256": "351bf90e51a0b9a76655cf3a0fb3d196aff64c721498813b20f0521bdabe7eb7",
+      "local_raw_bytes": 4013,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/045.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_input_diagnostic.py": "reports/acnt_self_write_session_2026-10-02/sources/5fafd23c48f2cd45282ec8aa9528120634e11d3fd132464cfa80b8f2014e59da.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_input_diagnostic/delta/seed_11_trained_write.json",
+      "local_raw_sha256": "edc30c62145430adae2b059ebeedd45a39a6c5dfe49c1c79ab2fe2a8a4c61e6e",
+      "local_raw_bytes": 17364,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/046.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_input_diagnostic.py": "reports/acnt_self_write_session_2026-10-02/sources/5fafd23c48f2cd45282ec8aa9528120634e11d3fd132464cfa80b8f2014e59da.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_input_diagnostic/seed_11_no_write.json",
+      "local_raw_sha256": "aa8b0f0562257056bf798071939735369c67b4026310d00436d401b8e19750e1",
+      "local_raw_bytes": 3819,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/047.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/e95798232eaed9b72c1a6a2c06f2787fe5dce45e251762fcaac378d226f6f320.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_input_diagnostic.py": "reports/acnt_self_write_session_2026-10-02/sources/3416fd1f7ec43ddab4c68ada0a243172684f2f2d69106da6f9ccf158571dd70f.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_input_diagnostic/target_complete/seed_11_trained_write.json",
+      "local_raw_sha256": "5826d3d04522f2e4f5e1cd5334d6691a81eff794f130cc2475adcc3a2d88e38c",
+      "local_raw_bytes": 18731,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/048.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_input_diagnostic.py": "reports/acnt_self_write_session_2026-10-02/sources/5fafd23c48f2cd45282ec8aa9528120634e11d3fd132464cfa80b8f2014e59da.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/constant_controls/constant_seed_11_constant_controller.json",
+      "local_raw_sha256": "c187200995784000f8f8f3dc1dd378f071a00d0bdeac5b26e0fc6c82f78f7340",
+      "local_raw_bytes": 159053,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/049.json",
+      "seed": 11,
+      "decisions": 500,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/constant_controls/constant_seed_11_cut_write.json",
+      "local_raw_sha256": "4c865c9b6aadec0b89251106210db88f241c4155f89f1098019468b575f6df47",
+      "local_raw_bytes": 143611,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/050.json",
+      "seed": 11,
+      "decisions": 500,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/constant_controls/constant_seed_11_frozen.json",
+      "local_raw_sha256": "cd0775bd44482c6786574818f56c3de9aa9aae3db236c5fee5a110b4817bacc5",
+      "local_raw_bytes": 150787,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/051.json",
+      "seed": 11,
+      "decisions": 500,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/constant_full11/constant_seed_11_full.json",
+      "local_raw_sha256": "4af55fc4c250430c5b7f65223845fe9fb0eaf826a9aedb53427729d4ecc7ec77",
+      "local_raw_bytes": 317478,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/052.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/constant_full22/constant_seed_22_full.json",
+      "local_raw_sha256": "430acb7216c0d9c2322f0aeacaf9bf614fc86b04af929c6aeffec3974c11d0a6",
+      "local_raw_bytes": 317862,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/053.json",
+      "seed": 22,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/constant_full33/constant_seed_33_full.json",
+      "local_raw_sha256": "93ffa939ff54e0944ad1aa61829213dec4602b7df2af1d184465a403365a0e9c",
+      "local_raw_bytes": 317564,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/054.json",
+      "seed": 33,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/cue_fast_write/cue_seed_11_full.json",
+      "local_raw_sha256": "804ac04f437cce1e26a1776c7f016549177991b12c59a6a3488daae9cce41ed2",
+      "local_raw_bytes": 317345,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/055.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/cf24c70b558e3375c96422fcef146d295699e7c25976fb9a0d2abf63fbfc8bbe.py"
+      }
+    },
+    {
+      "local_raw_path": "runs/self_write_online/cue_probe/cue_seed_11_full.json",
+      "local_raw_sha256": "af1e6b8f052c971d8c24fb83fe0d111fac386c3f7ea00ca71ffd3b9353ff9bc8",
+      "local_raw_bytes": 317429,
+      "published_record": "reports/acnt_self_write_session_2026-10-02/records/056.json",
+      "seed": 11,
+      "decisions": 1000,
+      "sources": {
+        "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py",
+        "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+        "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+        "experiments/self_write_online.py": "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py"
+      }
+    }
+  ],
+  "diagnostic_sources": {
+    "reports/grouped_write_feasibility_2026-10-01.json": {
+      "experiments/grouped_write_feasibility.py": "reports/acnt_self_write_session_2026-10-02/sources/631b4ed5199f0a03f4cb476648137951d4b6b79e2804a74d798ced44e199cd34.py"
+    },
+    "reports/calibrated_write_benchmark_2026-10-01.json": {
+      "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py",
+      "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py",
+      "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+      "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+      "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+      "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+      "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+      "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+      "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py",
+      "D:/EVE/EVE0.6/experiments/calibrated_write_benchmark.py": "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py"
+    },
+    "reports/calibrated_write_10min_2026-10-01.json": {
+      "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py",
+      "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py",
+      "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+      "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+      "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+      "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+      "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+      "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+      "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py",
+      "experiments/calibrated_write_benchmark.py": "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py",
+      "experiments/calibrated_write_duration.py": "reports/acnt_self_write_session_2026-10-02/sources/19069038693c2e3bec4fe3207f8409e7fbba3ca73818d09ea43257225722315e.py"
+    },
+    "reports/goodness_prediction_10min_2026-10-01.json": {
+      "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py",
+      "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py",
+      "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+      "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+      "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+      "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+      "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+      "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+      "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py",
+      "experiments/calibrated_write_benchmark.py": "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py",
+      "experiments/calibrated_write_duration.py": "reports/acnt_self_write_session_2026-10-02/sources/9b87d47127f2a613e944156a59b8d6b68425e15a72b45d0b2492dbaf2fe5c2ff.py",
+      "acnt/goodness_prediction.py": "reports/acnt_self_write_session_2026-10-02/sources/2045d4098d23fb5b177b4a8e38b533a49f18cde3524bb43845e1304d0d2da86f.py"
+    },
+    "reports/bounded_goodness_10min_2026-10-01.json": {
+      "acnt/calibrated_write.py": "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py",
+      "acnt/grouped_write_independent.py": "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py",
+      "acnt/grouped_write.py": "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py",
+      "acnt/address_write.py": "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py",
+      "acnt/self_write.py": "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py",
+      "acnt/full_write.py": "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py",
+      "acnt/block.py": "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py",
+      "acnt/adapters.py": "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py",
+      "experiments/calibrated_write_exploration.py": "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py",
+      "experiments/calibrated_write_benchmark.py": "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py",
+      "experiments/calibrated_write_duration.py": "reports/acnt_self_write_session_2026-10-02/sources/6125d4366618fbef752b35e26bb81d2c981b359596f30a4c2f41bdcff6abd777.py",
+      "acnt/goodness_prediction.py": "reports/acnt_self_write_session_2026-10-02/sources/2045d4098d23fb5b177b4a8e38b533a49f18cde3524bb43845e1304d0d2da86f.py",
+      "acnt/bounded_goodness.py": "reports/acnt_self_write_session_2026-10-02/sources/8adb7d0b730a318fdbf6ef43333fd5841dc24ed4e6d0928185475626de0a9eea.py"
+    }
+  },
+  "artifact_hashes": {
+    "reports/acnt_self_write_session_2026-10-02/sources/203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48.py": {
+      "sha256": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "bytes": 11792
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952.py": {
+      "sha256": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "bytes": 5984
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb.py": {
+      "sha256": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "bytes": 12516
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f.py": {
+      "sha256": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "bytes": 11157
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2.py": {
+      "sha256": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "bytes": 6728
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e.py": {
+      "sha256": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e",
+      "bytes": 6153
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/001.json": {
+      "sha256": "19aa725d5c7c3b153e1300946f0274130540201658916a93e68f5887b3e96ff6",
+      "bytes": 1864
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/002.json": {
+      "sha256": "abe5ae644e20f44ddab153616be2cd61f04d3234546a5aa6db2d3a5d112e7b0a",
+      "bytes": 1862
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/003.json": {
+      "sha256": "c3475fd5a9522e116f3c48e619d7aef4c95681f9f5d83286d22fa5cdbe2c6fa0",
+      "bytes": 1871
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/004.json": {
+      "sha256": "cd9c16fb1fef6176e49b7f3a97ee142587d2e9672efd5e6102893f50ce9dd88b",
+      "bytes": 1896
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/005.json": {
+      "sha256": "381304ab75abbb2c36237e37a959b42ba2b50e261cab53992f639fdebadb1a49",
+      "bytes": 1909
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/006.json": {
+      "sha256": "cfd0ad62bd0fa94d4d0c1d6fbb5a1567d3da648feae6273aa9ea268dec0b174e",
+      "bytes": 1908
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/007.json": {
+      "sha256": "1fb681d840eafcb17fe17612fd56a1599cf664960d3a7198d84f379966f8582d",
+      "bytes": 1909
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/008.json": {
+      "sha256": "f9e95b04984f4e79f150c8318a4532657d5939a2b5dbf862169879e6aa2d8773",
+      "bytes": 1893
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee.py": {
+      "sha256": "dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee",
+      "bytes": 11913
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb.py": {
+      "sha256": "1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb",
+      "bytes": 3902
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f.py": {
+      "sha256": "d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f",
+      "bytes": 11180
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0.py": {
+      "sha256": "7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0",
+      "bytes": 6242
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6.py": {
+      "sha256": "317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6",
+      "bytes": 6781
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/6125d4366618fbef752b35e26bb81d2c981b359596f30a4c2f41bdcff6abd777.py": {
+      "sha256": "6125d4366618fbef752b35e26bb81d2c981b359596f30a4c2f41bdcff6abd777",
+      "bytes": 18730
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/2045d4098d23fb5b177b4a8e38b533a49f18cde3524bb43845e1304d0d2da86f.py": {
+      "sha256": "2045d4098d23fb5b177b4a8e38b533a49f18cde3524bb43845e1304d0d2da86f",
+      "bytes": 9580
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/8adb7d0b730a318fdbf6ef43333fd5841dc24ed4e6d0928185475626de0a9eea.py": {
+      "sha256": "8adb7d0b730a318fdbf6ef43333fd5841dc24ed4e6d0928185475626de0a9eea",
+      "bytes": 3547
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/009.json": {
+      "sha256": "f2757b1224f85d835fac0acc5f7ab824cf5621bc6b229281f87d9eb7ea3d2580",
+      "bytes": 23827
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/19069038693c2e3bec4fe3207f8409e7fbba3ca73818d09ea43257225722315e.py": {
+      "sha256": "19069038693c2e3bec4fe3207f8409e7fbba3ca73818d09ea43257225722315e",
+      "bytes": 10610
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/010.json": {
+      "sha256": "014a5d313f3d0e4d8fe1ebecfdd04a7627e16c14b90d9af39d899d5743f559c5",
+      "bytes": 15485
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/9b87d47127f2a613e944156a59b8d6b68425e15a72b45d0b2492dbaf2fe5c2ff.py": {
+      "sha256": "9b87d47127f2a613e944156a59b8d6b68425e15a72b45d0b2492dbaf2fe5c2ff",
+      "bytes": 14491
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/011.json": {
+      "sha256": "a6655c3fdf62553ce409b645bb9970bc13fcb342d03ee00397621254c4cd44ca",
+      "bytes": 18613
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f.py": {
+      "sha256": "def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f",
+      "bytes": 11818
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5.py": {
+      "sha256": "58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5",
+      "bytes": 3164
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb.py": {
+      "sha256": "488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb",
+      "bytes": 6519
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/012.json": {
+      "sha256": "e2f413258fecb4a8fe07be9f770e6ab83c0cf0f79f57952270c094d1eefcac98",
+      "bytes": 2725
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/013.json": {
+      "sha256": "f7d3e6e4c0ba707073d2642be3df57c5b5a6568d1cce7ae44d8473f91f8e2e2e",
+      "bytes": 2708
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/7d85146e5f6ba704adde0206a49b4e49edd102819f1690e675c784c1ff2e60b3.py": {
+      "sha256": "7d85146e5f6ba704adde0206a49b4e49edd102819f1690e675c784c1ff2e60b3",
+      "bytes": 5574
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/014.json": {
+      "sha256": "c692531be9bd050748f1d1f364393987e0bb5a5115daad25772c19903995664b",
+      "bytes": 3803
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/015.json": {
+      "sha256": "ad673edb743b3394db4da915988d7c176dcac63d94787c9e1a3df1f6c58c4357",
+      "bytes": 3848
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/016.json": {
+      "sha256": "e91ffd0c5af9dd283cdf576cfa96258764b1217afaa601cd95d262a60db8521c",
+      "bytes": 2704
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/017.json": {
+      "sha256": "87dac15cab4043784f7f4bc49021460b0d43303afaeeeaeddec62c6e0f001d5e",
+      "bytes": 2724
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/018.json": {
+      "sha256": "d62e68fbf5c1f605e4fa4a9f7c8e2a8e056e69f31f2300c464e3f869d6aefbb7",
+      "bytes": 2721
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/019.json": {
+      "sha256": "11a79b1744b5d4e804820e25dbfb1a7d23d5c21dde38d5328dc6eed31c60de10",
+      "bytes": 2718
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/020.json": {
+      "sha256": "75b9051a7ebb7b342947ffc72a3ec2550efb46b53676288fcad618a410a570f1",
+      "bytes": 2710
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/021.json": {
+      "sha256": "79ba8621b943ce61af1f3ad2c4eb3244cbb83680affeeef06496feb44b8d41f7",
+      "bytes": 2721
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/022.json": {
+      "sha256": "24958a7189f5c4227c68add168671101a9c418a3da8f0ae6836d8306b3faf537",
+      "bytes": 2711
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/023.json": {
+      "sha256": "ce74424a110f5cf070674c3dffb3c422518b5ea188154fe550fd0bab59eb8625",
+      "bytes": 3347
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc.py": {
+      "sha256": "dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc",
+      "bytes": 10958
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e.py": {
+      "sha256": "bce26ff8cbee76c87a2847b6ac5d1b7a563d29f29249c411d07048791fd8d08e",
+      "bytes": 6315
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/024.json": {
+      "sha256": "f7df4ff17348d943b3e0217466f414f7afa92d6737f67b3c8e4cd0694bb724ef",
+      "bytes": 2208
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/025.json": {
+      "sha256": "25c7f61bf9a0ab4e4e7624585ba42109ba1c4f8ecc2a79ff431843109cb00ce9",
+      "bytes": 2212
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/026.json": {
+      "sha256": "4651ea1e55b518b246bb667b68a0d152e00999df6cbf05f0fdd4d57358d750a6",
+      "bytes": 2210
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/027.json": {
+      "sha256": "c8f9d8514716cf66c9d92882dae125a91eaf8165c8f7c6bc8c6ab891d4d7f6fb",
+      "bytes": 2226
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/028.json": {
+      "sha256": "99938cacd6c4dd8c6eb2141a453223b09b0980b0c50d9b334239ab1ae733b6aa",
+      "bytes": 2223
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/4a0e520432fb868b98c14e0000d6bd956314563ac610d165ce833ecb04996125.py": {
+      "sha256": "4a0e520432fb868b98c14e0000d6bd956314563ac610d165ce833ecb04996125",
+      "bytes": 2897
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/28683931748e0f4e0fee732ee05d851c820d60aecc9ebba628ded40d663cb390.py": {
+      "sha256": "28683931748e0f4e0fee732ee05d851c820d60aecc9ebba628ded40d663cb390",
+      "bytes": 4589
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/029.json": {
+      "sha256": "c91a7de15c3f24ea599bdcb0ea46a14625de10db54f0d072e1f191af2f654fe1",
+      "bytes": 2082
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/030.json": {
+      "sha256": "6c54b1fd6008ea4e20b089614aa83a1b41c052a97e398e7822fda1c78679a051",
+      "bytes": 2214
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/031.json": {
+      "sha256": "73c4b5ac85e6142322d223a6a5c0b0f8cf00636397fff9dc6f6db3866cd769b7",
+      "bytes": 2200
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/402bc7f96712bd391e43456256cc9fc82d953b7fab32136a8449256168697317.py": {
+      "sha256": "402bc7f96712bd391e43456256cc9fc82d953b7fab32136a8449256168697317",
+      "bytes": 1635
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/0cb61b4c1d622d65096a09f098c9dd8a21c2fac2e1897762c4c8d5449bb3d972.py": {
+      "sha256": "0cb61b4c1d622d65096a09f098c9dd8a21c2fac2e1897762c4c8d5449bb3d972",
+      "bytes": 5350
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/032.json": {
+      "sha256": "0e02424142338404e0c43b597638a5f1d3ffc0ccbffeccc6f628b378dce4b503",
+      "bytes": 2166
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/d2cd35723992aa3132f8d6c40169be71ca6c93785ec0886473cecd29fee9c3c0.py": {
+      "sha256": "d2cd35723992aa3132f8d6c40169be71ca6c93785ec0886473cecd29fee9c3c0",
+      "bytes": 5610
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/033.json": {
+      "sha256": "b445c4e57e144bf900004b3dea32e0dfdf7e1727a02d9a3756cbd34aee779227",
+      "bytes": 2217
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e.py": {
+      "sha256": "680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e",
+      "bytes": 18619
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a.py": {
+      "sha256": "b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a",
+      "bytes": 10191
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/034.json": {
+      "sha256": "15a932d62b7fff1f2ea22b0eabcbc0684ae878a461265e7a39bcccca49d00e8a",
+      "bytes": 1895
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/10070f3039f5e2bb73c3e3764fb6d7e18ca7ceafa293cdbc34ea197f4f7815aa.py": {
+      "sha256": "10070f3039f5e2bb73c3e3764fb6d7e18ca7ceafa293cdbc34ea197f4f7815aa",
+      "bytes": 9731
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/035.json": {
+      "sha256": "bcb616ea98e1df076f6c22d7796046268b72f48d9cedea1a8c3d9cd43489a11d",
+      "bytes": 1857
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/036.json": {
+      "sha256": "f6c9d9f934db83b1186fcd46626ba28605fb8b0cf4a77b94192063ea2a802f3c",
+      "bytes": 1887
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/037.json": {
+      "sha256": "14151bcd7e23499bf0ca9bba03aabc9e689f016343b076c277b357bea30ac91a",
+      "bytes": 1897
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/038.json": {
+      "sha256": "ac9ba813d06db8f275051207f586e408aa54d9a179b229fa31e62c639b75f508",
+      "bytes": 1896
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/039.json": {
+      "sha256": "c72416d7b69e67e661dac6dbaa68770b72c5a3c362e186d34025f83110efd7ff",
+      "bytes": 1894
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/040.json": {
+      "sha256": "5c7e64b2410ed55019fdb25f65e9914bc6c01dd137f9f2294f1cb790e0c67fde",
+      "bytes": 1875
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/041.json": {
+      "sha256": "3ce1c48b2d1b077302d6f7978e5a172ae75abc412ab2f2d13a2806cc08989b4f",
+      "bytes": 1884
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/16fa84bdd2a9049ac74e4dc6e0d25e228711fe57c63f11f034442fa891d147e4.py": {
+      "sha256": "16fa84bdd2a9049ac74e4dc6e0d25e228711fe57c63f11f034442fa891d147e4",
+      "bytes": 15513
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/0e35ab1ed91e83301ff3a2a5a26b267b685be2440b08d9119269fcac2ad81f26.py": {
+      "sha256": "0e35ab1ed91e83301ff3a2a5a26b267b685be2440b08d9119269fcac2ad81f26",
+      "bytes": 8677
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/042.json": {
+      "sha256": "4a1dad25a94fdfa4f654e950b40e09d09c2ad9cff6d1d653c535505aa2af5eea",
+      "bytes": 1806
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/043.json": {
+      "sha256": "ac3a1987f0611b82c3b20edeecc5ac30b8ee2e5d494e8c8517bfd499aba2aa25",
+      "bytes": 1810
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/044.json": {
+      "sha256": "8b42f8abc24540735ef7a2fba19ed58e2a6f6bd6cf7ef3ce9e3e24ab4789787a",
+      "bytes": 1807
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/5fafd23c48f2cd45282ec8aa9528120634e11d3fd132464cfa80b8f2014e59da.py": {
+      "sha256": "5fafd23c48f2cd45282ec8aa9528120634e11d3fd132464cfa80b8f2014e59da",
+      "bytes": 9129
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/045.json": {
+      "sha256": "28bec6e2ead4e4f83fa38bc1a4d4bbd35c5df6e7e304d9888a194d736ae77026",
+      "bytes": 4015
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/046.json": {
+      "sha256": "a027f2ae5c35efe0c24731e457fd1bfedd336f70091dd86fe457d9df6b25236b",
+      "bytes": 17366
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/e95798232eaed9b72c1a6a2c06f2787fe5dce45e251762fcaac378d226f6f320.py": {
+      "sha256": "e95798232eaed9b72c1a6a2c06f2787fe5dce45e251762fcaac378d226f6f320",
+      "bytes": 12051
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/3416fd1f7ec43ddab4c68ada0a243172684f2f2d69106da6f9ccf158571dd70f.py": {
+      "sha256": "3416fd1f7ec43ddab4c68ada0a243172684f2f2d69106da6f9ccf158571dd70f",
+      "bytes": 8695
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/047.json": {
+      "sha256": "d879c0ecf27f803ca4126e5cad65b5e0b52524cd30b1b6d7e42ee1491d55fe6f",
+      "bytes": 3821
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/048.json": {
+      "sha256": "204e10f81542b5dc88f471287d1038e9683ad32bb7f20c44f9bde5060ac0c613",
+      "bytes": 18733
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa.py": {
+      "sha256": "5393baf599fbbc80a78505d867d88182f8226c9eb2516c8360833674a5a435aa",
+      "bytes": 12039
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312.py": {
+      "sha256": "2061237292b3e0935a964305d4f1c36163eb4d545f03fc68d5d7b159e0972312",
+      "bytes": 5513
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/049.json": {
+      "sha256": "9aab615707504c800fb94dd9d1faeb4a041470900428a2300259ab5c3a5e8a81",
+      "bytes": 1613
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/050.json": {
+      "sha256": "7feb74ba4777fe37ea7ae9a80833b5ae223857b05342da9a91eb335553db6462",
+      "bytes": 1589
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/051.json": {
+      "sha256": "4cb4986d989ace6e5609f8c907be9609ad03e494d54989c542242e4755c0c5e8",
+      "bytes": 1579
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/052.json": {
+      "sha256": "560002421aea262a227165c297285d58c71cec1f57a565cb7fe456db560e1b52",
+      "bytes": 1601
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/053.json": {
+      "sha256": "06f0ac649bcf18978a724129f799be39b1cb2c8901c28c0a2bd381900452273d",
+      "bytes": 1599
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/054.json": {
+      "sha256": "a8945e619d4a49f4814044d73020e20060253870720865b32128dffc30cb5ec3",
+      "bytes": 1601
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/cf24c70b558e3375c96422fcef146d295699e7c25976fb9a0d2abf63fbfc8bbe.py": {
+      "sha256": "cf24c70b558e3375c96422fcef146d295699e7c25976fb9a0d2abf63fbfc8bbe",
+      "bytes": 5937
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/055.json": {
+      "sha256": "a89505718ba46fef5752e8ff4eff76d54d03b3b7eff4d7890bd91763b96585de",
+      "bytes": 1618
+    },
+    "reports/acnt_self_write_session_2026-10-02/records/056.json": {
+      "sha256": "963ce42ee9ee4cc86ddf2cb17287b8ca1ab51b23751acdacd5f150d1e1aa6c30",
+      "bytes": 1596
+    },
+    "reports/acnt_self_write_session_2026-10-02/sources/631b4ed5199f0a03f4cb476648137951d4b6b79e2804a74d798ced44e199cd34.py": {
+      "sha256": "631b4ed5199f0a03f4cb476648137951d4b6b79e2804a74d798ced44e199cd34",
+      "bytes": 2225
+    },
+    "reports/original_acnt_online_2026-10-01.json": {
+      "sha256": "44bcb2a936193e7fc0198cb765ef1441ebfcbd6b7edfad7250664db9d9c89a35",
+      "bytes": 51853
+    },
+    "reports/original_acnt_online_2026-10-01.md": {
+      "sha256": "b630d66474ce7c313371ed9e596ac795f974a9d760347a2de7e1287b7eee0f50",
+      "bytes": 7479
+    },
+    "reports/original_acnt_online_2026-10-01.png": {
+      "sha256": "ffe1566d174b9a7ca3c925ae0592d723c8d171038dae5645eea8ed140eac6fe1",
+      "bytes": 192283
+    },
+    "reports/original_acnt_online_2026-10-01.svg": {
+      "sha256": "85b1f63d4e2ade32a63e25a427ff6249abedd19a3107f7a5597c8d1c432ee941",
+      "bytes": 112145
+    },
+    "reports/self_write_bootstrap_2026-10-01.json": {
+      "sha256": "e84294b6ca803f07c2936aad3de92aec856db2a44a5498ed4ff5b95861654035",
+      "bytes": 24044
+    },
+    "reports/self_write_bootstrap_2026-10-01.md": {
+      "sha256": "66828f4174ee5829ae47d32a70586874e2857b77972c64357ee6d7aebc0cac81",
+      "bytes": 5854
+    },
+    "reports/self_write_bootstrap_2026-10-01.png": {
+      "sha256": "548d953a4f8d5308e5b1264c4455263bd22ccafaff14fa84a428b52d041f8d53",
+      "bytes": 136298
+    },
+    "reports/self_write_bootstrap_2026-10-01.svg": {
+      "sha256": "717e5a6f81844df7d3c14f6839d8214525062c504ccd86c10dd8080396e9b4f2",
+      "bytes": 104730
+    },
+    "reports/self_write_input_diagnostic_2026-10-01.json": {
+      "sha256": "cf3921b046176458f75948323e165c787b31345e5acbffd0f0a2da0af92bbbc9",
+      "bytes": 17417
+    },
+    "reports/self_write_input_diagnostic_2026-10-01.md": {
+      "sha256": "bc531608633e8b0c56d5b09c8e9d7436db1ad1cb52cc7c1b6cc9482d75d192aa",
+      "bytes": 5415
+    },
+    "reports/address_write_online_2026-10-01.json": {
+      "sha256": "0b8ca348d5c3080bdc761cc42178091c64f5a427ee2eb6123f377b1e0cd69b8f",
+      "bytes": 16645
+    },
+    "reports/address_write_online_2026-10-01.md": {
+      "sha256": "1c5fbc9063a2c4311a7329f0d6bb675234ab6880fe6d039a1759841c412aab0c",
+      "bytes": 4114
+    },
+    "reports/address_write_online_2026-10-01.png": {
+      "sha256": "27e592f3807f1eca3a4718d1eb17cb7a22867e53cd7b9e62731e850758750dc4",
+      "bytes": 86242
+    },
+    "reports/address_write_online_2026-10-01.svg": {
+      "sha256": "a815a29e9c587fdb99a24e7ca94c4b3a27b7c095120a1fc17bc19c6418ee485e",
+      "bytes": 78381
+    },
+    "reports/grouped_write_online_2026-10-01.json": {
+      "sha256": "027328fb2a001384087a9ee3ab9ce5584d4147e3210109138eff0fa31dd53190",
+      "bytes": 25777
+    },
+    "reports/grouped_write_online_2026-10-01.md": {
+      "sha256": "d09709b7cc669c38b193e01c7d1c126278a7197448f5840442fc69aabf034698",
+      "bytes": 5400
+    },
+    "reports/grouped_write_online_2026-10-01.png": {
+      "sha256": "ecc642e8b1c91d5ad6bd91393a73883a63233c6bedc04f4fd73730d4b00325c3",
+      "bytes": 96417
+    },
+    "reports/grouped_write_online_2026-10-01.svg": {
+      "sha256": "e050a4b0f488eefb0721275c83503c766e3fcbb34322a1b172e4c0c4a1af3c32",
+      "bytes": 85827
+    },
+    "reports/grouped_write_feasibility_2026-10-01.json": {
+      "sha256": "eee947010455c89c743333afabdc5ead60ae7a49ebe1031e397556fcfb57e909",
+      "bytes": 2530
+    },
+    "reports/calibrated_write_online_2026-10-01.json": {
+      "sha256": "0b1276738d845aae6cba6c6a9e8e10184c663727022b49e36b31282a297dc3af",
+      "bytes": 31445
+    },
+    "reports/calibrated_write_online_2026-10-01.md": {
+      "sha256": "fc3e44241b66912319b59c7bb68619f82348bbcbbf1381c9a4b3a297fea06a9b",
+      "bytes": 5605
+    },
+    "reports/calibrated_write_online_2026-10-01.png": {
+      "sha256": "ee06118df989417bb895060bcd62f17181784c4d1b6a43fa35445e05ea9b2dff",
+      "bytes": 139628
+    },
+    "reports/calibrated_write_online_2026-10-01.svg": {
+      "sha256": "8f79dbf57f2607c6ebf4b0d2832c05b0d5236b1cb9135e32318a2c603e2b3ef1",
+      "bytes": 66988
+    },
+    "reports/write_vector_budget_2026-10-01.json": {
+      "sha256": "82d2ffd05243d67630c4b79a19fe55395de28131c7b2deac7b16e3bd0f63f9de",
+      "bytes": 6359
+    },
+    "reports/write_group_limit_2026-10-01.json": {
+      "sha256": "30076432e7cce57aeb35a80907c6ceddfe93edd46dd8823d62c4203c6464ff26",
+      "bytes": 2564
+    },
+    "reports/write_structure_limit_2026-10-01.json": {
+      "sha256": "8b671001869a071edff9b277a189fed0ec5512e4e0b49ae15ca27fe6d569995a",
+      "bytes": 4662
+    },
+    "reports/calibrated_write_benchmark_2026-10-01.json": {
+      "sha256": "9721ea53061b936af7398af4dca6437e5b4fa791078b7b921c53d94350daa1b3",
+      "bytes": 15335
+    },
+    "reports/calibrated_write_benchmark_4_threads_2026-10-01.json": {
+      "sha256": "bd674c1345626a2498d59d5861b0b22a944ca3d153a8a55375dadb8621349688",
+      "bytes": 2404
+    },
+    "reports/calibrated_write_10min_2026-10-01.json": {
+      "sha256": "610e3287375d6a2a307a49160758936216b063029f44cccd70b8ed0e90a8ea4b",
+      "bytes": 5678
+    },
+    "reports/calibrated_write_10min_2026-10-01.md": {
+      "sha256": "e397909b0cb9e689c5d4e6d0b2a2647aca2b9e8c9bac4958bc14e54246dcb5b6",
+      "bytes": 3456
+    },
+    "reports/calibrated_write_10min_2026-10-01.png": {
+      "sha256": "7ec3d50427ec79e11ba205316bde46b937c0f37310e803000eb3e1519cf935a7",
+      "bytes": 104895
+    },
+    "reports/calibrated_write_10min_2026-10-01.svg": {
+      "sha256": "4c0afd474784f2682f79238436f89786ebb7f2e691d780975340557c32e4c231",
+      "bytes": 60605
+    },
+    "reports/goodness_prediction_10min_2026-10-01.json": {
+      "sha256": "e1a5328b40e16477c5ed88e2023dfe1d93d985b7c909340ea2efed6872b263c4",
+      "bytes": 9476
+    },
+    "reports/goodness_prediction_10min_2026-10-01.md": {
+      "sha256": "88d86540ca1821ab0a4c2c9b090e5d080c5984b9b889e1398a3f66c7eb5cd098",
+      "bytes": 4367
+    },
+    "reports/goodness_prediction_10min_2026-10-01.png": {
+      "sha256": "471a5166548e6ed740d7caf95655c4d2a4f1306e3ad9dfcb73695c9bd54983d9",
+      "bytes": 207937
+    },
+    "reports/goodness_prediction_10min_2026-10-01.svg": {
+      "sha256": "75cee218e5f4c065b425c1e37d3c6b0145cc53f0934aaa3cc84e44d0d27c847a",
+      "bytes": 100158
+    },
+    "reports/bounded_goodness_10min_2026-10-01.json": {
+      "sha256": "1241a0937dd73b292bd6cd49fed1d61038a814746ebbad2ce8e362a6fc8338d3",
+      "bytes": 10428
+    },
+    "reports/bounded_goodness_10min_2026-10-01.md": {
+      "sha256": "f8d4b4793c910a2e249cdc24c02c161c9e15b2fe7bfc8aaab537b92e99af986d",
+      "bytes": 3792
+    },
+    "reports/bounded_goodness_10min_2026-10-01.png": {
+      "sha256": "97fb67dec1034b4dab9a07318881a4fb8242621453db0d765aa288af828956b0",
+      "bytes": 208914
+    },
+    "reports/bounded_goodness_10min_2026-10-01.svg": {
+      "sha256": "184d1e482639e7709a4fc2981b4cb7bf4b9773d61a7fe6f7210e2e07bab84ff6",
+      "bytes": 96421
+    },
+    "reports/acnt_self_write_session_2026-10-02.md": {
+      "sha256": "c209568e9aefc6086b50867db6433d09d6cce08e5e58f793f48577a8296b7c08",
+      "bytes": 16896
+    },
+    "reports/acnt_self_write_session_2026-10-02.png": {
+      "sha256": "4c26e8be0c3973168e569e6b2db021d3669d4fa26c16300835aac640042a6eb5",
+      "bytes": 138214
+    },
+    "reports/acnt_self_write_session_2026-10-02.svg": {
+      "sha256": "2bb89743c29dae304864f02da0e4edf4d60a3e018654e9aadbadd77cd8ec5889",
+      "bytes": 78439
+    }
+  },
+  "validation": "all stage summarizers passed before assembly"
+}

@@ -1,0 +1,55 @@
+{
+  "seed": 11,
+  "task": "cue",
+  "group_size": 32,
+  "groups": 143,
+  "modulation": "core",
+  "generator": "independent linear heads",
+  "actuator": "raw",
+  "write_scale": 0.01,
+  "lr": 0.001,
+  "decisions": 1000,
+  "events": 4000,
+  "neural_resets": 0,
+  "total_effective_parameters": 3756,
+  "writer_parameters": 715,
+  "first": {
+    "count": 100,
+    "expected_goodness": 0.5003677746653556,
+    "sampled_accuracy": 0.54
+  },
+  "last": {
+    "count": 100,
+    "expected_goodness": 0.5026840460300446,
+    "sampled_accuracy": 0.59
+  },
+  "all": {
+    "count": 1000,
+    "expected_goodness": 0.49920132452249527,
+    "sampled_accuracy": 0.51
+  },
+  "written_coordinates": 3055,
+  "self_written_coordinates": 564,
+  "parameter_change_norm": 2.492954730987549,
+  "meta_clips": 0,
+  "actor_clips": 3,
+  "persistent_state_and_training_tensor_bytes": 12826456,
+  "source_hashes": {
+    "acnt/grouped_write_independent.py": "4a0e520432fb868b98c14e0000d6bd956314563ac610d165ce833ecb04996125",
+    "acnt/grouped_write.py": "dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc",
+    "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+    "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/grouped_write_independent_online.py": "28683931748e0f4e0fee732ee05d851c820d60aecc9ebba628ded40d663cb390"
+  },
+  "seconds": 418.8112476999995,
+  "limitations": [
+    "one seed",
+    "new independently parameterized outputs increase total mutable parameters",
+    "raw exponential eligibility shared with grouped v1; hybrid stopped derivative approximation",
+    "external writer bootstrap remains",
+    "immediate reward toy, not lifelong validation"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "seed": 11,
+  "mode": "cut_delay",
+  "credit_mode": "trace",
+  "feedback_protocol": "fixed",
+  "delay_periods": 3,
+  "decisions": 1000,
+  "events": 5000,
+  "gap_events": 3,
+  "hold_tick": 4,
+  "width": 4,
+  "lr": 0.001,
+  "seconds": 90.62104950000139,
+  "initial_segment": {
+    "count": 100,
+    "expected_goodness": 0.5008104518055916,
+    "sample_accuracy": 0.6,
+    "diagnostic_accuracy": 0.54
+  },
+  "final_segment": {
+    "count": 100,
+    "expected_goodness": 0.4997033476829529,
+    "sample_accuracy": 0.52,
+    "diagnostic_accuracy": 0.48
+  },
+  "all": {
+    "count": 1000,
+    "expected_goodness": 0.4998506113886833,
+    "sample_accuracy": 0.509,
+    "diagnostic_accuracy": 0.488
+  },
+  "updates": 996,
+  "feedback_crossing_updates": 995,
+  "neural_resets": 0,
+  "learning_state_bytes": 1523592,
+  "state_dim": 120,
+  "param_dim": 3023,
+  "sensitivity_clips": 3,
+  "max_sensitivity_norm": 1227.001220703125,
+  "score_clips": 0,
+  "trace_clips": 0,
+  "parameter_path_length": 0.0,
+  "pending_at_stop": 4,
+  "source_hashes": {
+    "acnt/original_online.py": "680ca04f5f34f0311902fce85cef8c8c4c6c497e25d055eb4a908a4958bb979e",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/original_acnt_online.py": "b80358bed962d96cf5df2e4c447a50a1c37eac42453a73a86951f7df2c69382a"
+  },
+  "limitations": [
+    "synthetic exogenous cue stream; no real mechanical action",
+    "one Hand binary coordinate only",
+    "dense sensitivity reference, not scalable production kernels",
+    "stop-update tangent, not full meta-gradient",
+    "no lifelong no-forgetting or irreversible-world safety guarantee",
+    "test lifetime stopped without draining pending feedback"
+  ]
+}

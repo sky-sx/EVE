@@ -1,0 +1,22 @@
+
+=== g0_math_check.py ===
+G0 current event-flow partition forward max_abs=8.674e-19
+G0 current event-flow partition gradient max_abs=3.469e-18, rel=2.915e-16
+G0 smoke: PASS
+
+=== g1_cross_credit.py ===
+single-estimator cosine: mean=0.7511, min=0.0644, max=0.9840
+mean of 128 rank-4 estimators vs exact: cosine=0.987253, relative_error=0.194762
+G1 streaming low-rank statistical smoke: PASS
+
+=== g2_event_flow_time.py ===
+partition errors: {2: '0.000e+00', 4: '0.000e+00', 8: '6.939e-18', 16: '6.939e-18', 32: '6.939e-18', 128: '1.561e-17'}
+physical-time acc=0.9993; fake-dt acc=0.5100
+G2 smoke: PASS
+
+=== g3_async_bootstrap.py ===
+eager vs lazy state max errors: ['3.469e-18', '3.469e-18', '3.469e-18', '6.939e-18']
+example distant/local sensitivity ratio: 0.001
+G3 runtime semantics: PASS; G3 developmental robustness: PENDING
+
+All handoff smoke experiments completed.

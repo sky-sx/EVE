@@ -1,0 +1,104 @@
+{
+  "kind": "algebra under assumed joint Gaussian credits; not measured ACNT",
+  "gain_ratio": "sqrt(rho + (1-rho)/g)",
+  "criterion": "ratio of expected absolute first-order gains",
+  "rows": [
+    {
+      "neurons": 2,
+      "rho_assumption": 0.0,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 4,
+      "conditional_max_g": 4,
+      "nonempty": true
+    },
+    {
+      "neurons": 2,
+      "rho_assumption": 0.1,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 4,
+      "conditional_max_g": 6,
+      "nonempty": true
+    },
+    {
+      "neurons": 2,
+      "rho_assumption": 0.2,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 4,
+      "conditional_max_g": 16,
+      "nonempty": true
+    },
+    {
+      "neurons": 2,
+      "rho_assumption": 0.25,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 4,
+      "conditional_max_g": null,
+      "nonempty": true
+    },
+    {
+      "neurons": 4,
+      "rho_assumption": 0.0,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 6,
+      "conditional_max_g": 4,
+      "nonempty": false
+    },
+    {
+      "neurons": 4,
+      "rho_assumption": 0.1,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 6,
+      "conditional_max_g": 6,
+      "nonempty": true
+    },
+    {
+      "neurons": 4,
+      "rho_assumption": 0.2,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 6,
+      "conditional_max_g": 16,
+      "nonempty": true
+    },
+    {
+      "neurons": 4,
+      "rho_assumption": 0.25,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 6,
+      "conditional_max_g": null,
+      "nonempty": true
+    },
+    {
+      "neurons": 8,
+      "rho_assumption": 0.0,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 10,
+      "conditional_max_g": 4,
+      "nonempty": false
+    },
+    {
+      "neurons": 8,
+      "rho_assumption": 0.1,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 10,
+      "conditional_max_g": 6,
+      "nonempty": false
+    },
+    {
+      "neurons": 8,
+      "rho_assumption": 0.2,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 10,
+      "conditional_max_g": 16,
+      "nonempty": true
+    },
+    {
+      "neurons": 8,
+      "rho_assumption": 0.25,
+      "required_mean_retention": 0.5,
+      "structural_min_g": 10,
+      "conditional_max_g": null,
+      "nonempty": true
+    }
+  ],
+  "rho_needed_g32_retention_half": 0.22580645161290322
+}

@@ -1,0 +1,612 @@
+{
+  "seed": 11,
+  "mode": "trained_write",
+  "write_mode": "delta",
+  "decisions": 1000,
+  "neural_resets": 0,
+  "policy_future": {
+    "expected_goodness": 0.4840310568114122,
+    "sample_accuracy": 0.4766666666666667
+  },
+  "policy_last_100": {
+    "expected_goodness": 0.5288693027384579,
+    "sample_accuracy": 0.51
+  },
+  "future_majority_baseline": 0.5166666666666667,
+  "probes": {
+    "raw_audio": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 2.399753077634063,
+      "feature_std_rms": 0.6106959120132694,
+      "normalized_class_distance": 3.9463819010305583
+    },
+    "ear_adapter": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 1.9792153322222985,
+      "feature_std_rms": 0.3561529159172991,
+      "normalized_class_distance": 5.581026798705819
+    },
+    "ear_z_at_cue": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.9985714285714286,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 0.11031017543516465,
+      "feature_std_rms": 0.02910453732131488,
+      "normalized_class_distance": 3.3475911112149896
+    },
+    "ear_z_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 1.0,
+      "class_mean_distance": 0.1347642375769057,
+      "feature_std_rms": 0.039950009504024504,
+      "normalized_class_distance": 2.9476812581109586
+    },
+    "hand_z_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.9742857142857143,
+      "future_accuracy": 0.9666666666666667,
+      "class_mean_distance": 0.016560464454418684,
+      "feature_std_rms": 0.011150761218756624,
+      "normalized_class_distance": 1.4710670007264444
+    },
+    "hand_history_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 1.0,
+      "future_accuracy": 0.97,
+      "class_mean_distance": 0.10604739924063598,
+      "feature_std_rms": 0.046823303256922785,
+      "normalized_class_distance": 2.279917656048163
+    },
+    "hand_hidden": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.9857142857142858,
+      "future_accuracy": 0.89,
+      "class_mean_distance": 0.008815020431680138,
+      "feature_std_rms": 0.003879459379284451,
+      "normalized_class_distance": 2.2532743949573626
+    },
+    "write_block_z_at_action": {
+      "train_count": 700,
+      "test_count": 300,
+      "train_accuracy": 0.6514285714285715,
+      "future_accuracy": 0.48333333333333334,
+      "class_mean_distance": 0.015656713732393922,
+      "feature_std_rms": 0.06534725713783544,
+      "normalized_class_distance": 0.17195108909511597
+    }
+  },
+  "original_hand_supervised_probe": {
+    "train_accuracy": 0.9528571367263794,
+    "future_accuracy": 0.9666666388511658,
+    "steps": 2000,
+    "training_signal": "observer labels, diagnostic only"
+  },
+  "core_edge_initial_norm": 2.377450704574585,
+  "core_edge_final_norm": 7.00143575668335,
+  "credit_last_100": [
+    {
+      "neural_path_norm": 0.09680241346359253,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09680241346359253
+    },
+    {
+      "neural_path_norm": 0.0983058288693428,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0983058288693428
+    },
+    {
+      "neural_path_norm": 0.09909462928771973,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09909462928771973
+    },
+    {
+      "neural_path_norm": 0.1652570217847824,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1652570217847824
+    },
+    {
+      "neural_path_norm": 0.0985097736120224,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0985097736120224
+    },
+    {
+      "neural_path_norm": 0.09797437489032745,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09797437489032745
+    },
+    {
+      "neural_path_norm": 0.12961913645267487,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.12961913645267487
+    },
+    {
+      "neural_path_norm": 0.10032175481319427,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.10032175481319427
+    },
+    {
+      "neural_path_norm": 0.16455340385437012,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.16455340385437012
+    },
+    {
+      "neural_path_norm": 0.10014024376869202,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.10014024376869202
+    },
+    {
+      "neural_path_norm": 0.15085339546203613,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.15085339546203613
+    },
+    {
+      "neural_path_norm": 0.10063193738460541,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.10063193738460541
+    },
+    {
+      "neural_path_norm": 0.0828910619020462,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0828910619020462
+    },
+    {
+      "neural_path_norm": 0.13019341230392456,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.13019341230392456
+    },
+    {
+      "neural_path_norm": 0.08182875066995621,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08182875066995621
+    },
+    {
+      "neural_path_norm": 0.08208329975605011,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08208329975605011
+    },
+    {
+      "neural_path_norm": 0.08290975540876389,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08290975540876389
+    },
+    {
+      "neural_path_norm": 0.08454619348049164,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08454619348049164
+    },
+    {
+      "neural_path_norm": 0.08253946900367737,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08253946900367737
+    },
+    {
+      "neural_path_norm": 0.129743292927742,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.129743292927742
+    },
+    {
+      "neural_path_norm": 0.14180341362953186,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.14180341362953186
+    },
+    {
+      "neural_path_norm": 0.16600258648395538,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.16600258648395538
+    },
+    {
+      "neural_path_norm": 0.16768263280391693,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.16768263280391693
+    },
+    {
+      "neural_path_norm": 0.09827549755573273,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09827549755573273
+    },
+    {
+      "neural_path_norm": 0.16191832721233368,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.16191832721233368
+    },
+    {
+      "neural_path_norm": 0.14744879305362701,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.14744879305362701
+    },
+    {
+      "neural_path_norm": 0.16403207182884216,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.16403207182884216
+    },
+    {
+      "neural_path_norm": 0.13787831366062164,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.13787831366062164
+    },
+    {
+      "neural_path_norm": 0.08151926100254059,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08151926100254059
+    },
+    {
+      "neural_path_norm": 0.0831676796078682,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0831676796078682
+    },
+    {
+      "neural_path_norm": 0.08437569439411163,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08437569439411163
+    },
+    {
+      "neural_path_norm": 0.15809860825538635,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.15809860825538635
+    },
+    {
+      "neural_path_norm": 0.139551043510437,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.139551043510437
+    },
+    {
+      "neural_path_norm": 0.13458018004894257,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.13458018004894257
+    },
+    {
+      "neural_path_norm": 0.1537843644618988,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1537843644618988
+    },
+    {
+      "neural_path_norm": 0.08414124697446823,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08414124697446823
+    },
+    {
+      "neural_path_norm": 0.1428060531616211,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1428060531616211
+    },
+    {
+      "neural_path_norm": 0.08433707803487778,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08433707803487778
+    },
+    {
+      "neural_path_norm": 0.0844031497836113,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0844031497836113
+    },
+    {
+      "neural_path_norm": 0.08890880644321442,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08890880644321442
+    },
+    {
+      "neural_path_norm": 0.1702113151550293,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1702113151550293
+    },
+    {
+      "neural_path_norm": 0.1737707257270813,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1737707257270813
+    },
+    {
+      "neural_path_norm": 0.15249474346637726,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.15249474346637726
+    },
+    {
+      "neural_path_norm": 0.15473337471485138,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.15473337471485138
+    },
+    {
+      "neural_path_norm": 0.1667822301387787,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1667822301387787
+    },
+    {
+      "neural_path_norm": 0.16979598999023438,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.16979598999023438
+    },
+    {
+      "neural_path_norm": 0.08537363260984421,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08537363260984421
+    },
+    {
+      "neural_path_norm": 0.08870182931423187,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08870182931423187
+    },
+    {
+      "neural_path_norm": 0.08793307095766068,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08793307095766068
+    },
+    {
+      "neural_path_norm": 0.0862254723906517,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0862254723906517
+    },
+    {
+      "neural_path_norm": 0.08667252957820892,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08667252957820892
+    },
+    {
+      "neural_path_norm": 0.13855959475040436,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.13855959475040436
+    },
+    {
+      "neural_path_norm": 0.08728843927383423,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08728843927383423
+    },
+    {
+      "neural_path_norm": 0.1387232393026352,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1387232393026352
+    },
+    {
+      "neural_path_norm": 0.15056772530078888,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.15056772530078888
+    },
+    {
+      "neural_path_norm": 0.086374431848526,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.086374431848526
+    },
+    {
+      "neural_path_norm": 0.08814053982496262,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08814053982496262
+    },
+    {
+      "neural_path_norm": 0.13990633189678192,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.13990633189678192
+    },
+    {
+      "neural_path_norm": 0.1333339810371399,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1333339810371399
+    },
+    {
+      "neural_path_norm": 0.1394357681274414,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1394357681274414
+    },
+    {
+      "neural_path_norm": 0.08674822002649307,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08674822002649307
+    },
+    {
+      "neural_path_norm": 0.17264731228351593,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.17264731228351593
+    },
+    {
+      "neural_path_norm": 0.08879105001688004,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08879105001688004
+    },
+    {
+      "neural_path_norm": 0.1503286063671112,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1503286063671112
+    },
+    {
+      "neural_path_norm": 0.17114293575286865,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.17114293575286865
+    },
+    {
+      "neural_path_norm": 0.08723471313714981,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08723471313714981
+    },
+    {
+      "neural_path_norm": 0.0875815823674202,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0875815823674202
+    },
+    {
+      "neural_path_norm": 0.16999566555023193,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.16999566555023193
+    },
+    {
+      "neural_path_norm": 0.08880763500928879,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.08880763500928879
+    },
+    {
+      "neural_path_norm": 0.09019940346479416,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09019940346479416
+    },
+    {
+      "neural_path_norm": 0.09055311977863312,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09055311977863312
+    },
+    {
+      "neural_path_norm": 0.09063661843538284,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09063661843538284
+    },
+    {
+      "neural_path_norm": 0.17401926219463348,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.17401926219463348
+    },
+    {
+      "neural_path_norm": 0.17495231330394745,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.17495231330394745
+    },
+    {
+      "neural_path_norm": 0.09004078060388565,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09004078060388565
+    },
+    {
+      "neural_path_norm": 0.09164351969957352,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09164351969957352
+    },
+    {
+      "neural_path_norm": 0.1470087319612503,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1470087319612503
+    },
+    {
+      "neural_path_norm": 0.17038974165916443,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.17038974165916443
+    },
+    {
+      "neural_path_norm": 0.09059389680624008,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09059389680624008
+    },
+    {
+      "neural_path_norm": 0.17504295706748962,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.17504295706748962
+    },
+    {
+      "neural_path_norm": 0.1744975447654724,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1744975447654724
+    },
+    {
+      "neural_path_norm": 0.1701868772506714,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1701868772506714
+    },
+    {
+      "neural_path_norm": 0.09071996062994003,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09071996062994003
+    },
+    {
+      "neural_path_norm": 0.09326609969139099,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09326609969139099
+    },
+    {
+      "neural_path_norm": 0.0926472619175911,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0926472619175911
+    },
+    {
+      "neural_path_norm": 0.09118805825710297,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09118805825710297
+    },
+    {
+      "neural_path_norm": 0.09222373366355896,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09222373366355896
+    },
+    {
+      "neural_path_norm": 0.15248732268810272,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.15248732268810272
+    },
+    {
+      "neural_path_norm": 0.1466713845729828,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1466713845729828
+    },
+    {
+      "neural_path_norm": 0.14552877843379974,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.14552877843379974
+    },
+    {
+      "neural_path_norm": 0.0934985801577568,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0934985801577568
+    },
+    {
+      "neural_path_norm": 0.09206127375364304,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09206127375364304
+    },
+    {
+      "neural_path_norm": 0.09284916520118713,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09284916520118713
+    },
+    {
+      "neural_path_norm": 0.15857745707035065,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.15857745707035065
+    },
+    {
+      "neural_path_norm": 0.1775834560394287,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1775834560394287
+    },
+    {
+      "neural_path_norm": 0.09123806655406952,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09123806655406952
+    },
+    {
+      "neural_path_norm": 0.1605686992406845,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.1605686992406845
+    },
+    {
+      "neural_path_norm": 0.09631053358316422,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09631053358316422
+    },
+    {
+      "neural_path_norm": 0.0944584384560585,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.0944584384560585
+    },
+    {
+      "neural_path_norm": 0.09542495012283325,
+      "bias_path_norm": 0.0,
+      "total_norm": 0.09542495012283325
+    }
+  ],
+  "source_hashes": {
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/self_write_input_diagnostic.py": "5fafd23c48f2cd45282ec8aa9528120634e11d3fd132464cfa80b8f2014e59da"
+  },
+  "limitations": [
+    "observer probes use labels; not a training mechanism offered to the subject",
+    "linear separability is not proof that the self-write rule can learn the readout",
+    "one seed; chronological held-out prefix/suffix; only 1000 simulated decisions",
+    "probe features collected before the current action reward enters Core"
+  ]
+}

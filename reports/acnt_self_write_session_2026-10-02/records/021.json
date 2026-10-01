@@ -1,0 +1,68 @@
+{
+  "seed": 11,
+  "mode": "broadcast",
+  "task": "cue",
+  "decisions": 1000,
+  "events": 4000,
+  "normalize": true,
+  "taus_ms": [
+    0.1,
+    0.1,
+    0.1
+  ],
+  "head_lr": 0.01,
+  "control_lr": 0.003,
+  "total_parameters": 3756,
+  "writer_parameters": 715,
+  "groups": 143,
+  "neural_resets": 0,
+  "outer_parameter_updates": 0,
+  "first": {
+    "count": 100,
+    "expected_goodness": 0.5226468151807785,
+    "sampled_accuracy": 0.54,
+    "f_sign_accuracy": 0.645294116055593,
+    "calibration_loss": 0.6824393010139466
+  },
+  "last": {
+    "count": 100,
+    "expected_goodness": 0.9879435798110535,
+    "sampled_accuracy": 0.98,
+    "f_sign_accuracy": 0.98,
+    "calibration_loss": 0.05582996279088547
+  },
+  "all": {
+    "count": 1000,
+    "expected_goodness": 0.8916749663547016,
+    "sampled_accuracy": 0.893,
+    "f_sign_accuracy": 0.9456666662823409,
+    "calibration_loss": 0.14126271542333416
+  },
+  "phases": [],
+  "written_coordinates": 3644,
+  "self_written_coordinates": 715,
+  "parameter_change_norm": 11.139391899108887,
+  "persistent_state_and_training_tensor_bytes": 1792188,
+  "tangent_clips": 18,
+  "update_clips": 586,
+  "seconds": 175.6436845000062,
+  "source_hashes": {
+    "acnt/calibrated_write.py": "def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f",
+    "acnt/grouped_write_independent.py": "58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5",
+    "acnt/grouped_write.py": "d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f",
+    "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/calibrated_write_online.py": "488dc05c7290eadadec9c5809ff8d93570837a4ff3526e17dbdf50699faddafb"
+  },
+  "limitations": [
+    "task-independent calibration loss explicitly prescribed, not discovered by Core",
+    "controller eligibility uses calibration gradient; changes eligibility binding",
+    "finite dense neural sensitivity/moments/normalization are extra numerical state, not Core H",
+    "stop-update and statistic derivatives; not a complete self-modifying lifetime gradient",
+    "normalization changes Adapter input mapping, ordinary Block forward retained",
+    "immediate scalar reward toy; delayed anonymous rewards and lifelong retention unvalidated"
+  ]
+}

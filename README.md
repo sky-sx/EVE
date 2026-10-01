@@ -1,8 +1,16 @@
 # ACNT / EVE Core Runtime
 
+本对话实验总报告（2026-10-02）：[ACNT 在线自修改训练](reports/acnt_self_write_session_2026-10-02.md)。
+覆盖原版在线信用、地址/分组写入、全参数自校准、规则切换、容量与性能分析，以及三次十分钟连续实验。
+最新候选使用一个有界总 goodness，同时训练 AB 动作与对最终 goodness 的预测。
+[训练研究入口](docs/training/README.md) · [数学证明](docs/training/BOUNDED_TOTAL_GOODNESS.md) ·
+[精简证据及源码版本](reports/acnt_self_write_session_2026-10-02/manifest.json)。
+小模型已有行为学习与自身写入证据；三次十分钟运行尚未观察到稳定末段，不宣称已验证一般终生学习。
+
 这是 EVE 的 ACNT v0.x 本地研究运行时。当前生产路径实现六器官 Adapter、snapshot Core scheduling、CTM-style synapse mixing、per-neuron private NLM、真实时间历史输入和Persistent ΔW Plasticity；不宣称已经完成行为学习。
 
-当前架构的唯一规范是 [docs/canonical_architecture.txt](docs/canonical_architecture.txt)。
+生产 Runtime 架构规范是 [docs/canonical_architecture.txt](docs/canonical_architecture.txt)。
+在线自修改实验使用原版普通 Block 前向并增加研究 Adapter；event-flow 是单独参考线。
 
 ## 架构速览
 
@@ -43,7 +51,36 @@ python -m acnt --core-only --steps 12
 python -m acnt --steps 2 --log-file runs/demo/mechanical.jsonl --summary-file runs/demo/summary.json
 ```
 
-## Train original ACNT end to end
+## 连续在线自修改研究（2026-10-02）
+
+当前小模型为 7 个普通 Block、28 个 Core 神经元；有界总 G 版本共 3,839 个实际参数，
+包含全部 Block 间连接、Goodness 58 参数和 Write 740 参数，148 个独立 F 覆盖全部有效参数。
+原版前向不变，信用与写入规则是研究候选；训练数值状态包含 J、迹、矩与归一化统计。
+主体不读取外部经历日志。候选尚未替换生产 `Runtime.step`。
+
+```powershell
+python -m pip install -e ".[test,reports]"
+python -m experiments.summarize_session --verify-published
+python -m experiments.calibrated_write_duration --seconds 600 --seed 66 --width 4 --threads 1 --bounded-total --output runs/new_bounded_life
+```
+
+复现会启动新的独立生命，输出目录必须为新目录；末段平台与长期能力保留分别报告。
+各版源文件哈希和本地原始结果哈希保存在公开 manifest；大体积轨迹与检查点保留本地。
+
+## G0–G3 event-flow 独立参考线（历史交接）
+
+The event-flow specification is [ALGORITHM_SPEC](docs/training/ALGORITHM_SPEC.md); see [integration and validation](docs/training/INTEGRATION.md) for boundaries. Its [original handoff](docs/training/EVENT_FLOW_HANDOFF.md) describes this reference line, not the latest self-write candidate.
+
+`EventFlowBlock` and `EventFlowCore` separate explicit semantic events from `exp(-lambda*dt)` physical-time flow. Scheduler materialization never shifts semantic history. `BlockLowRankRTRL.propagate_time` propagates local and cross influence without stochastic recompression.
+
+```powershell
+python -m experiments.training.run_all
+python -m experiments.training.run_all --include-g3
+```
+
+G3 remains a research frontier. Existing six-organ `Runtime` and persistent delta-W APIs remain available; the event-flow reference has not replaced that legacy runtime. The canonical architecture document above describes the legacy path; ALGORITHM_SPEC describes the new reference path.
+
+## Original ACNT short-window training baseline
 
 The original Adapter -> Core -> Adapter now has an explicit training path:
 `OriginalTrainingRuntime` + `GoodnessTrainer`, using bounded BPTT and scalar-Goodness

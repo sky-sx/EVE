@@ -1,0 +1,270 @@
+{
+  "seed": 55,
+  "width": 4,
+  "ordinary_blocks": 7,
+  "core_neurons": 28,
+  "task": "fixed_cue_and_goodness",
+  "mapping": "A(negative signal)->0; B(positive signal)->1",
+  "stimulus": "[s*a, -s*a, 0.5*s*a, -0.5*s*a], a uniform [0.5,1]",
+  "target_input_distribution": "independent fair coin, randomized amplitude",
+  "requested_wall_seconds": 600.0,
+  "cpu_threads": 1,
+  "device": "cpu",
+  "total_parameters": 3839,
+  "writer_parameters": 740,
+  "F": 148,
+  "group_size": 32,
+  "taus_ms": [
+    0.1,
+    0.1,
+    0.1
+  ],
+  "actor_lr": 1e-05,
+  "head_lr": 0.01,
+  "control_lr": 0.003,
+  "hand_activation": "LeakyReLU(0.1)",
+  "logit_confidence_limit": 3.0,
+  "wall_started_at": "2026-10-01T23:12:28.512652+08:00",
+  "subject_reset_count": 0,
+  "replay_count": 0,
+  "outer_parameter_updates": 0,
+  "source_hashes": {
+    "acnt/calibrated_write.py": "dcbef174f21aa97e6ef8b9f7daf43fa8d7db2127b0201cfa9dc9fb33ac129eee",
+    "acnt/grouped_write_independent.py": "1b136891a36012e876cf8e6ae84479a865c5a671ac2d20edcaf1fc5bf9afa9fb",
+    "acnt/grouped_write.py": "d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f",
+    "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/calibrated_write_exploration.py": "7f9743dbc1335180c6a161e3103b62206e652d064d8afd420d2b0c61363991a0",
+    "experiments/calibrated_write_benchmark.py": "317f123d86ab55b8184805dfd673fdb599c5c6c6e1b97dbd58fc696016790fd6",
+    "experiments/calibrated_write_duration.py": "9b87d47127f2a613e944156a59b8d6b68425e15a72b45d0b2492dbaf2fe5c2ff",
+    "acnt/goodness_prediction.py": "2045d4098d23fb5b177b4a8e38b533a49f18cde3524bb43845e1304d0d2da86f"
+  },
+  "goodness_adapter_parameters": 58,
+  "goodness_source_block": 5,
+  "goodness_outputs": 2,
+  "goodness_lr": 0.01,
+  "evaluation_core_lr": 0.001,
+  "evaluation_weight": 1.0,
+  "actor_modulator": "teacher_goodness_only",
+  "prediction_timing": "after action selection, before teacher feedback",
+  "evaluation_credit": "selected-logit BCE credit cached before feedback; exponential traces",
+  "evaluation_update_region": "ordinary Block 5 and Goodness Adapter, positive Write-controlled gain",
+  "seed_comparison": "new seed 55 life, not a controlled comparison with prior seed 44",
+  "observed_wall_seconds": 600.0324904999943,
+  "decisions": 4646,
+  "forward_events": 18584,
+  "last_event_synthetic_ms": 37166,
+  "first_200": {
+    "count": 200,
+    "goodness": 0.48,
+    "expected_goodness": 0.5061834656447172
+  },
+  "last_200": {
+    "count": 200,
+    "goodness": 0.585,
+    "expected_goodness": 0.60353715531528
+  },
+  "last_1000": {
+    "count": 1000,
+    "goodness": 0.652,
+    "expected_goodness": 0.6498585940077901
+  },
+  "all": {
+    "count": 4646,
+    "goodness": 0.6009470512268618,
+    "expected_goodness": 0.6006346265021656
+  },
+  "last_1000_classes": {
+    "A": {
+      "count": 518,
+      "goodness": 0.8146718146718147,
+      "expected_goodness": 0.8107632581705523
+    },
+    "B": {
+      "count": 482,
+      "goodness": 0.47717842323651455,
+      "expected_goodness": 0.4769361540984316
+    }
+  },
+  "all_classes": {
+    "A": {
+      "count": 2307,
+      "goodness": 0.7906371911573472,
+      "expected_goodness": 0.7943390600728844
+    },
+    "B": {
+      "count": 2339,
+      "goodness": 0.413852073535699,
+      "expected_goodness": 0.40958027496405164
+    }
+  },
+  "terminal_200_decision_windows": [
+    {
+      "count": 200,
+      "goodness": 0.69,
+      "expected_goodness": 0.7018018037080764
+    },
+    {
+      "count": 200,
+      "goodness": 0.665,
+      "expected_goodness": 0.642167878523469
+    },
+    {
+      "count": 200,
+      "goodness": 0.68,
+      "expected_goodness": 0.658761881403625
+    },
+    {
+      "count": 200,
+      "goodness": 0.64,
+      "expected_goodness": 0.6430242510885
+    },
+    {
+      "count": 200,
+      "goodness": 0.585,
+      "expected_goodness": 0.60353715531528
+    }
+  ],
+  "observed_terminal_plateau": false,
+  "plateau_rule": "last 1000, five 200-decision windows: sampled G range <=0.05, expected G endpoint change <=0.01",
+  "written_coordinates": 3727,
+  "self_written_coordinates": 740,
+  "parameter_change_norm": 21.898908615112305,
+  "persistent_state_and_training_tensor_bytes": 1877915,
+  "process_peak_working_set_bytes": 610848768,
+  "tangent_clips": 1222,
+  "update_clips": 1682,
+  "sampled_state_maxima": {
+    "neural_abs": 18.209274291992188,
+    "parameter_abs": 4.0,
+    "tangent_norm": 999.9999389648438,
+    "interval_decisions": 100
+  },
+  "final_finite": true,
+  "limitations": [
+    "one new life and one fixed immediate-feedback synthetic task",
+    "600s is compute wall time; event timestamps advance synthetically by 2ms, not real-world paced time",
+    "no task reversal, real audio input, delayed reward, or lifelong retention validation",
+    "finite-window plateau observation is not mathematical convergence",
+    "conditional temperature score and stopped write/statistic derivatives remain",
+    "prescribed calibration loss and extra finite J/traces/moments/statistics remain",
+    "observer logs and final checkpoint are never read by the learning subject",
+    "joint task changes Block 5 credit/rate and Write budget; not an isolated adapter-only ablation",
+    "counterfactual pair scores are observer-only; only actual-action teacher supervised the learner",
+    "selected BCE gradient is prescribed; prediction never replaces system goodness"
+  ],
+  "evaluation": {
+    "first_200": {
+      "count": 200,
+      "mse": 0.2641775690647688,
+      "accuracy": 0.405,
+      "counterfactual_pair_mse": 0.26156388394264346,
+      "prediction_mean": 0.520275775641203
+    },
+    "last_200": {
+      "count": 200,
+      "mse": 0.11728120008801327,
+      "accuracy": 0.805,
+      "counterfactual_pair_mse": 0.1641716581255766,
+      "prediction_mean": 0.5863713613944128
+    },
+    "last_1000": {
+      "count": 1000,
+      "mse": 0.12782353274171848,
+      "accuracy": 0.814,
+      "counterfactual_pair_mse": 0.18498563460512077,
+      "prediction_mean": 0.6635977396289818
+    },
+    "all": {
+      "count": 4646,
+      "mse": 0.1631153634419307,
+      "accuracy": 0.7460180800688765,
+      "counterfactual_pair_mse": 0.20369012865391325,
+      "prediction_mean": 0.5919298211696349
+    },
+    "last_1000_by_teacher": {
+      "0": {
+        "count": 348,
+        "mse": 0.21827550062875142,
+        "accuracy": 0.6666666666666666,
+        "counterfactual_pair_mse": 0.13958153366883655,
+        "prediction_mean": 0.3777192884336236
+      },
+      "1": {
+        "count": 652,
+        "mse": 0.07954548853207555,
+        "accuracy": 0.8926380368098159,
+        "counterfactual_pair_mse": 0.20921972528890395,
+        "prediction_mean": 0.8161831706350932
+      }
+    },
+    "last_1000_matrix": {
+      "A_action_0": {
+        "count": 422,
+        "mse": 0.08339684871773334,
+        "accuracy": 0.8981042654028436,
+        "counterfactual_pair_mse": 0.2066012577139928,
+        "prediction_mean": 0.8100481758256094
+      },
+      "A_action_1": {
+        "count": 96,
+        "mse": 0.2873282783122553,
+        "accuracy": 0.5625,
+        "counterfactual_pair_mse": 0.17274077962064438,
+        "prediction_mean": 0.4982099295593798
+      },
+      "B_action_0": {
+        "count": 252,
+        "mse": 0.19196968055884558,
+        "accuracy": 0.7063492063492064,
+        "counterfactual_pair_mse": 0.12694943997291,
+        "prediction_mean": 0.33181809181428795
+      },
+      "B_action_1": {
+        "count": 230,
+        "mse": 0.07247907984360928,
+        "accuracy": 0.8826086956521739,
+        "counterfactual_pair_mse": 0.21402404405678427,
+        "prediction_mean": 0.8274395524159722
+      }
+    }
+  },
+  "evaluation_verified_metrics": {
+    "count": 1000,
+    "mse": 0.12782353274171848,
+    "mae": 0.25129488512082027,
+    "accuracy": 0.814,
+    "best_constant_fit_mse": 0.226896,
+    "constant_half_mse": 0.25,
+    "always_predict_reward_accuracy": 0.652,
+    "pair_mse": 0.18498563460512044,
+    "pair_accuracy": 0.7325,
+    "by_teacher": {
+      "0": {
+        "count": 348,
+        "prediction_mean": 0.3777192884336236,
+        "mse": 0.21827550062875142,
+        "accuracy": 0.6666666666666666
+      },
+      "1": {
+        "count": 652,
+        "prediction_mean": 0.8161831706350932,
+        "mse": 0.07954548853207555,
+        "accuracy": 0.8926380368098159
+      }
+    },
+    "cue_action_prediction_means": {
+      "A_action_0": 0.8147368843318412,
+      "A_action_1": 0.5248171850521132,
+      "B_action_0": 0.41773655132585713,
+      "B_action_1": 0.8490858650244618
+    }
+  },
+  "validation_passed": true,
+  "goodness_adapter_written_coordinates": 58,
+  "raw_result": "runs\\calibrated_write_duration\\goodness_seed_55_600s_v1\\result.json",
+  "raw_result_sha256": "2e8941963b0af4e986de220b9de93859df6bab52d164cd6beb33307051cb4bf2"
+}

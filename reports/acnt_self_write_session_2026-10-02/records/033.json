@@ -1,0 +1,61 @@
+{
+  "seed": 11,
+  "task": "cue",
+  "group_size": 32,
+  "groups": 125,
+  "modulation": "broadcast",
+  "actuator": "detached RMS",
+  "write_scale": 0.001,
+  "lr": 0.001,
+  "decisions": 1000,
+  "events": 4000,
+  "neural_resets": 0,
+  "taus_ms": [
+    0.1,
+    0.1,
+    0.1
+  ],
+  "total_effective_parameters": 3122,
+  "writer_parameters": 81,
+  "first": {
+    "count": 100,
+    "expected_goodness": 0.5001573020219803,
+    "sampled_accuracy": 0.54
+  },
+  "last": {
+    "count": 100,
+    "expected_goodness": 0.574596238732338,
+    "sampled_accuracy": 0.66
+  },
+  "all": {
+    "count": 1000,
+    "expected_goodness": 0.5158700028657913,
+    "sampled_accuracy": 0.514
+  },
+  "written_coordinates": 2917,
+  "self_written_coordinates": 0,
+  "self_write_path_length": 0.0,
+  "parameter_change_norm": 1.9139150381088257,
+  "persistent_state_and_training_tensor_bytes": 2534984,
+  "meta_clips": 0,
+  "actor_clips": 100,
+  "source_hashes": {
+    "acnt/grouped_write_rms.py": "402bc7f96712bd391e43456256cc9fc82d953b7fab32136a8449256168697317",
+    "acnt/grouped_write.py": "dd0418f290f1923204d78e121a8c1aaf1dc14cffd03b8cafffcc811fad9403fc",
+    "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+    "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/grouped_write_rms_online.py": "d2cd35723992aa3132f8d6c40169be71ca6c93785ec0886473cecd29fee9c3c0"
+  },
+  "seconds": 170.88385039999775,
+  "limitations": [
+    "amplitude AND nominal scale differ from raw v1; not a pure capacity comparison",
+    "raw exponential eligibility unchanged; normalization state and its derivatives stopped",
+    "hybrid eligibility with conditional self-write credit",
+    "external writer bootstrap remains",
+    "broadcast/anchored explicitly use G",
+    "toy immediate-reward stream, not lifelong validation"
+  ]
+}

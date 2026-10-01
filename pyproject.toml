@@ -11,6 +11,7 @@ dependencies = ["torch>=2.0"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+reports = ["matplotlib>=3.7", "numpy>=1.24"]
 
 [tool.setuptools.packages.find]
 include = ["acnt*"]

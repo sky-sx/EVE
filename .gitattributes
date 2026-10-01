@@ -1,0 +1,9 @@
+# Evidence is hashed byte-for-byte. Keep its original line endings on every OS.
+/reports/acnt_self_write_session_2026-10-02/** -text
+/reports/acnt_self_write_session_2026-10-02.* -text
+/reports/*_2026-10-01.json -text
+/reports/*_2026-10-01.md -text
+/reports/*_2026-10-01.svg -text
+/reports/*_2026-10-01.png -text
+# Historical source bytes are evidence, including their original whitespace.
+/reports/acnt_self_write_session_2026-10-02/sources/** whitespace=-blank-at-eol,cr-at-eol

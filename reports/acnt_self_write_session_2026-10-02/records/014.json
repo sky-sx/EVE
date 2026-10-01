@@ -1,0 +1,113 @@
+{
+  "seed": 11,
+  "mode": "core",
+  "task": "switch",
+  "decisions": 3000,
+  "events": 12000,
+  "normalize": true,
+  "taus_ms": [
+    0.1,
+    0.1,
+    0.1
+  ],
+  "actor_lr": 1e-05,
+  "head_lr": 0.01,
+  "control_lr": 0.003,
+  "hand_activation": "LeakyReLU(0.1)",
+  "neural_resets": 0,
+  "outer_parameter_updates": 0,
+  "total_parameters": 3756,
+  "writer_parameters": 715,
+  "groups": 143,
+  "first": {
+    "count": 100,
+    "expected_goodness": 0.4998133090138435,
+    "sampled_accuracy": 0.52,
+    "f_sign_accuracy": 0.6040196058060974,
+    "calibration_loss": 0.6919523590803146
+  },
+  "last": {
+    "count": 100,
+    "expected_goodness": 0.4799872815608978,
+    "sampled_accuracy": 0.48,
+    "f_sign_accuracy": 1.0,
+    "calibration_loss": 0.0006167473844834603
+  },
+  "all": {
+    "count": 3000,
+    "expected_goodness": 0.6511740649763722,
+    "sampled_accuracy": 0.6586666666666666,
+    "f_sign_accuracy": 0.95556862736245,
+    "calibration_loss": 0.12360262447113723
+  },
+  "phases": [
+    {
+      "count": 1000,
+      "expected_goodness": 0.8850316579182923,
+      "sampled_accuracy": 0.888,
+      "f_sign_accuracy": 0.9504803919196129,
+      "calibration_loss": 0.15959922102605925
+    },
+    {
+      "count": 1000,
+      "expected_goodness": 0.5918828390733188,
+      "sampled_accuracy": 0.61,
+      "f_sign_accuracy": 0.9282352941185236,
+      "calibration_loss": 0.17967538783881173
+    },
+    {
+      "count": 1000,
+      "expected_goodness": 0.4766076979375048,
+      "sampled_accuracy": 0.478,
+      "f_sign_accuracy": 0.9879901960492135,
+      "calibration_loss": 0.03153326454854076
+    }
+  ],
+  "phase_ends": [
+    {
+      "count": 100,
+      "expected_goodness": 0.999995471318018,
+      "sampled_accuracy": 1.0,
+      "f_sign_accuracy": 1.0,
+      "calibration_loss": 0.004579764073714614
+    },
+    {
+      "count": 100,
+      "expected_goodness": 0.9999946039674227,
+      "sampled_accuracy": 1.0,
+      "f_sign_accuracy": 1.0,
+      "calibration_loss": 0.0019265037134755403
+    },
+    {
+      "count": 100,
+      "expected_goodness": 0.4799872815608978,
+      "sampled_accuracy": 0.48,
+      "f_sign_accuracy": 1.0,
+      "calibration_loss": 0.0006167473844834603
+    }
+  ],
+  "written_coordinates": 3644,
+  "self_written_coordinates": 715,
+  "parameter_change_norm": 15.313824653625488,
+  "persistent_state_and_training_tensor_bytes": 1792188,
+  "tangent_clips": 17,
+  "update_clips": 1453,
+  "source_hashes": {
+    "acnt/calibrated_write.py": "def48a3217c1ca641c3b52934c18a22f0efc1a6866f110ba80b79d9cced30d8f",
+    "acnt/grouped_write_independent.py": "58efa62d35835eab31b8447f365e6c14c8ff5209434568e320dcbfc22cbd1be5",
+    "acnt/grouped_write.py": "d8e652f731ddf4f94c88a7a5d843a9422ad5d4ab99aae9c0db81143c8568ed6f",
+    "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+    "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+    "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+    "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+    "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+    "experiments/calibrated_write_continual.py": "7d85146e5f6ba704adde0206a49b4e49edd102819f1690e675c784c1ff2e60b3"
+  },
+  "seconds": 382.0701052000004,
+  "limitations": [
+    "two concurrent changes: slow Core and leaky Hand; not a isolated ablation",
+    "one seed immediate-feedback switch; not retention or lifelong stability validation",
+    "prescribed calibration gradient and extra numerical state remain",
+    "all actual parameters writable; slower is not frozen"
+  ]
+}

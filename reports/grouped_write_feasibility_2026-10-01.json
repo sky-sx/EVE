@@ -1,0 +1,109 @@
+{
+  "status": "structural diagnostic only; no training conclusion",
+  "seed": 11,
+  "source_sha256": "631b4ed5199f0a03f4cb476648137951d4b6b79e2804a74d798ced44e199cd34",
+  "packing": [
+    {
+      "noise_bound": 0.0,
+      "word_accuracy": 1.0,
+      "bit_error_rate": 0.0
+    },
+    {
+      "noise_bound": 1e-07,
+      "word_accuracy": 1.0,
+      "bit_error_rate": 0.0
+    },
+    {
+      "noise_bound": 1e-06,
+      "word_accuracy": 1.0,
+      "bit_error_rate": 0.0
+    },
+    {
+      "noise_bound": 1e-05,
+      "word_accuracy": 0.7590789794921875,
+      "bit_error_rate": 0.030176162719726562
+    },
+    {
+      "noise_bound": 0.0001,
+      "word_accuracy": 0.0771942138671875,
+      "bit_error_rate": 0.1495647430419922
+    }
+  ],
+  "grouping": [
+    {
+      "synthetic_case": "mixed",
+      "group_size": 1,
+      "oracle_gain_ratio": 1.0
+    },
+    {
+      "synthetic_case": "mixed",
+      "group_size": 2,
+      "oracle_gain_ratio": 0.7067263465777499
+    },
+    {
+      "synthetic_case": "mixed",
+      "group_size": 8,
+      "oracle_gain_ratio": 0.3539533088740457
+    },
+    {
+      "synthetic_case": "mixed",
+      "group_size": 16,
+      "oracle_gain_ratio": 0.25221719996031305
+    },
+    {
+      "synthetic_case": "mixed",
+      "group_size": 32,
+      "oracle_gain_ratio": 0.17863193384181858
+    },
+    {
+      "synthetic_case": "group_aligned",
+      "group_size": 1,
+      "oracle_gain_ratio": 1.0
+    },
+    {
+      "synthetic_case": "group_aligned",
+      "group_size": 2,
+      "oracle_gain_ratio": 1.0
+    },
+    {
+      "synthetic_case": "group_aligned",
+      "group_size": 8,
+      "oracle_gain_ratio": 1.0
+    },
+    {
+      "synthetic_case": "group_aligned",
+      "group_size": 16,
+      "oracle_gain_ratio": 1.0
+    },
+    {
+      "synthetic_case": "group_aligned",
+      "group_size": 32,
+      "oracle_gain_ratio": 0.9999999999999999
+    },
+    {
+      "synthetic_case": "opposing_pairs",
+      "group_size": 1,
+      "oracle_gain_ratio": 1.0
+    },
+    {
+      "synthetic_case": "opposing_pairs",
+      "group_size": 2,
+      "oracle_gain_ratio": 0.0
+    },
+    {
+      "synthetic_case": "opposing_pairs",
+      "group_size": 8,
+      "oracle_gain_ratio": 0.0
+    },
+    {
+      "synthetic_case": "opposing_pairs",
+      "group_size": 16,
+      "oracle_gain_ratio": 0.0
+    },
+    {
+      "synthetic_case": "opposing_pairs",
+      "group_size": 32,
+      "oracle_gain_ratio": 0.0
+    }
+  ]
+}

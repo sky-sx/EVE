@@ -1,0 +1,442 @@
+[
+  {
+    "seed": 11,
+    "task": "constant",
+    "mode": "full",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.6475393155217171,
+      "sampled_accuracy": 0.66
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 1.0,
+      "sampled_accuracy": 1.0
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.9647539315521717,
+      "sampled_accuracy": 0.966
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 3896,
+    "self_written_coordinates": 81,
+    "write_path_length": 264.0614621049317,
+    "self_write_path_length": 37.32522331566361,
+    "effective_parameter_change_norm": 250.37908935546875,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 38,
+    "bootstrap_updates": 1000,
+    "seconds": 136.23926510000092,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/constant_v1/constant_seed_11_full.json"
+  },
+  {
+    "seed": 11,
+    "task": "constant",
+    "mode": "no_write",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.48802593767642977,
+      "sampled_accuracy": 0.48
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 0.48811733394861223,
+      "sampled_accuracy": 0.44
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.48810487291216853,
+      "sampled_accuracy": 0.472
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 0,
+    "self_written_coordinates": 0,
+    "write_path_length": 0.0,
+    "self_write_path_length": 0.0,
+    "effective_parameter_change_norm": 0.0,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 0,
+    "bootstrap_updates": 1000,
+    "seconds": 62.552165799999784,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/constant_control/constant_seed_11_no_write.json"
+  },
+  {
+    "seed": 11,
+    "task": "cue",
+    "mode": "full",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.5003535827994346,
+      "sampled_accuracy": 0.54
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 0.524603296695277,
+      "sampled_accuracy": 0.52
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.4967139862012118,
+      "sampled_accuracy": 0.497
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 3896,
+    "self_written_coordinates": 81,
+    "write_path_length": 209.97090209078306,
+    "self_write_path_length": 28.961413504902794,
+    "effective_parameter_change_norm": 78.05619812011719,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 706,
+    "bootstrap_updates": 1000,
+    "seconds": 136.76870240000062,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/cue_v1/cue_seed_11_full.json"
+  },
+  {
+    "seed": 22,
+    "task": "cue",
+    "mode": "full",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.5004862087965012,
+      "sampled_accuracy": 0.54
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 0.5035851621627807,
+      "sampled_accuracy": 0.54
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.5009317453503609,
+      "sampled_accuracy": 0.504
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 3896,
+    "self_written_coordinates": 81,
+    "write_path_length": 10.631346816880978,
+    "self_write_path_length": 1.3958907765700133,
+    "effective_parameter_change_norm": 4.185128688812256,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 105,
+    "bootstrap_updates": 1000,
+    "seconds": 129.79174339999736,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/cue_v1/cue_seed_22_full.json"
+  },
+  {
+    "seed": 33,
+    "task": "cue",
+    "mode": "full",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.5054718613624573,
+      "sampled_accuracy": 0.51
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 0.5,
+      "sampled_accuracy": 0.5
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.48322264678776267,
+      "sampled_accuracy": 0.491
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 3896,
+    "self_written_coordinates": 81,
+    "write_path_length": 229.91156911597864,
+    "self_write_path_length": 31.21043771101813,
+    "effective_parameter_change_norm": 155.3815155029297,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 188,
+    "bootstrap_updates": 1000,
+    "seconds": 143.69665149999855,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/cue_v1/cue_seed_33_full.json"
+  },
+  {
+    "seed": 11,
+    "task": "cue",
+    "mode": "full",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.0002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.500350906252861,
+      "sampled_accuracy": 0.54
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 0.5007549062371254,
+      "sampled_accuracy": 0.59
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.49966116535663607,
+      "sampled_accuracy": 0.503
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 3896,
+    "self_written_coordinates": 81,
+    "write_path_length": 1.5535145712528902,
+    "self_write_path_length": 0.22073769365088936,
+    "effective_parameter_change_norm": 0.3346865773200989,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 0,
+    "bootstrap_updates": 1000,
+    "seconds": 144.3048082000023,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/cue_small_step/cue_seed_11_full.json"
+  },
+  {
+    "seed": 11,
+    "task": "cue",
+    "mode": "no_write",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.5003504395484925,
+      "sampled_accuracy": 0.54
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 0.5006783971190453,
+      "sampled_accuracy": 0.59
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.4998139771521091,
+      "sampled_accuracy": 0.502
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 0,
+    "self_written_coordinates": 0,
+    "write_path_length": 0.0,
+    "self_write_path_length": 0.0,
+    "effective_parameter_change_norm": 0.0,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 0,
+    "bootstrap_updates": 1000,
+    "seconds": 80.12732909999977,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/ablations_v1/cue_seed_11_no_write.json"
+  },
+  {
+    "seed": 11,
+    "task": "cue",
+    "mode": "cut_write",
+    "decisions": 1000,
+    "events": 4000,
+    "gap": 3,
+    "lr": 0.001,
+    "write_scale": 0.002,
+    "neural_resets": 0,
+    "first": {
+      "count": 100,
+      "expected_goodness": 0.5003504395484925,
+      "sampled_accuracy": 0.54
+    },
+    "last": {
+      "count": 100,
+      "expected_goodness": 0.5006783971190453,
+      "sampled_accuracy": 0.59
+    },
+    "all": {
+      "count": 1000,
+      "expected_goodness": 0.4998139771521091,
+      "sampled_accuracy": 0.502
+    },
+    "total_effective_parameters": 3896,
+    "write_controls": 3896,
+    "bootstrap_parameters": 81,
+    "written_coordinates": 0,
+    "self_written_coordinates": 0,
+    "write_path_length": 0.0,
+    "self_write_path_length": 0.0,
+    "effective_parameter_change_norm": 0.0,
+    "persistent_state_and_training_tensor_bytes": 1315272,
+    "address_metadata_bytes": 46752,
+    "meta_clips": 0,
+    "bootstrap_updates": 1000,
+    "seconds": 142.36835079999946,
+    "source_hashes": {
+      "acnt/address_write.py": "203201d318f1dcbbb8f4fe3cae3a467ec8b2158e0ccdc89ed5adf2ee8fa63d48",
+      "acnt/full_write.py": "a380f7c24f3ed80deeb9e34b2572772d16f00d3f10d4ecb0710b4bbd404ea952",
+      "acnt/self_write.py": "63dc4271e8aca573ecb95169b365e3e89fe7685c9acabd6e864085457848c9fb",
+      "acnt/block.py": "3b219506989017dc281a50ed899c6834e5f0509bd6456e64ee5466c08bcbf54f",
+      "acnt/adapters.py": "8fa14560a799e49189c24134277dde26a530288f25f339641bc742bb198597f2",
+      "experiments/address_write_online.py": "0aa259796611341032d81838b91ae4c383eab6a80690a90f7fae4a0258764a8e"
+    },
+    "limitations": [
+      "external writer bootstrap remains",
+      "immediate reward only",
+      "conditional common-origin tangent with stopped outer updates and clipping",
+      "all-active synchronous seven original Blocks",
+      "synthetic cue task is not lifelong validation"
+    ],
+    "raw_path": "runs/address_write_online/ablations_v1/cue_seed_11_cut_write.json"
+  }
+]

@@ -1,0 +1,24 @@
+# Human-readable handoff config. No YAML dependency is required by the scripts.
+G0:
+  status: PASS
+  checks:
+    - local/online derivative correctness
+    - finite-difference/autograd oracle
+    - scheduler partition forward/gradient invariance for current event-flow block
+G1:
+  status: PASS_POC
+  algorithm: exact block-local eligibility + streaming low-rank cross influence
+  cross_rank: "capacity parameter; do NOT hard-code 4"
+  runtime_rule: "pure time passage never triggers stochastic recompression"
+G2:
+  status: PASS_POC
+  history_lengths: [2,4,8,16]
+  time_rule: "event jump + exponential continuous flow"
+  allowed_functions: [linear, tanh, sigmoid, exp_time]
+G3:
+  status: PENDING
+  passed:
+    - eager/lazy async equivalence
+    - t_last + exp flow semantics
+  unresolved:
+    - neutral birth initialization / developmental bootstrap robustness
