@@ -1,3 +1,11 @@
+# Training implementation scope (2026-10-01)
+
+This document specifies the original inference architecture and legacy delta-W
+training path. The new opt-in OriginalTrainingRuntime preserves its forward
+architecture but intentionally uses bounded autograd/BPTT and scalar-Goodness
+policy gradients, superseding the legacy training constraints only for that API.
+See training/ORIGINAL_ACNT_TRAINING.md. Default Runtime inference is unchanged.
+
 # ACNT 当前唯一架构规范
 
 本文只定义当前仍成立的 ACNT v0.x 架构，不记录候选演变、实验历史或训练资料计划。

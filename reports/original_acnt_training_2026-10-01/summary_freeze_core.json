@@ -1,0 +1,20 @@
+[
+  {
+    "seed": 11,
+    "initial_goodness": 0.4997109957039356,
+    "final_goodness": 0.5156836286187172,
+    "accuracy": 0.5
+  },
+  {
+    "seed": 22,
+    "initial_goodness": 0.5004424912234148,
+    "final_goodness": 0.5127322350939115,
+    "accuracy": 0.5
+  },
+  {
+    "seed": 33,
+    "initial_goodness": 0.5010399160285791,
+    "final_goodness": 0.6775389447963486,
+    "accuracy": 0.6666666666666666
+  }
+]

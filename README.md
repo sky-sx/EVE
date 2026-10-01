@@ -42,3 +42,20 @@ python -m experiments.delta_w_sanity --steps 1000 --seeds 11 22 33
 python -m acnt --core-only --steps 12
 python -m acnt --steps 2 --log-file runs/demo/mechanical.jsonl --summary-file runs/demo/summary.json
 ```
+
+## Train original ACNT end to end
+
+The original Adapter -> Core -> Adapter now has an explicit training path:
+`OriginalTrainingRuntime` + `GoodnessTrainer`, using bounded BPTT and scalar-Goodness
+REINFORCE. It preserves original GLU/LN, private NLMs, A/At and snapshot communication;
+it uses neither G2 event-flow dynamics nor the old delta-W update.
+
+See [algorithm, APIs and reproduction](docs/training/ORIGINAL_ACNT_TRAINING.md)
+and [measured learning results](reports/original_acnt_training_2026-10-01.md).
+
+```powershell
+python -m experiments.original_acnt_train --seeds 11 22 33 --updates 200 --batch-size 8
+```
+
+This is a validated short-window research training baseline. Default `Runtime.step`
+keeps its original behavior; learned deployment uses `learn=False` after commit.

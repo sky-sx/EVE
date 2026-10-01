@@ -165,6 +165,84 @@ class Block(nn.Module):
             raise FloatingPointError(f"Block {self.block_id}: non-finite NLM input")
         return result
 
+    def transition(self, *, history: Sequence[Tensor], times: Sequence[int], now_ms: int,
+                   active_z: Mapping[int, Tensor], o: Tensor | None = None):
+        """Original Block equations, with differentiable state supplied by caller.
+
+        No persistent buffers are mutated. Inference detaches on commit; a
+        bounded training rollout retains these dependencies until backward.
+        """
+        if type(now_ms) is not int:
+            raise ValueError("now_ms must be integer milliseconds")
+        if len(history) != len(times) or len(history) > self.hold_tick:
+            raise ValueError("history and times must correspond")
+        if times and now_ms < times[-1]:
+            raise ValueError("time must not move backwards")
+        r = self.b.clone()
+
+        if o is not None:
+            self._check_vector(
+                o,
+                2 * self.neuron_size,
+                "o",
+            )
+            r = r + o
+
+        sources = {} if active_z is None else active_z
+
+
+        for j, z_j in sources.items():
+            if type(j) is not int or not 0 <= j < len(self.W_ij):
+                raise ValueError("source id must index W_ij")
+
+            self._check_vector(
+                z_j,
+                self.source_sizes[j],
+                f"z_{j}",
+            )
+
+            source = z_j
+            r = r + self.W_ij[j] @ source
+
+        n = self.neuron_size
+
+        l = r[:n]
+        g = r[n:]
+        rho = torch.sigmoid(g)
+        u = l * rho
+
+        a = self.LN(u)
+
+        history = [
+            *history,
+            a,
+        ][-self.hold_tick:]
+
+        times = [
+            *times,
+            now_ms,
+        ][-self.hold_tick:]
+
+        nlm_x = self.nlm_input(
+            history,
+            times,
+            now_ms=now_ms,
+        )
+
+        z = self.nlm(nlm_x)
+
+        for name, value in (
+            ("r", r),
+            ("a", a),
+            ("z", z),
+        ):
+            if not torch.isfinite(value).all():
+                raise FloatingPointError(
+                    f"Block {self.block_id}: non-finite {name}"
+                )
+
+        return r, a, z, tuple(history), tuple(times)
+
     def update(self, *, now_ms: int | None = None, active_z: Mapping[int, Tensor] | None = None) -> Tensor:
         with torch.no_grad():
             return self._update(now_ms=now_ms, active_z=active_z)
@@ -189,68 +267,10 @@ class Block(nn.Module):
         if self.At and now_ms < self.At[-1]:
             raise ValueError("time must not move backwards")
 
-        r = self.b.clone()
-
-        if self.o is not None:
-            self._check_vector(
-                self.o,
-                2 * self.neuron_size,
-                "o",
-            )
-            r = r + self.o
-
-        sources = {} if active_z is None else active_z
-
-
-        for j, z_j in sources.items():
-            if type(j) is not int or not 0 <= j < len(self.W_ij):
-                raise ValueError("source id must index W_ij")
-
-            self._check_vector(
-                z_j,
-                self.source_sizes[j],
-                f"z_{j}",
-            )
-
-            source = z_j.detach()
-            r = r + self.W_ij[j] @ source
-
-        n = self.neuron_size
-
-        l = r[:n]
-        g = r[n:]
-        rho = torch.sigmoid(g)
-        u = l * rho
-
-        a = self.LN(u)
-
-        history = [
-            *(entry.detach() for entry in self.A),
-            a,
-        ][-self.hold_tick:]
-
-        times = [
-            *self.At,
-            now_ms,
-        ][-self.hold_tick:]
-
-        nlm_x = self.nlm_input(
-            history,
-            times,
-            now_ms=now_ms,
+        r, a, z, history, times = self.transition(
+            history=tuple(self.A), times=tuple(self.At), now_ms=now_ms,
+            active_z={} if active_z is None else active_z, o=self.o,
         )
-
-        z = self.nlm(nlm_x)
-
-        for name, value in (
-            ("r", r),
-            ("a", a),
-            ("z", z),
-        ):
-            if not torch.isfinite(value).all():
-                raise FloatingPointError(
-                    f"Block {self.block_id}: non-finite {name}"
-                )
 
         self.r = r.detach().clone()
         self.a = a.detach().clone()
